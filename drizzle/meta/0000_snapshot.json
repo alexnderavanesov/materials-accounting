@@ -50,9 +50,7 @@
         "categories_name_unique": {
           "name": "categories_name_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "name"
-          ]
+          "columns": ["name"]
         }
       },
       "policies": {},
@@ -211,12 +209,8 @@
           "name": "document_lines_document_id_documents_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "documents",
-          "columnsFrom": [
-            "document_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["document_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -224,12 +218,8 @@
           "name": "document_lines_project_material_line_id_project_material_lines_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "project_material_lines",
-          "columnsFrom": [
-            "project_material_line_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_material_line_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -237,12 +227,8 @@
           "name": "document_lines_material_id_materials_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "materials",
-          "columnsFrom": [
-            "material_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["material_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -250,12 +236,8 @@
           "name": "document_lines_unit_id_units_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "units",
-          "columnsFrom": [
-            "unit_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["unit_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -263,12 +245,8 @@
           "name": "document_lines_employee_id_employees_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "employees",
-          "columnsFrom": [
-            "employee_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["employee_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -276,12 +254,8 @@
           "name": "document_lines_storage_location_id_storage_locations_id_fk",
           "tableFrom": "document_lines",
           "tableTo": "storage_locations",
-          "columnsFrom": [
-            "storage_location_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["storage_location_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -431,12 +405,8 @@
           "name": "documents_object_id_objects_id_fk",
           "tableFrom": "documents",
           "tableTo": "objects",
-          "columnsFrom": [
-            "object_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["object_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -444,12 +414,8 @@
           "name": "documents_subobject_id_subobjects_id_fk",
           "tableFrom": "documents",
           "tableTo": "subobjects",
-          "columnsFrom": [
-            "subobject_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["subobject_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -581,12 +547,8 @@
           "name": "import_drafts_subobject_id_subobjects_id_fk",
           "tableFrom": "import_drafts",
           "tableTo": "subobjects",
-          "columnsFrom": [
-            "subobject_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["subobject_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -702,12 +664,8 @@
           "name": "material_lots_project_material_line_id_project_material_lines_id_fk",
           "tableFrom": "material_lots",
           "tableTo": "project_material_lines",
-          "columnsFrom": [
-            "project_material_line_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_material_line_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -715,12 +673,8 @@
           "name": "material_lots_receipt_document_id_documents_id_fk",
           "tableFrom": "material_lots",
           "tableTo": "documents",
-          "columnsFrom": [
-            "receipt_document_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["receipt_document_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -728,12 +682,8 @@
           "name": "material_lots_material_id_materials_id_fk",
           "tableFrom": "material_lots",
           "tableTo": "materials",
-          "columnsFrom": [
-            "material_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["material_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -741,12 +691,8 @@
           "name": "material_lots_unit_id_units_id_fk",
           "tableFrom": "material_lots",
           "tableTo": "units",
-          "columnsFrom": [
-            "unit_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["unit_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -754,12 +700,8 @@
           "name": "material_lots_storage_location_id_storage_locations_id_fk",
           "tableFrom": "material_lots",
           "tableTo": "storage_locations",
-          "columnsFrom": [
-            "storage_location_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["storage_location_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -857,12 +799,8 @@
           "name": "materials_default_unit_id_units_id_fk",
           "tableFrom": "materials",
           "tableTo": "units",
-          "columnsFrom": [
-            "default_unit_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["default_unit_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -929,12 +867,8 @@
           "name": "objects_customer_id_customers_id_fk",
           "tableFrom": "objects",
           "tableTo": "customers",
-          "columnsFrom": [
-            "customer_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["customer_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -1059,12 +993,8 @@
           "name": "project_material_lines_subobject_id_subobjects_id_fk",
           "tableFrom": "project_material_lines",
           "tableTo": "subobjects",
-          "columnsFrom": [
-            "subobject_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["subobject_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1072,12 +1002,8 @@
           "name": "project_material_lines_category_id_categories_id_fk",
           "tableFrom": "project_material_lines",
           "tableTo": "categories",
-          "columnsFrom": [
-            "category_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["category_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -1085,12 +1011,8 @@
           "name": "project_material_lines_material_id_materials_id_fk",
           "tableFrom": "project_material_lines",
           "tableTo": "materials",
-          "columnsFrom": [
-            "material_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["material_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -1098,12 +1020,8 @@
           "name": "project_material_lines_unit_id_units_id_fk",
           "tableFrom": "project_material_lines",
           "tableTo": "units",
-          "columnsFrom": [
-            "unit_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["unit_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -1228,12 +1146,8 @@
           "name": "stock_ledger_document_id_documents_id_fk",
           "tableFrom": "stock_ledger",
           "tableTo": "documents",
-          "columnsFrom": [
-            "document_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["document_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -1241,12 +1155,8 @@
           "name": "stock_ledger_document_line_id_document_lines_id_fk",
           "tableFrom": "stock_ledger",
           "tableTo": "document_lines",
-          "columnsFrom": [
-            "document_line_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["document_line_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -1254,12 +1164,8 @@
           "name": "stock_ledger_lot_id_material_lots_id_fk",
           "tableFrom": "stock_ledger",
           "tableTo": "material_lots",
-          "columnsFrom": [
-            "lot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["lot_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -1267,12 +1173,8 @@
           "name": "stock_ledger_project_material_line_id_project_material_lines_id_fk",
           "tableFrom": "stock_ledger",
           "tableTo": "project_material_lines",
-          "columnsFrom": [
-            "project_material_line_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_material_line_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -1407,12 +1309,8 @@
           "name": "subobjects_object_id_objects_id_fk",
           "tableFrom": "subobjects",
           "tableTo": "objects",
-          "columnsFrom": [
-            "object_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["object_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1468,9 +1366,7 @@
         "units_code_unique": {
           "name": "units_code_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "code"
-          ]
+          "columns": ["code"]
         }
       },
       "policies": {},
@@ -1482,11 +1378,7 @@
     "public.document_status": {
       "name": "document_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "posted",
-        "cancelled"
-      ]
+      "values": ["draft", "posted", "cancelled"]
     },
     "public.document_type": {
       "name": "document_type",
@@ -1504,20 +1396,12 @@
     "public.ledger_direction": {
       "name": "ledger_direction",
       "schema": "public",
-      "values": [
-        "in",
-        "out"
-      ]
+      "values": ["in", "out"]
     },
     "public.qc_status": {
       "name": "qc_status",
       "schema": "public",
-      "values": [
-        "pending",
-        "accepted",
-        "rejected",
-        "accepted_with_notes"
-      ]
+      "values": ["pending", "accepted", "rejected", "accepted_with_notes"]
     }
   },
   "schemas": {},

@@ -15,7 +15,11 @@ describe('materials domain', () => {
       'ПР-2026-00007',
     )
     expect(
-      generateDocumentNumber('inventory_adjustment', new Date('2026-01-01'), 12),
+      generateDocumentNumber(
+        'inventory_adjustment',
+        new Date('2026-01-01'),
+        12,
+      ),
     ).toBe('ИНВ-2026-00012')
   })
 
@@ -58,7 +62,9 @@ describe('materials domain', () => {
     expect(validation.summary.validRows).toBe(3)
     expect(validation.summary.errorRows).toBe(1)
     expect(validation.summary.duplicateRows).toBe(1)
-    expect(validation.rows[0]?.fingerprint).not.toBe(validation.rows[1]?.fingerprint)
+    expect(validation.rows[0]?.fingerprint).not.toBe(
+      validation.rows[1]?.fingerprint,
+    )
   })
 
   it('calculates lot balances from immutable ledger movements', () => {

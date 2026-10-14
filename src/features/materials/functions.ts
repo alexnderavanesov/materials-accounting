@@ -1,4 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
+import { setResponseHeader } from '@tanstack/react-start/server'
+import { projectWorkspaceStore } from './workspace-snapshot.server'
+import { saveWorkspaceInputSchema } from './workspace-snapshot'
 import { z } from 'zod'
 
 import {
@@ -72,6 +75,7 @@ export const getSubobjectMaterialPlan = createServerFn({ method: 'GET' })
   .handler(async ({ data }) => {
     const subobjectId = data?.subobjectId ?? 'subobject-1'
     const object = demoObjects[0]
+    if (!object) throw new Error('Проект не настроен')
     const subobject =
       object.subobjects.find((item) => item.id === subobjectId) ??
       object.subobjects[0]
@@ -117,9 +121,7 @@ export const createImportDraft = createServerFn({ method: 'POST' })
 
 export const validateImportDraftServer = createServerFn({ method: 'POST' })
   .validator(z.object({ rows: z.array(importRowSchema) }))
-  .handler(async ({ data }) =>
-    validateImportDraft(data.rows),
-  )
+  .handler(async ({ data }) => validateImportDraft(data.rows))
 
 export const applyImportDraft = createServerFn({ method: 'POST' })
   .validator(z.object({ importDraftId: z.string() }))
@@ -150,6 +152,19 @@ export const downloadDocumentPdf = createServerFn({ method: 'GET' })
     url: `/api/documents/${data.documentId}/pdf`,
   }))
 
+export const loadProjectWorkspaceSnapshot = createServerFn({
+  method: 'GET',
+}).handler(() => {
+  setResponseHeader('Cache-Control', 'no-store')
+  return projectWorkspaceStore.load()
+})
+
+export const saveProjectWorkspaceSnapshot = createServerFn({ method: 'POST' })
+  .validator(saveWorkspaceInputSchema)
+  .handler(({ data }) =>
+    projectWorkspaceStore.save(data.workspace, data.expectedRevision),
+  )
+
 function createDocumentFunction(type: DocumentType) {
   return createServerFn({ method: 'POST' })
     .validator(createDocumentSchema.omit({ type: true }))
@@ -157,7 +172,11 @@ function createDocumentFunction(type: DocumentType) {
       id: crypto.randomUUID(),
       type,
       status: 'draft',
-      number: generateDocumentNumber(type, new Date(data.documentDate ?? Date.now()), 1),
+      number: generateDocumentNumber(
+        type,
+        new Date(data.documentDate ?? Date.now()),
+        1,
+      ),
       ...data,
     }))
 }
@@ -183,9 +202,7 @@ function postDocumentFunction(type: DocumentType) {
       }
 
       const warnings =
-        type === 'issue' && data.qcStatus
-          ? getIssueWarnings(data.qcStatus)
-          : []
+        type === 'issue' && data.qcStatus ? getIssueWarnings(data.qcStatus) : []
 
       return {
         documentId: data.documentId,

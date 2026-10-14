@@ -4,7 +4,8 @@ import postgres from 'postgres'
 import * as schema from './schema'
 
 const connectionString =
-  process.env.DATABASE_URL ?? 'postgres://materials:materials@localhost:55432/materials'
+  process.env.DATABASE_URL ??
+  'postgres://materials:materials@localhost:55432/materials'
 
 const client = postgres(connectionString, {
   max: 10,

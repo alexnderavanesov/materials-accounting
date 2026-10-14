@@ -1,241 +1,59 @@
 # Материалы
 
-Приложение для учета материалов по маршруту:
+Локальное приложение для учёта материалов заказчика: проектная база → заявка → фактическое получение → входной контроль → выдача в работу. Возвраты, списания и инвентаризация входят в общий план; наличие серверных заготовок не означает, что эти процессы полностью реализованы.
 
-1. проектная база материалов по структуре `проект → шифр → материал`;
-2. заявка на получение со склада заказчика;
-3. фактическое получение;
-4. входной контроль;
-5. выдача в работу, возвраты, списания и инвентаризация.
+## Начало работы разработчика
 
-# Getting Started
-
-Create `.env` from `.env.example`, start PostgreSQL 18, generate/migrate schema,
-and run the app:
+Проверенное окружение: Node.js 24 и pnpm. Репозиторий: [materials-accounting](https://github.com/alexnderavanesov/materials-accounting).
 
 ```bash
-cp .env.example .env
-docker compose up -d
-pnpm install
-pnpm db:generate
-pnpm db:migrate
+git clone https://github.com/alexnderavanesov/materials-accounting.git
+cd materials-accounting
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-# Building For Production
+Постоянный адрес: **http://127.0.0.1:43187/**. `pnpm dev:open` также открывает браузер. `dev`, `dev:open`, `preview` и `start` используют `strictPort`: при занятом 43187 запуск завершается ошибкой. Не использовать для materials порты 3000 и 3001 и не останавливать чужие процессы.
 
-To build this application for production:
+Рабочая папка владельца — `/Users/alexandravanesov/Documents/Codex/materials`. На другом компьютере используйте свою папку клона; абсолютные пути в документах передачи описывают окружение владельца. Старый путь владельца `/Users/alexandravanesov/Documents/materials` не восстанавливать.
+
+Прочитайте [AGENTS.md](AGENTS.md), [основные моменты](docs/project-context.md) и [пользовательские команды](docs/codex-commands.md). Для изменений используйте отдельную ветку и Pull Request; не включайте рабочие данные и секреты в Git.
+
+## Хранение данных
+
+Текущий рабочий интерфейс сохраняет данные в `.materials-workspace/workspace.json`; браузерная копия — резерв для восстановления. Папка данных исключена из Git. У нового разработчика будет пустая база: рабочие записи владельца не передаются с клоном.
+
+- Snapshot загружается до открытия интерфейса. Ошибка чтения/формата останавливает загрузку, не заменяя файл пустыми данными.
+- Изменения сохраняются атомарно и последовательно. Устаревшая вкладка не может молча перезаписать новую серверную версию.
+- При конфликте/ошибке интерфейс предлагает скачать текущую копию; при временной ошибке можно повторить сохранение. Отличающиеся браузерные копии сохраняются отдельно для восстановления.
+- Используйте одинаковый host `127.0.0.1`: `localhost` имеет другой браузерный origin.
+- Не очищайте localStorage/snapshot, не открывайте `?reset=1` и не подменяйте рабочие данные тестовыми. Поддержка reset-параметра удалена.
+- `MATERIALS_WORKSPACE_DIR` задаёт отдельную папку snapshot для изолированных тестов. Не указывайте рабочую папку при проверках, меняющих данные.
+
+Это приложение для локального запуска. Snapshot и очередь записи рассчитаны на один процесс сервера; это не многопользовательская БД и не готовая схема удалённого развёртывания. Авторизация для публичного хостинга — отдельная задача.
+
+## База данных
+
+В проекте есть PostgreSQL 18, Drizzle и Docker Compose:
+
+- `postgres`: `127.0.0.1:55432`, база `materials`;
+- `postgres-test`: `127.0.0.1:5433`, база `materials_test`.
+
+Обычный запуск текущего интерфейса не требует PostgreSQL, миграций или seed. Подготовка/изменение БД выполняется отдельной задачей с прямым разрешением владельца. `.env.example` содержит пример локальной конфигурации; реальные секреты не коммитить. Интеграционный тест запускается только с `DATABASE_URL_TEST`, указывающим на подготовленную изолированную тестовую БД. Без переменной он отмечается как skipped, а не passed.
+
+## Проверки и сборка
 
 ```bash
-pnpm build
-```
-
-## Database
-
-Local services:
-
-- `postgres`: `localhost:55432`, database `materials`
-- `postgres-test`: `localhost:5433`, database `materials_test`
-
-PostgreSQL 18 uses `/var/lib/postgresql` for the Docker volume mount in this
-compose file.
-
-## Testing
-
-This project uses [Vitest](https://vitest.dev/) for testing. You can run the tests with:
-
-```bash
+pnpm exec tsc --noEmit
 pnpm test
-```
-
-## Styling
-
-This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
-
-### Removing Tailwind CSS
-
-If you prefer not to use Tailwind CSS:
-
-1. Remove the demo pages in `src/routes/demo/`
-2. Replace the Tailwind import in `src/styles.css` with your own styles
-3. Remove `tailwindcss()` from the plugins array in `vite.config.ts`
-4. Uninstall the packages: `pnpm add @tailwindcss/vite tailwindcss --dev`
-
-## Linting & Formatting
-
-
-This project uses [eslint](https://eslint.org/) and [prettier](https://prettier.io/) for linting and formatting. Eslint is configured using [tanstack/eslint-config](https://tanstack.com/config/latest/docs/eslint). The following scripts are available:
-
-```bash
 pnpm lint
-pnpm format
 pnpm check
+pnpm build
+pnpm start
 ```
 
+`pnpm start` и `pnpm preview` показывают сборку из `.output/` через Vite/Nitro на том же порту 43187; сначала остановите свой dev-сервер. Запускайте команды из корня клона, чтобы использовать правильную папку данных. Сборка и preview сами по себе не означают deploy.
 
-## Deploy with Nitro
+Тесты сохранения работают с временными файлами и хранилищем в памяти; UI-регрессии используют jsdom и подменённые серверные функции. Рабочий snapshot в тесты не включается. `pnpm format` изменяет файлы; для проверки используйте `pnpm check`.
 
-This project uses Nitro as a generic server adapter, so it can run on any Node-compatible host.
-
-```bash
-npm run build
-node dist/server/index.mjs
-```
-
-The build output is a self-contained Node server. To deploy, push the `dist/` directory to your host (Render, Fly.io, your own VPS, etc.) and run the server command above.
-
-For host-specific presets (Vercel, Netlify, Cloudflare, AWS Lambda, etc.) and tuning, see https://v3.nitro.build/deploy.
-
-
-
-## Routing
-
-This project uses [TanStack Router](https://tanstack.com/router) with file-based routing. Routes are managed as files in `src/routes`.
-
-### Adding A Route
-
-To add a new route to your application just add a new file in the `./src/routes` directory.
-
-TanStack will automatically generate the content of the route file for you.
-
-Now that you have two routes you can use a `Link` component to navigate between them.
-
-### Adding Links
-
-To use SPA (Single Page Application) navigation you will need to import the `Link` component from `@tanstack/react-router`.
-
-```tsx
-import { Link } from "@tanstack/react-router";
-```
-
-Then anywhere in your JSX you can use it like so:
-
-```tsx
-<Link to="/about">About</Link>
-```
-
-This will create a link that will navigate to the `/about` route.
-
-More information on the `Link` component can be found in the [Link documentation](https://tanstack.com/router/v1/docs/framework/react/api/router/linkComponent).
-
-### Using A Layout
-
-In the File Based Routing setup the layout is located in `src/routes/__root.tsx`. Anything you add to the root route will appear in all the routes. The route content will appear in the JSX where you render `{children}` in the `shellComponent`.
-
-Here is an example layout that includes a header:
-
-```tsx
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
-
-export const Route = createRootRoute({
-  head: () => ({
-    meta: [
-      { charSet: 'utf-8' },
-      { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      { title: 'My App' },
-    ],
-  }),
-  shellComponent: ({ children }) => (
-    <html lang="en">
-      <head>
-        <HeadContent />
-      </head>
-      <body>
-        <header>
-          <nav>
-            <Link to="/">Home</Link>
-            <Link to="/about">About</Link>
-          </nav>
-        </header>
-        {children}
-        <Scripts />
-      </body>
-    </html>
-  ),
-})
-```
-
-More information on layouts can be found in the [Layouts documentation](https://tanstack.com/router/latest/docs/framework/react/guide/routing-concepts#layouts).
-
-## Server Functions
-
-TanStack Start provides server functions that allow you to write server-side code that seamlessly integrates with your client components.
-
-```tsx
-import { createServerFn } from '@tanstack/react-start'
-
-const getServerTime = createServerFn({
-  method: 'GET',
-}).handler(async () => {
-  return new Date().toISOString()
-})
-
-// Use in a component
-function MyComponent() {
-  const [time, setTime] = useState('')
-  
-  useEffect(() => {
-    getServerTime().then(setTime)
-  }, [])
-  
-  return <div>Server time: {time}</div>
-}
-```
-
-## API Routes
-
-You can create API routes by using the `server` property in your route definitions:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
-
-export const Route = createFileRoute('/api/hello')({
-  server: {
-    handlers: {
-      GET: () => json({ message: 'Hello, World!' }),
-    },
-  },
-})
-```
-
-## Data Fetching
-
-There are multiple ways to fetch data in your application. You can use TanStack Query to fetch data from a server. But you can also use the `loader` functionality built into TanStack Router to load the data for a route before it's rendered.
-
-For example:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-
-export const Route = createFileRoute('/people')({
-  loader: async () => {
-    const response = await fetch('https://swapi.dev/api/people')
-    return response.json()
-  },
-  component: PeopleComponent,
-})
-
-function PeopleComponent() {
-  const data = Route.useLoaderData()
-  return (
-    <ul>
-      {data.results.map((person) => (
-        <li key={person.name}>{person.name}</li>
-      ))}
-    </ul>
-  )
-}
-```
-
-Loaders simplify your data fetching logic dramatically. Check out more information in the [Loader documentation](https://tanstack.com/router/latest/docs/framework/react/guide/data-loading#loader-parameters).
-
-# Demo files
-
-Files prefixed with `demo` can be safely deleted. They are there to provide a starting point for you to play around with the features you've installed.
-
-# Learn More
-
-You can learn more about all of the offerings from TanStack in the [TanStack documentation](https://tanstack.com).
-
-For TanStack Start specific documentation, visit [TanStack Start](https://tanstack.com/start).
+Стек: TanStack Start/Query/Router, TypeScript, React, Tailwind, локальные UI-компоненты, PostgreSQL 18/Drizzle, Vitest. Перед соответствующими изменениями TanStack выполняйте guidance-команды из AGENTS.md.

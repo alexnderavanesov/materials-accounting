@@ -198,6 +198,7 @@ export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
   }
 
   const sheet = workbook.Sheets[sheetName]
+  if (!sheet) throw new Error('Лист Excel не найден')
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',
   })
@@ -452,6 +453,7 @@ export function parseMaterialRequestWorkbook(buffer: ArrayBuffer) {
   }
 
   const sheet = workbook.Sheets[sheetName]
+  if (!sheet) throw new Error('Лист Excel не найден')
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',
     range: 4,
@@ -720,6 +722,7 @@ export function parseMaterialReceiptWorkbook(buffer: ArrayBuffer) {
   }
 
   const sheet = workbook.Sheets[sheetName]
+  if (!sheet) throw new Error('Лист Excel не найден')
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',
     range: 4,

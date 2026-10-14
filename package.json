@@ -6,17 +6,19 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "vite dev --port 3000",
+    "dev": "vite dev --host 127.0.0.1 --port 43187 --strictPort",
+    "dev:open": "vite dev --host 127.0.0.1 --port 43187 --strictPort --open /",
     "generate-routes": "tsr generate",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "vite preview --host 127.0.0.1 --port 43187 --strictPort",
     "test": "vitest run",
     "lint": "eslint",
     "format": "prettier --write . && eslint --fix",
-    "check": "prettier --check ."
+    "check": "prettier --check .",
+    "start": "vite preview --host 127.0.0.1 --port 43187 --strictPort"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",

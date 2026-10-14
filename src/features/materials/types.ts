@@ -7,7 +7,11 @@ export type DocumentType =
   | 'write_off'
   | 'inventory_adjustment'
 
-export type QcStatus = 'pending' | 'accepted' | 'rejected' | 'accepted_with_notes'
+export type QcStatus =
+  | 'pending'
+  | 'accepted'
+  | 'rejected'
+  | 'accepted_with_notes'
 
 export type LedgerDirection = 'in' | 'out'
 

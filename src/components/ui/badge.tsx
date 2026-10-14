@@ -27,5 +27,7 @@ export function Badge({
   variant,
   ...props
 }: React.ComponentProps<'span'> & VariantProps<typeof badgeVariants>) {
-  return <span className={cn(badgeVariants({ variant }), className)} {...props} />
+  return (
+    <span className={cn(badgeVariants({ variant }), className)} {...props} />
+  )
 }

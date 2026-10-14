@@ -8,7 +8,10 @@ function workbookFromRows(rows: Array<Record<string, string | number>>) {
   const sheet = XLSX.utils.json_to_sheet(rows)
   XLSX.utils.book_append_sheet(workbook, sheet, 'Проектная база')
 
-  return XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+  return XLSX.write(workbook, {
+    bookType: 'xlsx',
+    type: 'array',
+  }) as ArrayBuffer
 }
 
 describe('materials Excel import', () => {

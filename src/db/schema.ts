@@ -236,7 +236,9 @@ export const documentLines = pgTable('document_lines', {
   ),
   qcStatus: qcStatusEnum('qc_status'),
   comment: text('comment'),
-  meta: jsonb('meta').$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  meta: jsonb('meta')
+    .$type<Record<string, unknown>>()
+    .default(sql`'{}'::jsonb`),
   ...timestamps,
 })
 
@@ -285,9 +287,12 @@ export const stockLedger = pgTable(
     documentId: uuid('document_id')
       .notNull()
       .references(() => documents.id, { onDelete: 'restrict' }),
-    documentLineId: uuid('document_line_id').references(() => documentLines.id, {
-      onDelete: 'set null',
-    }),
+    documentLineId: uuid('document_line_id').references(
+      () => documentLines.id,
+      {
+        onDelete: 'set null',
+      },
+    ),
     lotId: uuid('lot_id')
       .notNull()
       .references(() => materialLots.id, { onDelete: 'restrict' }),

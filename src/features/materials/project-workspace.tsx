@@ -40,7 +40,19 @@ import {
   TableRow,
 } from '#/components/ui/table'
 import { validateImportDraft } from './domain'
-import { getSubobjectMaterialPlan } from './functions'
+import { buildOperationActivityIndex } from './operation-activity'
+import {
+  readWorkspaceCache,
+  writeWorkspaceCache,
+  toWorkspaceSnapshot,
+} from './workspace-snapshot'
+import type { LoadedWorkspace } from './workspace-snapshot'
+import { createWorkspaceSaver } from './workspace-saver'
+import type { WorkspaceSaveStatus } from './workspace-saver'
+import {
+  getSubobjectMaterialPlan,
+  saveProjectWorkspaceSnapshot,
+} from './functions'
 import type {
   MaterialReceiptImportRowInput,
   MaterialRequestImportRowInput,
@@ -214,8 +226,6 @@ type StoredProjectWorkspace = {
   qualityControls?: Array<QualityControlEntry>
 }
 
-const projectWorkspaceStorageKey = 'materials.projectWorkspace.v1'
-
 const defaultMaterialTypeSettings: Array<MaterialTypeSetting> = [
   {
     id: 'equipment',
@@ -325,19 +335,6 @@ const defaultMaterialTypeSettings: Array<MaterialTypeSetting> = [
       'Материал, которого нет в проектной спецификации, но который нужно отдельно учесть в системе.',
   },
 ]
-
-const emptyStoredProjectWorkspace: StoredProjectWorkspace = {
-  configuredAlloys: [],
-  configuredCiphers: [],
-  configuredDocuments: [],
-  configuredUnits: [],
-  lines: [],
-  materialTypeSettings: undefined,
-  materialIssues: [],
-  materialReceipts: [],
-  materialRequests: [],
-  qualityControls: [],
-}
 
 const operationTabMeta: Record<
   OperationDocumentTab,
@@ -452,12 +449,20 @@ type MaterialImportDraft = {
   }
 }
 
-export function ProjectWorkspace({ initialData }: { initialData: PlanData }) {
+export function ProjectWorkspace({
+  initialData,
+  initialStoredData,
+}: {
+  initialData: PlanData
+  initialStoredData: LoadedWorkspace
+}) {
   const { data } = useQuery({
     queryKey: ['project-material-plan', 'default'],
     queryFn: () =>
       getSubobjectMaterialPlan({ data: { subobjectId: 'project-1' } }),
     initialData,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   })
   const initialLines = useMemo(
     () =>
@@ -465,8 +470,27 @@ export function ProjectWorkspace({ initialData }: { initialData: PlanData }) {
     [data.categories],
   )
   const lastHorizontalScrollRef = useRef(0)
-  const [storedWorkspace] = useState<StoredProjectWorkspace>(() =>
-    readStoredProjectWorkspace(),
+  const [loadedWorkspace] = useState(() => {
+    if (typeof window === 'undefined')
+      return {
+        workspace: initialStoredData.workspace,
+        recovery: null,
+        cacheEnabled: false,
+        pending: false,
+      }
+    try {
+      return readWorkspaceCache(initialStoredData, window.localStorage)
+    } catch {
+      return {
+        workspace: initialStoredData.workspace,
+        recovery: null,
+        cacheEnabled: false,
+        pending: false,
+      }
+    }
+  })
+  const [storedWorkspace] = useState(() =>
+    normalizeStoredProjectWorkspace(loadedWorkspace.workspace),
   )
   const [section, setSection] = useState<Section>('operations')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -558,20 +582,66 @@ export function ProjectWorkspace({ initialData }: { initialData: PlanData }) {
   )
   const [lastAction, setLastAction] = useState('')
 
+  const [workspaceClientId] = useState(() => crypto.randomUUID())
+  const [saveStatus, setSaveStatus] = useState<WorkspaceSaveStatus>('saved')
+  const [workspaceSaver] = useState(() =>
+    createWorkspaceSaver({
+      initial: toWorkspaceSnapshot({
+        configuredAlloys,
+        configuredCiphers,
+        configuredDocuments,
+        configuredUnits,
+        lines,
+        materialTypeSettings,
+        materialIssues,
+        materialReceipts,
+        materialRequests,
+        qualityControls,
+      }),
+      revision: initialStoredData.revision,
+      pending: loadedWorkspace.pending,
+      save: (workspace, expectedRevision) =>
+        saveProjectWorkspaceSnapshot({ data: { workspace, expectedRevision } }),
+      cache: (workspace, revision, pending) => {
+        if (loadedWorkspace.cacheEnabled)
+          writeWorkspaceCache(
+            window.localStorage,
+            workspace,
+            revision,
+            pending,
+            workspaceClientId,
+          )
+      },
+      onStatus: setSaveStatus,
+    }),
+  )
+  function downloadWorkspaceCopy(raw: string) {
+    const url = URL.createObjectURL(
+      new Blob([raw], { type: 'application/json' }),
+    )
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'materials-recovery.json'
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
   useEffect(() => {
-    writeStoredProjectWorkspace({
-      configuredAlloys,
-      configuredCiphers,
-      configuredDocuments,
-      configuredUnits,
-      lines,
-      materialTypeSettings,
-      materialIssues,
-      materialReceipts,
-      materialRequests,
-      qualityControls,
-    })
+    workspaceSaver.update(
+      toWorkspaceSnapshot({
+        configuredAlloys,
+        configuredCiphers,
+        configuredDocuments,
+        configuredUnits,
+        lines,
+        materialTypeSettings,
+        materialIssues,
+        materialReceipts,
+        materialRequests,
+        qualityControls,
+      }),
+    )
   }, [
+    workspaceSaver,
     configuredAlloys,
     configuredCiphers,
     configuredDocuments,
@@ -1024,9 +1094,11 @@ export function ProjectWorkspace({ initialData }: { initialData: PlanData }) {
       return
     }
 
-    const line = lines.find((item) => getProjectLineId(item) === lineId)
-    if (line) {
-      flashMaterialRow(getMaterialIdentityKey(line), [`cipher:${line.cipher}`])
+    const adjustedLine = lines.find((item) => getProjectLineId(item) === lineId)
+    if (adjustedLine) {
+      flashMaterialRow(getMaterialIdentityKey(adjustedLine), [
+        `cipher:${adjustedLine.cipher}`,
+      ])
     }
 
     setLines((current) =>
@@ -1211,6 +1283,58 @@ export function ProjectWorkspace({ initialData }: { initialData: PlanData }) {
 
   return (
     <main className="min-h-screen bg-stone-50 text-stone-900">
+      {loadedWorkspace.recovery ? (
+        <div
+          role="status"
+          className="border-b border-amber-300 bg-amber-50 p-3 text-sm"
+        >
+          Найдена отличающаяся или повреждённая копия браузера. Скачайте её для
+          восстановления.
+          <Button
+            variant="outline"
+            className="ml-3"
+            onClick={() => downloadWorkspaceCopy(loadedWorkspace.recovery!)}
+          >
+            Скачать копию браузера
+          </Button>
+        </div>
+      ) : null}
+      {saveStatus !== 'saved' ? (
+        <div
+          role="status"
+          className="border-b border-amber-300 bg-amber-50 p-3 text-sm"
+        >
+          {saveStatus === 'saving'
+            ? 'Сохранение…'
+            : saveStatus === 'conflict'
+              ? 'Данные изменены в другой вкладке. Эта версия не перезаписана на сервере. Скачайте свою копию и обновите страницу.'
+              : 'Не удалось сохранить на сервере. Не закрывайте страницу; повторите сохранение или скачайте свою копию.'}
+          {saveStatus !== 'saving' ? (
+            <>
+              <Button
+                variant="outline"
+                className="ml-3"
+                onClick={() =>
+                  downloadWorkspaceCopy(
+                    JSON.stringify(workspaceSaver.getLatest(), null, 2),
+                  )
+                }
+              >
+                Скачать текущую копию
+              </Button>
+              {saveStatus === 'error' ? (
+                <Button
+                  variant="outline"
+                  className="ml-3"
+                  onClick={() => void workspaceSaver.retry()}
+                >
+                  Повторить сохранение
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div className="flex min-h-screen">
         <aside
           className={`sticky left-0 top-0 z-40 h-screen shrink-0 overflow-hidden border-r border-stone-200 bg-stone-100/90 py-6 transition-[width,padding] duration-300 ease-out ${
@@ -3894,6 +4018,9 @@ function RequestModal({
   const [cipher, setCipher] = useState('')
   const [materialType, setMaterialType] = useState('')
   const [requestSearch, setRequestSearch] = useState('')
+  const [requestListMode, setRequestListMode] = useState<'all' | 'filled'>(
+    'all',
+  )
   const [drafts, setDrafts] = useState<Record<string, RequestDraft>>({})
   const [requestImportOpen, setRequestImportOpen] = useState(false)
   const [requestImportDraft, setRequestImportDraft] =
@@ -3995,9 +4122,23 @@ function RequestModal({
     requestSearch,
     summaryByLine,
   ])
-  const visibleRequestLines = filteredRequestLines.slice(0, 160)
+  const filteredFilledRowsCount = filteredRequestLines.filter(
+    (line) =>
+      parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0,
+  ).length
+  const requestListModeLines = useMemo(() => {
+    if (requestListMode !== 'filled') {
+      return filteredRequestLines
+    }
+
+    return filteredRequestLines.filter(
+      (line) =>
+        parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0,
+    )
+  }, [drafts, filteredRequestLines, requestListMode])
+  const visibleRequestLines = requestListModeLines.slice(0, 160)
   const hiddenFilteredCount =
-    filteredRequestLines.length - visibleRequestLines.length
+    requestListModeLines.length - visibleRequestLines.length
   const requestScopeSelected = Boolean(cipher && materialType)
   const hasRows = requestScopeLines.some(
     (line) =>
@@ -4323,7 +4464,7 @@ function RequestModal({
       )
     })
 
-    return matches.length === 1 ? matches[0] : null
+    return matches.length === 1 ? (matches[0] ?? null) : null
   }
 
   function applyRequestImportDraft() {
@@ -4391,8 +4532,8 @@ function RequestModal({
           makeMaterialRequestNumber(existingRequests, date, materialType),
         projectLineId: lineId,
         projectMaterialName:
-          line.projectMaterialName ?? line.material ?? 'Материал',
-        projectUnit: line.unit ?? '',
+          line.projectMaterialName || line.material || 'Материал',
+        projectUnit: line.unit,
         quantity,
         requester: requester.trim(),
         sourceCipher: draft?.sourceCipher || undefined,
@@ -4611,6 +4752,20 @@ function RequestModal({
                   placeholder="Поиск по ID, наименованию, нормативному документу, составу или массе"
                   value={requestSearch}
                   onChange={(event) => setRequestSearch(event.target.value)}
+                />
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <ReceiptListModeButton
+                  active={requestListMode === 'all'}
+                  count={filteredRequestLines.length}
+                  label="Все"
+                  onClick={() => setRequestListMode('all')}
+                />
+                <ReceiptListModeButton
+                  active={requestListMode === 'filled'}
+                  count={filteredFilledRowsCount}
+                  label="Заполненные"
+                  onClick={() => setRequestListMode('filled')}
                 />
               </div>
             </div>
@@ -4836,7 +4991,9 @@ function RequestModal({
                 <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
                   {!cipher && !materialType && requestSearch.trim().length === 0
                     ? 'Выберите шифр и тип слева или начните поиск по всей базе.'
-                    : 'По выбранному шифру и типу материала позиций не найдено.'}
+                    : requestListMode === 'filled'
+                      ? 'Заполненных позиций пока нет.'
+                      : 'По выбранному шифру и типу материала позиций не найдено.'}
                 </div>
               )}
             </div>
@@ -5169,8 +5326,8 @@ function OverRequestDialog({
         <div className="grid gap-4 px-5 py-5">
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
             <div className="text-sm font-medium text-amber-950">
-              {overRequest.line.projectMaterialName ??
-                overRequest.line.material ??
+              {overRequest.line.projectMaterialName ||
+                overRequest.line.material ||
                 'Материал'}
             </div>
             <div className="mt-2 grid gap-2 text-sm text-amber-900 sm:grid-cols-3">
@@ -5387,13 +5544,13 @@ function ReceiptModal({
               altUnit: entry.altUnit,
               certificate: entry.certificate,
               customerArvk: entry.customerArvk,
-              customerReceiptDocument: entry.customerReceiptDocument ?? '',
+              customerReceiptDocument: entry.customerReceiptDocument || '',
               date: entry.date,
               factoryNumber: entry.factoryNumber,
-              heatBatch: entry.heatBatch ?? '',
+              heatBatch: entry.heatBatch || '',
               invoiceNumber: entry.invoiceNumber,
-              manufacturer: entry.manufacturer ?? '',
-              note: entry.note ?? '',
+              manufacturer: entry.manufacturer || '',
+              note: entry.note || '',
               qualityDocument: entry.qualityDocument,
               quantity: String(entry.quantity),
               technicalDecision: entry.technicalDecision,
@@ -5624,9 +5781,9 @@ function ReceiptModal({
       ...current,
       [draftKey]: {
         actualName:
-          current[draftKey]?.actualName ?? request.projectMaterialName ?? '',
+          current[draftKey]?.actualName ?? request.projectMaterialName,
         altQuantity: current[draftKey]?.altQuantity ?? '',
-        altUnit: current[draftKey]?.altUnit ?? request.altUnit ?? '',
+        altUnit: current[draftKey]?.altUnit ?? request.altUnit,
         certificate: current[draftKey]?.certificate ?? '',
         customerArvk: current[draftKey]?.customerArvk ?? '',
         customerReceiptDocument:
@@ -6159,15 +6316,11 @@ function ReceiptModal({
                               </span>
                               <RequestMetaPill
                                 label="ID"
-                                value={
-                                  line?.materialId ?? request.materialId ?? '-'
-                                }
+                                value={line?.materialId ?? request.materialId}
                               />
                               <RequestMetaPill
                                 label="Нормативный документ"
-                                value={
-                                  line?.normativeDocument ?? request.note ?? '-'
-                                }
+                                value={line?.normativeDocument ?? request.note}
                               />
                               {line?.material ? (
                                 <RequestMetaPill
@@ -7063,7 +7216,7 @@ function QualityControlModal({
           projectLineId: receipt.projectLineId,
           quantity,
           receiptId: receipt.id,
-          status: (draft?.status ?? 'in_progress') as QualityControlStatus,
+          status: draft?.status ?? 'in_progress',
           zniNumber:
             draft?.zniNumber.trim() ||
             makeOperationNumber('ЗНИ', existingCount),
@@ -7856,53 +8009,6 @@ function buildOperationOverviewRows({
       'ru',
     )
   })
-}
-
-function buildOperationActivityIndex({
-  materialReceipts,
-  materialRequests,
-  qualityControls,
-}: {
-  materialReceipts: Array<MaterialReceiptEntry>
-  materialRequests: Array<MaterialRequestEntry>
-  qualityControls: Array<QualityControlEntry>
-}) {
-  const latestByLineId = new Map<string, number>()
-
-  function register(lineId: string, date: string, order: number) {
-    const time = getOperationActivityTime(date, order)
-    latestByLineId.set(lineId, Math.max(latestByLineId.get(lineId) ?? 0, time))
-  }
-
-  materialRequests.forEach((entry, index) => {
-    register(entry.projectLineId, entry.date, index + 1)
-  })
-  materialReceipts.forEach((entry, index) => {
-    register(
-      entry.projectLineId,
-      entry.date,
-      materialRequests.length + index + 1,
-    )
-  })
-  qualityControls.forEach((entry, index) => {
-    register(
-      entry.projectLineId,
-      entry.date,
-      materialRequests.length + materialReceipts.length + index + 1,
-    )
-  })
-
-  return latestByLineId
-}
-
-function getOperationActivityTime(date: string, order: number) {
-  const timestamp = Date.parse(`${date}T00:00:00`)
-
-  if (Number.isNaN(timestamp)) {
-    return order
-  }
-
-  return timestamp + order / 1000
 }
 
 function buildDeletedOperationLineDescriptors({
@@ -8760,8 +8866,8 @@ function requestLineMatchesSearch(
       line.materialId ?? '',
       line.projectMaterialName ?? '',
       line.normativeDocument ?? '',
-      line.material ?? '',
-      line.unit ?? '',
+      line.material,
+      line.unit,
       line.unitWeight === null || line.unitWeight === undefined
         ? ''
         : formatQuantity(line.unitWeight),
@@ -9240,7 +9346,7 @@ function ProjectMaterialMatrix({
               </TableCell>
               {ciphers.map((cipher) => {
                 const lineId = row.cipherLineIds[cipher]
-                const value = row.cipherQuantities[cipher]
+                const value = row.cipherQuantities[cipher] ?? 0
                 const draftKey = `${row.key}|${cipher}`
                 const draftValue = quantityDrafts[draftKey]
 
@@ -10141,6 +10247,7 @@ function SettingsModal({
   ]
   const activeSection =
     sections.find((section) => section.key === activeTab) ?? sections[0]
+  if (!activeSection) return null
 
   return (
     <Modal open={open} title="Настройки базы" size="lg" onClose={onClose}>
@@ -10184,7 +10291,7 @@ function SettingsModal({
               emptyText={activeSection.emptyText}
               label={activeSection.label}
               placeholder={activeSection.placeholder}
-              value={draft[activeSection.key as keyof ReferenceSettingsDraft]}
+              value={draft[activeSection.key]}
               onChange={(value) =>
                 onChangeDraft(
                   activeSection.key as keyof ReferenceSettingsDraft,
@@ -10273,7 +10380,7 @@ function MaterialTypeSettingsSection({
               {materialTypes.length} системных типов
             </div>
           </div>
-          {selectedTypeChanged && selectedType ? (
+          {selectedTypeChanged ? (
             <Button
               className="shrink-0"
               variant="outline"
@@ -10885,75 +10992,45 @@ function getHorizontalScrollLeft(target: EventTarget | null) {
   return 0
 }
 
-function readStoredProjectWorkspace(): StoredProjectWorkspace {
-  if (typeof window === 'undefined') {
+function normalizeStoredProjectWorkspace(
+  value: unknown,
+): StoredProjectWorkspace {
+  if (!value || typeof value !== 'object') {
     return {}
   }
 
-  try {
-    const shouldReset =
-      new URLSearchParams(window.location.search).get('reset') === '1'
+  const parsed = value as StoredProjectWorkspace
 
-    if (shouldReset) {
-      window.localStorage.setItem(
-        projectWorkspaceStorageKey,
-        JSON.stringify(emptyStoredProjectWorkspace),
-      )
-      window.sessionStorage.removeItem('tsr-scroll-restoration-v1_3')
-      window.history.replaceState({}, '', window.location.pathname)
-
-      return emptyStoredProjectWorkspace
-    }
-
-    const raw = window.localStorage.getItem(projectWorkspaceStorageKey)
-
-    if (!raw) {
-      return {}
-    }
-
-    const parsed = JSON.parse(raw) as StoredProjectWorkspace
-
-    return {
-      configuredAlloys: Array.isArray(parsed.configuredAlloys)
-        ? parsed.configuredAlloys
-        : undefined,
-      configuredCiphers: Array.isArray(parsed.configuredCiphers)
-        ? parsed.configuredCiphers
-        : undefined,
-      configuredDocuments: Array.isArray(parsed.configuredDocuments)
-        ? parsed.configuredDocuments
-        : undefined,
-      configuredUnits: Array.isArray(parsed.configuredUnits)
-        ? parsed.configuredUnits
-        : undefined,
-      lines: Array.isArray(parsed.lines) ? parsed.lines : undefined,
-      materialTypeSettings: Array.isArray(parsed.materialTypeSettings)
-        ? normalizeMaterialTypeSettings(parsed.materialTypeSettings)
-        : undefined,
-      materialIssues: Array.isArray(parsed.materialIssues)
-        ? parsed.materialIssues
-        : undefined,
-      materialReceipts: Array.isArray(parsed.materialReceipts)
-        ? parsed.materialReceipts
-        : undefined,
-      materialRequests: Array.isArray(parsed.materialRequests)
-        ? parsed.materialRequests
-        : undefined,
-      qualityControls: Array.isArray(parsed.qualityControls)
-        ? parsed.qualityControls
-        : undefined,
-    }
-  } catch {
-    return {}
+  return {
+    configuredAlloys: Array.isArray(parsed.configuredAlloys)
+      ? parsed.configuredAlloys
+      : undefined,
+    configuredCiphers: Array.isArray(parsed.configuredCiphers)
+      ? parsed.configuredCiphers
+      : undefined,
+    configuredDocuments: Array.isArray(parsed.configuredDocuments)
+      ? parsed.configuredDocuments
+      : undefined,
+    configuredUnits: Array.isArray(parsed.configuredUnits)
+      ? parsed.configuredUnits
+      : undefined,
+    lines: Array.isArray(parsed.lines) ? parsed.lines : undefined,
+    materialTypeSettings: Array.isArray(parsed.materialTypeSettings)
+      ? normalizeMaterialTypeSettings(parsed.materialTypeSettings)
+      : undefined,
+    materialIssues: Array.isArray(parsed.materialIssues)
+      ? parsed.materialIssues
+      : undefined,
+    materialReceipts: Array.isArray(parsed.materialReceipts)
+      ? parsed.materialReceipts
+      : undefined,
+    materialRequests: Array.isArray(parsed.materialRequests)
+      ? parsed.materialRequests
+      : undefined,
+    qualityControls: Array.isArray(parsed.qualityControls)
+      ? parsed.qualityControls
+      : undefined,
   }
-}
-
-function writeStoredProjectWorkspace(value: StoredProjectWorkspace) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  window.localStorage.setItem(projectWorkspaceStorageKey, JSON.stringify(value))
 }
 
 function normalizeMaterialTypeSettings(
@@ -11157,9 +11234,10 @@ function applyMaterialImportRows(
         line.cipher === row.cipher,
     )
 
-    if (existingIndex >= 0) {
+    const existingLine = next[existingIndex]
+    if (existingLine) {
       next[existingIndex] = withStableId({
-        ...next[existingIndex],
+        ...existingLine,
         category: importedLine.category,
         materialId: importedLine.materialId,
         projectMaterialName: importedLine.projectMaterialName,
@@ -11192,7 +11270,7 @@ function buildIdentityLineFromImport(
     id: 'identity-preview',
     project: row.project || 'Проектная база',
     cipher: row.cipher,
-    category: row.materialType ?? row.category ?? 'Материалы',
+    category: row.materialType || row.category || 'Материалы',
     materialId: row.materialId,
     projectMaterialName: row.projectMaterialName,
     changeNumber: row.changeNumber,
@@ -11411,7 +11489,7 @@ function matchesMatrixColumnFilters(
 
     if (key.startsWith('cipher:')) {
       const cipher = key.slice('cipher:'.length)
-      const value = row.cipherQuantities[cipher]
+      const value = row.cipherQuantities[cipher] ?? 0
 
       return normalizeFilterValue(value ? formatQuantity(value) : '').includes(
         filter,
