@@ -29,6 +29,7 @@ export type ImportRowInput = {
   unit?: string
   unitWeight?: string | number
   alternativeUnit?: string
+  alternativeUnitFactor?: string | number
   quantity?: string | number
   notes?: string
 }
@@ -48,6 +49,7 @@ export type NormalizedImportRow = {
   unit: string
   unitWeight: number | null
   alternativeUnit: string | null
+  alternativeUnitFactor: number | null
   quantity: number
   notes: string | null
   fingerprint: string
@@ -94,6 +96,7 @@ export type SubobjectMaterialMetric = {
   unit: string
   unitWeight?: number | null
   alternativeUnit?: string | null
+  alternativeUnitFactor?: number | null
   plannedQuantity: number
   requested: number
   received: number

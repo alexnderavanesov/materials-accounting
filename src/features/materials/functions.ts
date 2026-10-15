@@ -42,6 +42,7 @@ const importRowSchema = z.object({
   unit: z.string().optional(),
   unitWeight: z.union([z.string(), z.number()]).optional(),
   alternativeUnit: z.string().optional(),
+  alternativeUnitFactor: z.union([z.string(), z.number()]).optional(),
   quantity: z.union([z.string(), z.number()]).optional(),
   notes: z.string().optional(),
 })

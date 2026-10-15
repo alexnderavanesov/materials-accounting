@@ -2,9 +2,13 @@ import * as React from 'react'
 
 import { cn } from '#/lib/utils'
 
-export function Table({ className, ...props }: React.ComponentProps<'table'>) {
+export function Table({
+  className,
+  scrollId,
+  ...props
+}: React.ComponentProps<'table'> & { scrollId?: string }) {
   return (
-    <div className="w-full overflow-auto">
+    <div className="w-full overflow-auto" data-workspace-scroll={scrollId}>
       <table
         className={cn('w-full caption-bottom text-sm', className)}
         {...props}

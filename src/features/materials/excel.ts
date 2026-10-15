@@ -9,6 +9,7 @@ type WorkbookMaterialType = {
 }
 export type MaterialRequestTemplateLine = {
   alternativeUnit?: string | null
+  alternativeUnitFactor?: number | null
   lineId: string
   material?: string | null
   materialId?: string | null
@@ -33,6 +34,7 @@ export type MaterialRequestImportRowInput = {
 }
 export type MaterialReceiptTemplateLine = {
   altUnit?: string | null
+  altUnitFactor?: number | null
   materialId?: string | null
   projectLineId: string
   projectMaterialName: string
@@ -82,6 +84,8 @@ const fixedExportHeaders = [
   'Ед. изм.',
   'Состав',
   'Масса единицы',
+  'Альтернативная единица',
+  'Альтернативных единиц на 1 основную',
 ]
 
 const headerMap: Partial<Record<string, keyof ImportRowInput>> = {
@@ -122,6 +126,10 @@ const headerMap: Partial<Record<string, keyof ImportRowInput>> = {
   альтернативная_ед_изм: 'alternativeUnit',
   альт_ед: 'alternativeUnit',
   альтернативная_единица: 'alternativeUnit',
+  альтернативная_единица_измерения: 'alternativeUnit',
+  альтернативных_единиц_на_1_основную: 'alternativeUnitFactor',
+  коэффициент_пересчета: 'alternativeUnitFactor',
+  коэффициент_пересчёта: 'alternativeUnitFactor',
   количество: 'quantity',
   колво: 'quantity',
   примечание: 'notes',
@@ -217,8 +225,8 @@ export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
 
       if (field === 'quantity') {
         parsed.quantity = value as string | number
-      } else if (field === 'unitWeight') {
-        parsed.unitWeight = value as string | number
+      } else if (field === 'unitWeight' || field === 'alternativeUnitFactor') {
+        parsed[field] = value as string | number
       } else if (field) {
         parsed[field] = String(value)
       } else if (String(value).trim() !== '') {
@@ -296,6 +304,7 @@ export async function createMaterialRequestTemplateWorkbook({
   materialType: string
 }) {
   const workbook = new ExcelJS.Workbook()
+  workbook.calcProperties.fullCalcOnLoad = true
   workbook.creator = 'Материалы'
   workbook.created = new Date()
   workbook.modified = new Date()
@@ -312,7 +321,7 @@ export async function createMaterialRequestTemplateWorkbook({
   worksheet.getCell('A3').value = 'Тип материала'
   worksheet.getCell('B3').value = materialType || 'Не выбран'
   worksheet.getCell('A4').value =
-    'Серые колонки заполняются из проектной базы и не редактируются. Заполните только количество, альтернативную единицу и примечание.'
+    'Заполните количество по заявке и примечание. Альтернативные значения рассчитываются по коэффициенту материала. Изменять единицу и коэффициент можно только в проектной базе.'
   worksheet.mergeCells('A4:L4')
 
   const columns = [
@@ -359,13 +368,13 @@ export async function createMaterialRequestTemplateWorkbook({
       header: 'Количество в альтернативной единице',
       key: 'altQuantity',
       width: 28,
-      locked: false,
+      locked: true,
     },
     {
       header: 'Альтернативная единица измерения',
       key: 'altUnit',
       width: 30,
-      locked: false,
+      locked: true,
     },
     { header: 'Примечание', key: 'note', width: 34, locked: false },
   ]
@@ -379,8 +388,16 @@ export async function createMaterialRequestTemplateWorkbook({
   worksheet.getRow(5).height = 28
 
   for (const line of lines) {
+    const rowNumber = worksheet.rowCount + 1
+    const factor = line.alternativeUnitFactor
     worksheet.addRow({
-      altQuantity: '',
+      altQuantity:
+        line.alternativeUnit?.trim() &&
+        factor != null &&
+        Number.isFinite(factor) &&
+        factor > 0
+          ? { formula: `IF(H${rowNumber}="","",H${rowNumber}*${factor})` }
+          : '',
       altUnit: line.alternativeUnit ?? '',
       material: line.material ?? '',
       materialId: line.materialId ?? '',
@@ -400,6 +417,7 @@ export async function createMaterialRequestTemplateWorkbook({
       const isHeader = rowNumber <= 5
       const column = columns[columnNumber - 1]
       const locked = isHeader || column?.locked
+      cell.protection = { locked: Boolean(locked) }
 
       cell.alignment = { vertical: 'middle', wrapText: true }
       cell.border = {
@@ -440,6 +458,10 @@ export async function createMaterialRequestTemplateWorkbook({
     type: 'pattern',
   }
 
+  await worksheet.protect('', {
+    selectLockedCells: true,
+    selectUnlockedCells: true,
+  })
   const buffer = await workbook.xlsx.writeBuffer()
   return buffer
 }
@@ -505,6 +527,7 @@ export async function createMaterialReceiptTemplateWorkbook({
   lines: Array<MaterialReceiptTemplateLine>
 }) {
   const workbook = new ExcelJS.Workbook()
+  workbook.calcProperties.fullCalcOnLoad = true
   workbook.creator = 'Материалы'
   workbook.created = new Date()
   workbook.modified = new Date()
@@ -519,7 +542,7 @@ export async function createMaterialReceiptTemplateWorkbook({
   worksheet.getCell('A2').value = 'Заявка'
   worksheet.getCell('B2').value = requestNumber
   worksheet.getCell('A4').value =
-    'Серые колонки заполняются из заявки и не редактируются. Заполните фактическое поступление, документы и сведения о замене.'
+    'Серые колонки заполняются из заявки и не редактируются. Заполните фактическое поступление, документы и сведения о замене. Альтернативные значения рассчитываются автоматически по коэффициенту материала.'
   worksheet.mergeCells('A4:W4')
 
   const columns = [
@@ -567,13 +590,13 @@ export async function createMaterialReceiptTemplateWorkbook({
       header: 'Поступило в альтернативной единице',
       key: 'altQuantity',
       width: 28,
-      locked: false,
+      locked: true,
     },
     {
       header: 'Альтернативная единица измерения',
       key: 'altUnit',
       width: 30,
-      locked: false,
+      locked: true,
     },
     { header: 'Дата поступления', key: 'date', width: 18, locked: false },
     {
@@ -637,9 +660,17 @@ export async function createMaterialReceiptTemplateWorkbook({
   worksheet.getRow(5).height = 28
 
   for (const line of lines) {
+    const rowNumber = worksheet.rowCount + 1
+    const factor = line.altUnitFactor
     worksheet.addRow({
       actualName: line.projectMaterialName,
-      altQuantity: '',
+      altQuantity:
+        line.altUnit?.trim() &&
+        factor != null &&
+        Number.isFinite(factor) &&
+        factor > 0
+          ? { formula: `IF(J${rowNumber}="","",J${rowNumber}*${factor})` }
+          : '',
       altUnit: line.altUnit ?? '',
       certificate: '',
       customerArvk: '',
@@ -669,6 +700,7 @@ export async function createMaterialReceiptTemplateWorkbook({
       const isHeader = rowNumber <= 5
       const column = columns[columnNumber - 1]
       const locked = isHeader || column?.locked
+      cell.protection = { locked: Boolean(locked) }
 
       cell.alignment = { vertical: 'middle', wrapText: true }
       cell.border = {
@@ -709,6 +741,10 @@ export async function createMaterialReceiptTemplateWorkbook({
     type: 'pattern',
   }
 
+  await worksheet.protect('', {
+    selectLockedCells: true,
+    selectUnlockedCells: true,
+  })
   const buffer = await workbook.xlsx.writeBuffer()
   return buffer
 }
@@ -795,6 +831,8 @@ function buildExportRows(
       line.unit,
       line.material,
       line.unitWeight ?? '',
+      line.alternativeUnit ?? '',
+      line.alternativeUnitFactor ?? '',
     ].join('|')
     const row =
       groups.get(key) ??
@@ -806,6 +844,8 @@ function buildExportRows(
         'Ед. изм.': line.unit,
         Состав: line.material,
         'Масса единицы': line.unitWeight ?? '',
+        'Альтернативная единица': line.alternativeUnit ?? '',
+        'Альтернативных единиц на 1 основную': line.alternativeUnitFactor ?? '',
       } satisfies Record<string, string | number>)
 
     row[line.cipher] = line.plannedQuantity

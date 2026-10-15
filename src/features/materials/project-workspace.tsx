@@ -39,8 +39,29 @@ import {
   TableHeader,
   TableRow,
 } from '#/components/ui/table'
-import { validateImportDraft } from './domain'
+import {
+  getAlternativeConversionError,
+  getMaterialRequestConversion,
+  getOperationAlternative,
+  getOperationConversion,
+  recalculateOperationAlternatives,
+  recalculateRequestAlternatives,
+  validateImportDraft,
+} from './domain'
 import { buildOperationActivityIndex } from './operation-activity'
+import {
+  isViewBoolean,
+  isViewExpanded,
+  isViewFilters,
+  isViewString,
+  useWorkspaceViewScroll,
+  useWorkspaceViewState,
+} from './workspace-view'
+import {
+  projectMatrixColumns,
+  ProjectMatrixColumnSettings,
+  useProjectMatrixColumns,
+} from './project-matrix-columns'
 import {
   readWorkspaceCache,
   writeWorkspaceCache,
@@ -90,9 +111,15 @@ type MaterialTypeSetting = {
   id: string
   name: string
 }
+type RequestProjectQuantities = {
+  projectQuantity: number
+  cipherQuantity: number
+  unit: string
+}
 type MaterialRequestEntry = {
   altQuantity: number | null
   altUnit: string
+  altUnitFactor?: number | null
   cipher: string
   date: string
   id: string
@@ -102,6 +129,7 @@ type MaterialRequestEntry = {
   projectLineId: string
   projectMaterialName: string
   projectUnit: string
+  projectQuantitiesAtCreation?: RequestProjectQuantities
   quantity: number
   requester: string
   sourceCipher?: string
@@ -140,6 +168,7 @@ type MaterialReceiptEntry = {
   actualName: string
   altQuantity: number | null
   altUnit: string
+  altUnitFactor?: number | null
   certificate: string
   customerArvk: string
   customerReceiptDocument: string
@@ -159,7 +188,6 @@ type MaterialReceiptEntry = {
 }
 type ReceiptDocumentGroup = {
   actualName: string
-  altQuantity: number
   date: string
   entries: Array<MaterialReceiptEntry>
   invoiceNumbers: Array<string>
@@ -204,6 +232,9 @@ type QualityControlEntry = {
 }
 type MaterialIssueEntry = {
   altQuantity: number | null
+  altUnit?: string
+  altUnitFactor?: number | null
+  projectUnit?: string
   date: string
   document: string
   id: string
@@ -397,6 +428,7 @@ const emptyNewLine = {
   plannedQuantity: '',
   unit: 'шт',
   alternativeUnit: '',
+  alternativeUnitFactor: '',
 }
 
 type MaterialMatrixRow = {
@@ -412,6 +444,7 @@ type MaterialMatrixRow = {
   unit: string
   unitWeight: number | null
   alternativeUnit: string
+  alternativeUnitFactor: number | null
   totalQuantity: number
   cipherQuantities: Record<string, number>
   cipherLineIds: Record<string, string>
@@ -492,13 +525,29 @@ export function ProjectWorkspace({
   const [storedWorkspace] = useState(() =>
     normalizeStoredProjectWorkspace(loadedWorkspace.workspace),
   )
-  const [section, setSection] = useState<Section>('operations')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [section, setSection] = useWorkspaceViewState<Section>(
+    'section',
+    'operations',
+    (value): value is Section => value === 'operations' || value === 'database',
+  )
+  const [sidebarCollapsed, setSidebarCollapsed] = useWorkspaceViewState(
+    'sidebarCollapsed',
+    false,
+    isViewBoolean,
+  )
   const [lines, setLines] = useState<Array<SubobjectMaterialMetric>>(
     () => storedWorkspace.lines?.map(withStableId) ?? initialLines,
   )
-  const [selectedLineId, setSelectedLineId] = useState(lines[0]?.id ?? '')
-  const [cipherFilter, setCipherFilter] = useState('all')
+  const [selectedLineId, setSelectedLineId] = useWorkspaceViewState(
+    'selectedLine',
+    lines[0]?.id ?? '',
+    isViewString,
+  )
+  const [cipherFilter, setCipherFilter] = useWorkspaceViewState(
+    'database.cipher',
+    'all',
+    isViewString,
+  )
   const [selectedCombinationKey, setSelectedCombinationKey] = useState<
     string | null
   >(null)
@@ -565,18 +614,68 @@ export function ProjectWorkspace({
     documents: '',
     alloys: '',
   })
-  const [materialRequests, setMaterialRequests] = useState<
+  const [storedMaterialRequests, setMaterialRequests] = useState<
     Array<MaterialRequestEntry>
   >(() => storedWorkspace.materialRequests ?? [])
-  const [materialReceipts, setMaterialReceipts] = useState<
+  const materialRequests = useMemo(
+    () => recalculateRequestAlternatives(storedMaterialRequests, lines),
+    [storedMaterialRequests, lines],
+  )
+  useEffect(() => {
+    // Keep the last calculated values if the material/conversion is later removed.
+    if (materialRequests !== storedMaterialRequests)
+      setMaterialRequests(materialRequests)
+  }, [materialRequests, storedMaterialRequests])
+  const [storedMaterialReceipts, setMaterialReceipts] = useState<
     Array<MaterialReceiptEntry>
   >(() => storedWorkspace.materialReceipts ?? [])
+  const materialReceipts = useMemo(() => {
+    const lineById = new Map(
+      lines.map((line) => [getProjectLineId(line), line]),
+    )
+    const requestById = new Map(
+      materialRequests.map((entry) => [entry.id, entry]),
+    )
+    return recalculateOperationAlternatives(storedMaterialReceipts, (entry) =>
+      getOperationConversion(
+        lineById.get(entry.projectLineId),
+        entry.projectUnit,
+        entry,
+        requestById.get(entry.requestId),
+      ),
+    )
+  }, [storedMaterialReceipts, lines, materialRequests])
+  useEffect(() => {
+    if (materialReceipts !== storedMaterialReceipts)
+      setMaterialReceipts(materialReceipts)
+  }, [materialReceipts, storedMaterialReceipts])
   const [qualityControls, setQualityControls] = useState<
     Array<QualityControlEntry>
   >(() => storedWorkspace.qualityControls ?? [])
-  const [materialIssues, setMaterialIssues] = useState<
+  const [storedMaterialIssues, setMaterialIssues] = useState<
     Array<MaterialIssueEntry>
   >(() => storedWorkspace.materialIssues ?? [])
+  const materialIssues = useMemo(() => {
+    const lineById = new Map(
+      lines.map((line) => [getProjectLineId(line), line]),
+    )
+    const receiptById = new Map(
+      materialReceipts.map((entry) => [entry.id, entry]),
+    )
+    return recalculateOperationAlternatives(storedMaterialIssues, (entry) => {
+      const receipt = receiptById.get(entry.receiptId)
+      return getOperationConversion(
+        lineById.get(entry.projectLineId),
+        entry.projectUnit ?? receipt?.projectUnit,
+        entry,
+        receipt,
+      )
+    })
+  }, [storedMaterialIssues, lines, materialReceipts])
+  useEffect(() => {
+    if (materialIssues !== storedMaterialIssues)
+      setMaterialIssues(materialIssues)
+  }, [materialIssues, storedMaterialIssues])
   const [notice, setNotice] = useState(
     'Добавьте первую позицию материала или импортируйте Excel.',
   )
@@ -687,7 +786,7 @@ export function ProjectWorkspace({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') {
+      if (event.key !== 'Escape' || event.defaultPrevented) {
         return
       }
 
@@ -763,9 +862,6 @@ export function ProjectWorkspace({
     ...lines.map((line) => line.material),
   ])
   const materialTypesForSelect = materialTypeSettings.map((type) => type.name)
-  const projectNamesForSelect = unique(
-    lines.map((line) => line.projectMaterialName ?? line.material),
-  )
   const materialCombinations = useMemo(
     () => buildMaterialMatrix(lines),
     [lines],
@@ -856,11 +952,23 @@ export function ProjectWorkspace({
       plannedQuantity: String(line.plannedQuantity),
       unit: line.unit,
       alternativeUnit: line.alternativeUnit ?? '',
+      alternativeUnitFactor:
+        line.alternativeUnitFactor == null
+          ? ''
+          : String(line.alternativeUnitFactor),
     })
     setMaterialModalOpen(true)
   }
 
   function saveProjectLine() {
+    const conversionError = getAlternativeConversionError(
+      newLine.alternativeUnit,
+      newLine.alternativeUnitFactor,
+    )
+    if (conversionError) {
+      setNotice(conversionError)
+      return
+    }
     if (!newLine.projectMaterialName.trim() || !newLine.unit.trim()) {
       setNotice(
         'Заполните наименование по проекту и единицу измерения. Количество по шифрам можно внести прямо в таблице.',
@@ -874,12 +982,6 @@ export function ProjectWorkspace({
         options: materialTypesForSelect,
         required: true,
         value: newLine.materialType,
-      },
-      {
-        label: 'наименование по проекту',
-        options: projectNamesForSelect,
-        required: true,
-        value: newLine.projectMaterialName,
       },
       {
         label: 'нормативный документ',
@@ -896,6 +998,11 @@ export function ProjectWorkspace({
         options: unitsForSelect,
         required: true,
         value: newLine.unit,
+      },
+      {
+        label: 'альтернативную единицу измерения',
+        options: configuredUnits,
+        value: newLine.alternativeUnit,
       },
     ])
 
@@ -971,6 +1078,9 @@ export function ProjectWorkspace({
               unit: newLine.unit.trim(),
               unitWeight: optionalNumber(newLine.unitWeight),
               alternativeUnit: optionalText(newLine.alternativeUnit),
+              alternativeUnitFactor: optionalNumber(
+                newLine.alternativeUnitFactor,
+              ),
               requested: 0,
               received: 0,
               qcPending: 0,
@@ -993,7 +1103,10 @@ export function ProjectWorkspace({
         material: newLine.material.trim(),
         unit: newLine.unit.trim(),
         unitWeight: optionalNumber(newLine.unitWeight),
-        alternativeUnit: optionalText(newLine.alternativeUnit),
+        alternativeUnit: optionalText(
+          normalizeReferenceOption(configuredUnits, newLine.alternativeUnit),
+        ),
+        alternativeUnitFactor: optionalNumber(newLine.alternativeUnitFactor),
       })
     })
 
@@ -1073,6 +1186,7 @@ export function ProjectWorkspace({
         unit: row.unit,
         unitWeight: row.unitWeight,
         alternativeUnit: optionalText(row.alternativeUnit),
+        alternativeUnitFactor: row.alternativeUnitFactor,
         requested: 0,
         received: 0,
         qcPending: 0,
@@ -1504,6 +1618,7 @@ export function ProjectWorkspace({
             />
           ) : (
             <OperationsSection
+              configuredUnits={configuredUnits}
               lines={lines}
               materialIssues={materialIssues}
               materialReceipts={materialReceipts}
@@ -1525,6 +1640,7 @@ export function ProjectWorkspace({
           </div>
 
           <MaterialModal
+            alternativeUnits={configuredUnits}
             alloys={alloysForSelect}
             documents={documentsForSelect}
             editing={Boolean(editingLineId)}
@@ -1532,7 +1648,6 @@ export function ProjectWorkspace({
             form={newLine}
             materialTypes={materialTypesForSelect}
             open={materialModalOpen}
-            projectNames={projectNamesForSelect}
             units={unitsForSelect}
             onChange={setNewLine}
             onClose={() => {
@@ -1634,7 +1749,13 @@ function DatabaseSection({
     value: string,
   ) => void
 }) {
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useWorkspaceViewState(
+    'database.search',
+    '',
+    isViewString,
+  )
+  const viewScrollRef = useWorkspaceViewScroll('database')
+  const { hiddenColumns, changeHiddenColumns } = useProjectMatrixColumns()
   const matrixRows = useMemo(() => buildMaterialMatrix(lines), [lines])
   const visibleMatrixRows = useMemo(
     () =>
@@ -1644,10 +1765,13 @@ function DatabaseSection({
   const matrixCiphers = ciphers
 
   return (
-    <section className="mt-5 grid gap-5">
-      <Card>
+    <section
+      ref={viewScrollRef}
+      className="mt-5 grid min-w-0 grid-cols-1 gap-5"
+    >
+      <Card className="min-w-0">
         <CardHeader className="gap-3">
-          <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
+          <div className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] 2xl:items-start">
             <div className="min-w-0">
               <CardTitle>Общий проектный материал</CardTitle>
               <CardDescription>
@@ -1655,16 +1779,16 @@ function DatabaseSection({
                 отдельными столбцами.
               </CardDescription>
             </div>
-            <div className="grid w-full gap-2 lg:grid-cols-[minmax(360px,1fr)_auto_160px] lg:items-start 2xl:max-w-[1180px]">
-              <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                <div className="relative">
+            <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto_160px] lg:items-start">
+              <div className="grid min-w-0 gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                <div className="relative min-w-0">
                   <Search
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                     size={17}
                   />
                   <Input
                     className="h-10 bg-white pl-9 text-sm"
-                    placeholder="Поиск по типу, ID, наименованию, нормативному документу, составу, шифру или количеству"
+                    placeholder="Поиск по типу, наименованию, нормативному документу, составу, шифру или количеству"
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                   />
@@ -1691,6 +1815,11 @@ function DatabaseSection({
               />
             </div>
           </div>
+          <ProjectMatrixColumnSettings
+            ciphers={matrixCiphers}
+            hiddenColumns={hiddenColumns}
+            onChange={changeHiddenColumns}
+          />
         </CardHeader>
         <CardContent className="p-0">
           {selectedCombination || selectedImportedCount > 0 ? (
@@ -1722,6 +1851,7 @@ function DatabaseSection({
             <div className="overflow-hidden border-t border-stone-200">
               <ProjectMaterialMatrix
                 ciphers={matrixCiphers}
+                hiddenColumns={hiddenColumns}
                 highlight={highlight}
                 rows={visibleMatrixRows}
                 selectedLineId={selectedLineId}
@@ -1758,6 +1888,7 @@ function DatabaseSection({
 }
 
 function OperationsSection({
+  configuredUnits,
   lines,
   materialIssues,
   materialReceipts,
@@ -1772,6 +1903,7 @@ function OperationsSection({
   onUpdateReceipts,
   onUpdateRequests,
 }: {
+  configuredUnits: Array<string>
   lines: Array<SubobjectMaterialMetric>
   materialIssues: Array<MaterialIssueEntry>
   materialReceipts: Array<MaterialReceiptEntry>
@@ -1792,14 +1924,29 @@ function OperationsSection({
     entries: Array<MaterialRequestEntry>,
   ) => void
 }) {
-  const [activeTab, setActiveTab] = useState<OperationDocumentTab>('overview')
+  const [activeTab, setActiveTab] = useWorkspaceViewState<OperationDocumentTab>(
+    'operations.tab',
+    'overview',
+    (value): value is OperationDocumentTab =>
+      typeof value === 'string' &&
+      ['overview', 'requests', 'receipts', 'quality', 'issues'].includes(value),
+  )
+  const viewScrollRef = useWorkspaceViewScroll(`operations:${activeTab}`)
   const [modal, setModal] = useState<OperationActionTab | null>(null)
   const [editingRequest, setEditingRequest] =
     useState<RequestDocumentGroup | null>(null)
   const [editingReceipt, setEditingReceipt] =
     useState<ReceiptDocumentGroup | null>(null)
-  const [requestSearch, setRequestSearch] = useState('')
-  const [receiptSearch, setReceiptSearch] = useState('')
+  const [requestSearch, setRequestSearch] = useWorkspaceViewState(
+    'requests.search',
+    '',
+    isViewString,
+  )
+  const [receiptSearch, setReceiptSearch] = useWorkspaceViewState(
+    'receipts.search',
+    '',
+    isViewString,
+  )
   const [focusTarget, setFocusTarget] = useState<{
     tab: OperationActionTab
     targetId: string
@@ -1911,7 +2058,7 @@ function OperationsSection({
   }
 
   return (
-    <section className="mt-5 grid gap-5">
+    <section ref={viewScrollRef} className="mt-5 grid gap-5">
       <OperationTabs
         activeTab={activeTab}
         counts={{
@@ -1950,8 +2097,8 @@ function OperationsSection({
                         className="h-10 bg-white pl-9 text-sm"
                         placeholder={
                           activeTab === 'requests'
-                            ? 'Поиск по номеру заявки, шифру, типу, заявителю, ID или материалу'
-                            : 'Поиск по дате, заявке, накладной, ID, материалу или замене'
+                            ? 'Поиск по номеру заявки, шифру, типу, заявителю или материалу'
+                            : 'Поиск по дате, заявке, накладной, материалу или замене'
                         }
                         value={
                           activeTab === 'requests'
@@ -2107,6 +2254,7 @@ function OperationsSection({
       </Card>
 
       <RequestModal
+        configuredUnits={configuredUnits}
         editingRequest={editingRequest}
         existingRequests={materialRequests}
         lines={lines}
@@ -2158,7 +2306,6 @@ function OperationsSection({
       />
       <QualityControlModal
         existingCount={qualityControls.length}
-        lineById={lineById}
         open={modal === 'quality'}
         qualityControls={qualityControls}
         receipts={materialReceipts}
@@ -2228,10 +2375,24 @@ function OperationOverview({
   onOpenDocument: (tab: OperationActionTab, targetId: string) => void
   onOpenStage: (tab: OperationActionTab) => void
 }) {
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
-  const [search, setSearch] = useState('')
-  const [cipherFilter, setCipherFilter] = useState('')
-  const [materialTypeFilter, setMaterialTypeFilter] = useState('')
+  const [expandedRows, setExpandedRows] = useWorkspaceViewState<
+    Record<string, boolean>
+  >('overview.expanded', {}, isViewExpanded)
+  const [search, setSearch] = useWorkspaceViewState(
+    'overview.search',
+    '',
+    isViewString,
+  )
+  const [cipherFilter, setCipherFilter] = useWorkspaceViewState(
+    'overview.cipher',
+    '',
+    isViewString,
+  )
+  const [materialTypeFilter, setMaterialTypeFilter] = useWorkspaceViewState(
+    'overview.type',
+    '',
+    isViewString,
+  )
   const cipherOptions = useMemo(
     () => unique(rows.flatMap((row) => row.ciphers.map((item) => item.cipher))),
     [rows],
@@ -2300,7 +2461,7 @@ function OperationOverview({
             />
             <Input
               className="h-11 pl-10 text-[15px]"
-              placeholder="Поиск по ID, наименованию, шифру, нормативному документу, составу или типу"
+              placeholder="Поиск по наименованию, шифру, нормативному документу, составу или типу"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
@@ -2389,11 +2550,6 @@ function OperationOverview({
                       {row.projectMaterialName || 'Материал без наименования'}
                     </span>
                     <span className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-slate-500">
-                      {row.materialId ? (
-                        <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-500">
-                          {row.materialId}
-                        </span>
-                      ) : null}
                       {row.deleted ? <DeletedProjectMaterialBadge /> : null}
                       <span>{row.materialType || 'Без типа'}</span>
                     </span>
@@ -2465,7 +2621,10 @@ function OperationOverview({
                       />
                     </div>
 
-                    <div className="overflow-auto rounded-lg border border-blue-100 bg-white">
+                    <div
+                      data-workspace-scroll={`overview:${row.key}`}
+                      className="overflow-auto rounded-lg border border-blue-100 bg-white"
+                    >
                       <table className="w-full min-w-[1040px] table-fixed border-separate border-spacing-0 text-sm text-slate-700">
                         <colgroup>
                           <col className="w-[20%]" />
@@ -2988,9 +3147,9 @@ function RequestsTable({
   onOpenOverviewLine: (line: SubobjectMaterialMetric) => void
   summaryByLine: Map<string, OperationLineSummary>
 }) {
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
-    {},
-  )
+  const [expandedGroups, setExpandedGroups] = useWorkspaceViewState<
+    Record<string, boolean>
+  >('requests.expanded', {}, isViewExpanded)
   const normalizedSearch = normalizeSearchValue(search)
   const filteredGroupMeta =
     normalizedSearch.length === 0
@@ -3015,30 +3174,10 @@ function RequestsTable({
     })
   }, [focusDocumentNumber])
 
-  const referenceQuantityByLineId = useMemo(() => {
-    const projectQuantityByIdentity = new Map<string, number>()
-    const lines = Array.from(lineById.values())
-
-    for (const line of lines) {
-      const key = getMaterialIdentityKey(line)
-      projectQuantityByIdentity.set(
-        key,
-        (projectQuantityByIdentity.get(key) ?? 0) + line.plannedQuantity,
-      )
-    }
-
-    return new Map(
-      lines.map((line) => [
-        getProjectLineId(line),
-        {
-          cipherQuantity: line.plannedQuantity,
-          projectQuantity:
-            projectQuantityByIdentity.get(getMaterialIdentityKey(line)) ??
-            line.plannedQuantity,
-        },
-      ]),
-    )
-  }, [lineById])
+  const referenceQuantityByLineId = useMemo(
+    () => buildRequestReferenceQuantities(Array.from(lineById.values())),
+    [lineById],
+  )
 
   if (entries.length === 0) {
     return null
@@ -3054,13 +3193,17 @@ function RequestsTable({
 
       {filteredGroupMeta.map(({ group, materialType: requestMaterialType }) => {
         const isExpanded = expandedGroups[group.number] ?? false
-        const requestBalance = group.entries.reduce(
-          (total, entry) =>
-            total +
-            Math.max(
-              0,
-              summaryByLine.get(entry.projectLineId)?.requestBalance ?? 0,
-            ),
+        const lineIds = Array.from(
+          new Set(group.entries.map((entry) => entry.projectLineId)),
+        )
+        const exceededCount = lineIds.filter(
+          (lineId) =>
+            lineById.has(lineId) &&
+            (summaryByLine.get(lineId)?.requestBalance ?? 0) < 0,
+        ).length
+        const requestBalance = lineIds.reduce(
+          (total, lineId) =>
+            total + Math.max(0, summaryByLine.get(lineId)?.requestBalance ?? 0),
           0,
         )
 
@@ -3145,12 +3288,24 @@ function RequestsTable({
               </Button>
             </div>
 
+            {exceededCount > 0 ? (
+              <p
+                role="status"
+                className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900"
+              >
+                Позиций с превышением проекта: {exceededCount}. Проверьте
+                количество в заявках.
+              </p>
+            ) : null}
+
             {isExpanded ? (
               <div className="border-t border-blue-100 bg-blue-50/20">
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1480px] table-fixed border-separate border-spacing-0 text-sm text-stone-700">
+                <div
+                  data-workspace-scroll={`request:${group.number}`}
+                  className="overflow-x-auto"
+                >
+                  <table className="w-full min-w-[1360px] table-fixed border-separate border-spacing-0 text-sm text-stone-700">
                     <colgroup>
-                      <col className="w-[8%]" />
                       <col className="w-[25%]" />
                       <col className="w-[9%]" />
                       <col className="w-[9%]" />
@@ -3163,19 +3318,18 @@ function RequestsTable({
                     </colgroup>
                     <thead>
                       <tr>
-                        <OperationHead>ID</OperationHead>
                         <OperationHead>Наименование по проекту</OperationHead>
                         <OperationHead
                           align="center"
                           className="bg-blue-50/80 text-blue-700"
                         >
-                          Количество по проекту
+                          По проекту сейчас
                         </OperationHead>
                         <OperationHead
                           align="center"
                           className="bg-blue-50/80 text-blue-700"
                         >
-                          Количество по шифру
+                          По шифру сейчас
                         </OperationHead>
                         <OperationHead align="center">
                           Количество по заявке
@@ -3211,9 +3365,6 @@ function RequestsTable({
                             key={entry.id}
                             deleted={isDeletedProjectMaterial}
                           >
-                            <OperationCell>
-                              {entry.materialId || '-'}
-                            </OperationCell>
                             <OperationCell className="min-w-96">
                               <div className="grid gap-2">
                                 {line ? (
@@ -3241,10 +3392,11 @@ function RequestsTable({
                                   : 'bg-blue-50/35 text-blue-800'
                               }
                             >
-                              {formatQuantity(
-                                referenceQuantity?.projectQuantity ?? 0,
-                              )}{' '}
-                              {entry.projectUnit}
+                              <RequestProjectQuantity
+                                current={referenceQuantity}
+                                initial={entry.projectQuantitiesAtCreation}
+                                kind="projectQuantity"
+                              />
                             </OperationCell>
                             <OperationCell
                               align="right"
@@ -3254,10 +3406,11 @@ function RequestsTable({
                                   : 'bg-blue-50/35 text-blue-800'
                               }
                             >
-                              {formatQuantity(
-                                referenceQuantity?.cipherQuantity ?? 0,
-                              )}{' '}
-                              {entry.projectUnit}
+                              <RequestProjectQuantity
+                                current={referenceQuantity}
+                                initial={entry.projectQuantitiesAtCreation}
+                                kind="cipherQuantity"
+                              />
                             </OperationCell>
                             <OperationCell align="right">
                               {formatQuantity(entry.quantity)}
@@ -3272,7 +3425,17 @@ function RequestsTable({
                             <OperationCell align="right">
                               {formatQuantity(
                                 Math.max(0, summary?.requestBalance ?? 0),
-                              )}
+                              )}{' '}
+                              {line?.unit ?? entry.projectUnit}
+                              {!isDeletedProjectMaterial ? (
+                                <RequestExcessWarning
+                                  quantity={Math.max(
+                                    0,
+                                    -(summary?.requestBalance ?? 0),
+                                  )}
+                                  unit={line.unit}
+                                />
+                              ) : null}
                             </OperationCell>
                             <OperationCell>
                               <div className="grid gap-2">
@@ -3300,6 +3463,49 @@ function RequestsTable({
         )
       })}
     </div>
+  )
+}
+
+function RequestProjectQuantity({
+  current,
+  initial,
+  kind,
+}: {
+  current?: RequestProjectQuantities
+  initial?: RequestProjectQuantities
+  kind: 'projectQuantity' | 'cipherQuantity'
+}) {
+  return (
+    <div className="grid gap-1">
+      <span>
+        {current ? `${formatQuantity(current[kind])} ${current.unit}` : '—'}
+      </span>
+      <span className="text-[11px] font-normal leading-4 text-slate-500">
+        При создании:{' '}
+        {initial
+          ? `${formatQuantity(initial[kind])} ${initial.unit}`
+          : 'не сохранено'}
+      </span>
+    </div>
+  )
+}
+
+function RequestExcessWarning({
+  quantity,
+  unit,
+}: {
+  quantity: number
+  unit: string
+}) {
+  if (quantity <= 0) return null
+  return (
+    <p
+      role="status"
+      className="mt-2 text-xs font-medium leading-5 text-amber-800"
+    >
+      Заявлено сверх проекта: {formatQuantity(quantity)} {unit}. С учётом всех
+      заявок по шифру.
+    </p>
   )
 }
 
@@ -3375,9 +3581,9 @@ function ReceiptsTable({
   onEditReceipt: (group: ReceiptDocumentGroup) => void
   onOpenOverviewLine: (line: SubobjectMaterialMetric) => void
 }) {
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
-    {},
-  )
+  const [expandedGroups, setExpandedGroups] = useWorkspaceViewState<
+    Record<string, boolean>
+  >('receipts.expanded', {}, isViewExpanded)
   const focusedGroup = useMemo(() => {
     if (!focusEntryId) {
       return null
@@ -3499,11 +3705,6 @@ function ReceiptsTable({
                   </span>
                   <span className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-slate-500">
                     <span>{formatDate(group.date)}</span>
-                    {firstLine?.materialId || firstRequest?.materialId ? (
-                      <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-500">
-                        {firstLine?.materialId ?? firstRequest?.materialId}
-                      </span>
-                    ) : null}
                     {group.requestNumbers.length > 0 ? (
                       <span>
                         Заявки: {group.requestNumbers.slice(0, 3).join(', ')}
@@ -3525,11 +3726,7 @@ function ReceiptsTable({
                 />
                 <RequestGroupMetric
                   label="Альтернативно"
-                  value={
-                    group.altQuantity > 0
-                      ? formatQuantity(group.altQuantity)
-                      : '-'
-                  }
+                  value={formatAlternativeTotals(group.entries)}
                 />
                 <RequestGroupMetric
                   label="Позиций"
@@ -3556,12 +3753,14 @@ function ReceiptsTable({
 
             {isExpanded ? (
               <div className="border-t border-blue-100 bg-blue-50/20 p-3">
-                <div className="overflow-x-auto rounded-lg border border-blue-100 bg-white">
+                <div
+                  data-workspace-scroll={`receipt:${group.key}`}
+                  className="overflow-x-auto rounded-lg border border-blue-100 bg-white"
+                >
                   <table className="w-full min-w-[1420px] border-separate border-spacing-0 text-sm text-slate-700">
                     <thead>
                       <tr>
                         <OperationHead>Заявка</OperationHead>
-                        <OperationHead>ID</OperationHead>
                         <OperationHead>По заявке</OperationHead>
                         <OperationHead>Факт поступления</OperationHead>
                         <OperationHead align="right">Поступило</OperationHead>
@@ -3604,9 +3803,6 @@ function ReceiptsTable({
                           >
                             <OperationCell strong>
                               {request?.number ?? '-'}
-                            </OperationCell>
-                            <OperationCell>
-                              {line?.materialId ?? request?.materialId ?? '-'}
                             </OperationCell>
                             <OperationCell className="min-w-80">
                               <div className="grid gap-1">
@@ -3736,7 +3932,6 @@ function QualityTable({
           <OperationHead>Дата ЗНИ</OperationHead>
           <OperationHead>Номер АРВК</OperationHead>
           <OperationHead>Дата АРВК</OperationHead>
-          <OperationHead>ID</OperationHead>
           <OperationHead>ТМЦ</OperationHead>
           <OperationHead align="right">Количество по АРВК</OperationHead>
           <OperationHead>Статус</OperationHead>
@@ -3760,7 +3955,6 @@ function QualityTable({
               <OperationCell>{formatDate(entry.date)}</OperationCell>
               <OperationCell>{entry.arvkNumber || '-'}</OperationCell>
               <OperationCell>{formatDate(entry.arvkDate)}</OperationCell>
-              <OperationCell>{line?.materialId ?? '-'}</OperationCell>
               <OperationCell className="min-w-80">
                 <div className="grid gap-2">
                   <span>
@@ -3828,7 +4022,6 @@ function IssuesTable({
       <thead>
         <tr>
           <OperationHead>Документ передачи</OperationHead>
-          <OperationHead>ID</OperationHead>
           <OperationHead>ТМЦ</OperationHead>
           <OperationHead align="right">Выдано</OperationHead>
           <OperationHead align="right">
@@ -3852,7 +4045,6 @@ function IssuesTable({
               id={operationAnchorId('issues', entry.id)}
             >
               <OperationCell strong>{entry.document}</OperationCell>
-              <OperationCell>{line?.materialId ?? '-'}</OperationCell>
               <OperationCell className="min-w-80">
                 <div className="grid gap-2">
                   <span>
@@ -3867,7 +4059,8 @@ function IssuesTable({
                 {formatQuantity(entry.quantity)}
               </OperationCell>
               <OperationCell align="right">
-                {formatOptionalQuantity(entry.altQuantity)}
+                {formatOptionalQuantity(entry.altQuantity)}{' '}
+                {entry.altUnit ?? receipt?.altUnit ?? ''}
               </OperationCell>
               <OperationCell>{formatDate(entry.date)}</OperationCell>
               <OperationCell>{entry.receiver || '-'}</OperationCell>
@@ -3980,6 +4173,7 @@ function DeletedProjectMaterialBadge() {
 }
 
 function RequestModal({
+  configuredUnits,
   editingRequest,
   existingRequests,
   lines,
@@ -3990,6 +4184,7 @@ function RequestModal({
   onDelete,
   onSubmit,
 }: {
+  configuredUnits: Array<string>
   editingRequest: RequestDocumentGroup | null
   existingRequests: Array<MaterialRequestEntry>
   lines: Array<SubobjectMaterialMetric>
@@ -4004,6 +4199,10 @@ function RequestModal({
     () => new Map(lines.map((line) => [getProjectLineId(line), line])),
     [lines],
   )
+  const referenceQuantityByLineId = useMemo(
+    () => buildRequestReferenceQuantities(lines),
+    [lines],
+  )
   const ciphers = useMemo(
     () =>
       unique([
@@ -4013,6 +4212,7 @@ function RequestModal({
     [editingRequest, lines],
   )
   const [number, setNumber] = useState('')
+  const alternativeUnits = unique(configuredUnits.map((unit) => unit.trim()))
   const [date, setDate] = useState('')
   const [requester, setRequester] = useState('')
   const [cipher, setCipher] = useState('')
@@ -4148,6 +4348,41 @@ function RequestModal({
     (line) =>
       parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0,
   ).length
+  function getRequestConversion(line: SubobjectMaterialMetric) {
+    const lineId = getProjectLineId(line)
+    const entry = editingEntryByLineId.get(lineId)
+    return getOperationConversion(
+      lineById.get(lineId),
+      entry?.projectUnit ?? line.unit,
+      entry,
+    )
+  }
+
+  function getRequestAlternative(
+    line: SubobjectMaterialMetric,
+    quantity = parseNullableNumber(
+      drafts[getProjectLineId(line)]?.quantity ?? '',
+    ),
+  ) {
+    return getOperationAlternative(
+      quantity,
+      getRequestConversion(line),
+      editingEntryByLineId.get(getProjectLineId(line)),
+    )
+  }
+
+  function getAlternativeUnit(line: SubobjectMaterialMetric) {
+    return getRequestAlternative(line).altUnit
+  }
+
+  function getAlternativeQuantity(line: SubobjectMaterialMetric) {
+    return getRequestAlternative(line).altQuantity
+  }
+  const hasInvalidConvertedQuantities = requestScopeLines.some(
+    (line) =>
+      parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0 &&
+      Boolean(getRequestAlternative(line).error),
+  )
 
   useEffect(() => {
     if (!open) {
@@ -4185,9 +4420,6 @@ function RequestModal({
           editingRequest.entries.map((entry) => [
             entry.projectLineId,
             {
-              altQuantity:
-                entry.altQuantity === null ? '' : String(entry.altQuantity),
-              altUnit: entry.altUnit,
               note: entry.note,
               quantity: String(entry.quantity),
               sourceCipher: entry.sourceCipher ?? '',
@@ -4259,24 +4491,37 @@ function RequestModal({
     const currentBalance =
       summaryByLine.get(lineId)?.requestBalance ?? line.plannedQuantity
 
-    return Math.max(0, currentBalance + existingQuantity)
+    return currentBalance + existingQuantity
+  }
+
+  function getDraftOverRequestState(
+    line: SubobjectMaterialMetric,
+    quantity: string,
+  ) {
+    const lineId = getProjectLineId(line)
+    const existing = editingEntryByLineId.get(lineId)
+    // A reduced project plan must not force rewriting an existing request or
+    // prevent saving its notes and reducing the already requested quantity.
+    if (existing && parsePositiveNumber(quantity) <= existing.quantity)
+      return null
+    return getOverRequestState({
+      availableOverride: getRequestAvailableBalance(line, lineId),
+      line,
+      quantity,
+      summaryByLine,
+    })
   }
 
   function updateDraft(
     lineId: string,
-    key: 'altQuantity' | 'altUnit' | 'note' | 'quantity',
+    key: 'note' | 'quantity',
     value: string,
   ) {
     if (key === 'quantity') {
       const line = lines.find((item) => getProjectLineId(item) === lineId)
 
       if (line) {
-        const nextOverRequest = getOverRequestState({
-          availableOverride: getRequestAvailableBalance(line, lineId),
-          line,
-          quantity: value,
-          summaryByLine,
-        })
+        const nextOverRequest = getDraftOverRequestState(line, value)
 
         if (nextOverRequest) {
           setOverRequest(nextOverRequest)
@@ -4287,8 +4532,6 @@ function RequestModal({
     setDrafts((current) => ({
       ...current,
       [lineId]: {
-        altQuantity: current[lineId]?.altQuantity ?? '',
-        altUnit: current[lineId]?.altUnit ?? '',
         note: current[lineId]?.note ?? '',
         quantity: current[lineId]?.quantity ?? '',
         sourceCipher: current[lineId]?.sourceCipher ?? '',
@@ -4317,14 +4560,18 @@ function RequestModal({
           const lineId = getProjectLineId(line)
 
           return {
-            alternativeUnit: line.alternativeUnit,
+            alternativeUnit: getAlternativeUnit(line),
+            alternativeUnitFactor: getRequestConversion(line)?.factor,
             lineId,
             material: line.material,
             materialId: line.materialId,
             normativeDocument: line.normativeDocument,
             plannedQuantity: line.plannedQuantity,
             projectMaterialName: line.projectMaterialName,
-            requestBalance: getRequestAvailableBalance(line, lineId),
+            requestBalance: Math.max(
+              0,
+              getRequestAvailableBalance(line, lineId),
+            ),
             unit: line.unit,
           }
         }),
@@ -4349,11 +4596,9 @@ function RequestModal({
       const errors: Array<string> = []
       const line = findRequestImportLine(row, scopeById)
       const quantity = row.quantity ?? 0
+      const alternative = line ? getRequestAlternative(line, quantity) : null
       const hasEditableData =
-        quantity > 0 ||
-        (row.altQuantity ?? 0) > 0 ||
-        row.altUnit.trim().length > 0 ||
-        row.note.trim().length > 0
+        row.quantity !== null || row.note.trim().length > 0
 
       if (!hasEditableData && !row.projectLineId) {
         return {
@@ -4379,21 +4624,12 @@ function RequestModal({
         errors.push('Количество по заявке не может быть отрицательным.')
       }
 
-      if (row.altQuantity !== null && row.altQuantity < 0) {
-        errors.push(
-          'Количество в альтернативной единице не может быть отрицательным.',
-        )
-      }
-
-      if (line) {
-        const available = getRequestAvailableBalance(
-          line,
-          getProjectLineId(line),
-        )
-
-        if (quantity > available) {
+      if (hasEditableData && alternative?.error) errors.push(alternative.error)
+      if (line && hasEditableData) {
+        const exceeded = getDraftOverRequestState(line, String(quantity))
+        if (exceeded) {
           errors.push(
-            `Количество превышает остаток к заявке: доступно ${formatQuantity(available)} ${line.unit}.`,
+            `Количество превышает остаток к заявке: доступно ${formatQuantity(exceeded.available)} ${line.unit}.`,
           )
         }
       }
@@ -4410,11 +4646,6 @@ function RequestModal({
 
       return {
         draft: {
-          altQuantity:
-            row.altQuantity === null
-              ? ''
-              : formatRawSpreadsheetNumber(row.altQuantity),
-          altUnit: row.altUnit || line?.alternativeUnit || '',
           note: row.note,
           quantity:
             row.quantity === null
@@ -4490,15 +4721,12 @@ function RequestModal({
   }
 
   function submit() {
+    if (hasInvalidConvertedQuantities) return
+
     const exceededLine = requestScopeLines
       .map((line) => {
         const lineId = getProjectLineId(line)
-        return getOverRequestState({
-          availableOverride: getRequestAvailableBalance(line, lineId),
-          line,
-          quantity: drafts[lineId]?.quantity ?? '',
-          summaryByLine,
-        })
+        return getDraftOverRequestState(line, drafts[lineId]?.quantity ?? '')
       })
       .find((item) => item !== null)
 
@@ -4520,8 +4748,9 @@ function RequestModal({
       }
 
       entries.push({
-        altQuantity: parseNullableNumber(draft?.altQuantity ?? ''),
-        altUnit: draft?.altUnit.trim() || line.alternativeUnit || '',
+        altQuantity: getAlternativeQuantity(line),
+        altUnit: getAlternativeUnit(line),
+        altUnitFactor: getRequestAlternative(line).altUnitFactor,
         cipher: line.cipher,
         date,
         id: existingEntry?.id ?? createClientId('request'),
@@ -4534,6 +4763,9 @@ function RequestModal({
         projectMaterialName:
           line.projectMaterialName || line.material || 'Материал',
         projectUnit: line.unit,
+        projectQuantitiesAtCreation: existingEntry
+          ? existingEntry.projectQuantitiesAtCreation
+          : referenceQuantityByLineId.get(lineId),
         quantity,
         requester: requester.trim(),
         sourceCipher: draft?.sourceCipher || undefined,
@@ -4589,13 +4821,19 @@ function RequestModal({
             </div>
           ) : null
         }
-        primaryDisabled={!hasRows}
+        primaryDisabled={!hasRows || hasInvalidConvertedQuantities}
         primaryLabel={
           editingRequest ? 'Сохранить изменения' : 'Сохранить заявку'
         }
         onCancel={onClose}
         onSubmit={submit}
       >
+        {hasInvalidConvertedQuantities ? (
+          <p role="alert" className="mb-3 text-sm text-amber-800">
+            Не удалось пересчитать альтернативное количество. Проверьте
+            количество и настройки пересчёта материала в проектной базе.
+          </p>
+        ) : null}
         <div className="grid min-h-[min(70vh,760px)] gap-4 xl:grid-cols-[330px_minmax(0,1fr)]">
           <aside className="grid content-start gap-3">
             <div className="rounded-xl border border-blue-100 bg-blue-50/55 p-4">
@@ -4749,7 +4987,7 @@ function RequestModal({
                 />
                 <Input
                   className="h-11 bg-white pl-9 text-sm"
-                  placeholder="Поиск по ID, наименованию, нормативному документу, составу или массе"
+                  placeholder="Поиск по наименованию, нормативному документу, составу или массе"
                   value={requestSearch}
                   onChange={(event) => setRequestSearch(event.target.value)}
                 />
@@ -4782,6 +5020,12 @@ function RequestModal({
                 visibleRequestLines.map((line) => {
                   const lineId = getProjectLineId(line)
                   const draft = drafts[lineId]
+                  const conversion = getRequestConversion(line)
+                  const alternative = getRequestAlternative(line)
+                  const alternativeQuantity = getAlternativeQuantity(line)
+                  const altUnit = getAlternativeUnit(line)
+                  const unknownAltUnit =
+                    altUnit !== '' && !alternativeUnits.includes(altUnit)
                   const requestedQuantity = parsePositiveNumber(
                     draft?.quantity ?? '',
                   )
@@ -4789,6 +5033,12 @@ function RequestModal({
                   const lineIsInScope =
                     line.cipher === cipher && lineMaterialType === materialType
                   const lineIsDeletedProjectMaterial = !lineById.has(lineId)
+                  const currentProjectQuantities =
+                    referenceQuantityByLineId.get(lineId)
+                  const initialProjectQuantities =
+                    editingEntryByLineId.get(
+                      lineId,
+                    )?.projectQuantitiesAtCreation
                   const availableBalance = getRequestAvailableBalance(
                     line,
                     lineId,
@@ -4806,7 +5056,7 @@ function RequestModal({
                   return (
                     <div
                       key={lineId}
-                      className={`relative overflow-hidden rounded-xl border-2 p-4 shadow-sm transition-colors ${progressTone.card} ${
+                      className={`relative rounded-xl border-2 p-4 shadow-sm transition-colors ${progressTone.card} ${
                         !lineIsInScope
                           ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/55'
                           : ''
@@ -4837,7 +5087,7 @@ function RequestModal({
                           }`}
                         />
                       ) : null}
-                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_330px] lg:items-start">
+                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_440px] lg:items-start">
                         <div className="min-w-0">
                           <div className="max-w-5xl text-[15px] font-normal leading-6 text-slate-950">
                             {line.projectMaterialName ?? line.material}
@@ -4850,10 +5100,6 @@ function RequestModal({
                             <RequestMetaPill
                               label="Тип"
                               value={lineMaterialType}
-                            />
-                            <RequestMetaPill
-                              label="ID"
-                              value={line.materialId ?? 'без ID'}
                             />
                             <RequestMetaPill
                               label="Нормативный документ"
@@ -4876,9 +5122,14 @@ function RequestModal({
                         </div>
 
                         <div
-                          className={`grid overflow-hidden rounded-lg border text-right sm:grid-cols-3 ${progressTone.metric}`}
+                          className={`grid overflow-hidden rounded-lg border text-right sm:grid-cols-4 ${progressTone.metric}`}
                         >
-                          <RequestMetric label="По проекту">
+                          <RequestMetric label="По проекту сейчас">
+                            {lineIsDeletedProjectMaterial
+                              ? 'удален'
+                              : `${formatQuantity(currentProjectQuantities?.projectQuantity ?? 0)} ${line.unit}`}
+                          </RequestMetric>
+                          <RequestMetric label="По шифру сейчас">
                             {lineIsDeletedProjectMaterial
                               ? 'удален'
                               : `${formatQuantity(line.plannedQuantity)} ${line.unit}`}
@@ -4897,6 +5148,23 @@ function RequestModal({
                         </div>
                       </div>
 
+                      {editingEntryByLineId.has(lineId) ? (
+                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                          {initialProjectQuantities
+                            ? `При создании заявки: по проекту ${formatQuantity(initialProjectQuantities.projectQuantity)} ${initialProjectQuantities.unit}, по шифру ${formatQuantity(initialProjectQuantities.cipherQuantity)} ${initialProjectQuantities.unit}.`
+                            : 'Проектное количество при создании этой заявки не сохранялось.'}
+                        </p>
+                      ) : null}
+                      {!lineIsDeletedProjectMaterial ? (
+                        <RequestExcessWarning
+                          quantity={Math.max(
+                            0,
+                            requestedQuantity - availableBalance,
+                          )}
+                          unit={line.unit}
+                        />
+                      ) : null}
+
                       {!lineIsInScope ? (
                         <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-5 text-blue-800">
                           Нажмите на позицию, чтобы выбрать шифр{' '}
@@ -4911,7 +5179,7 @@ function RequestModal({
 
                       {lineIsInScope ? (
                         <div className="mt-3 border-t border-slate-200 pt-3">
-                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(180px,0.8fr)_minmax(220px,1fr)_minmax(220px,1fr)_minmax(320px,2.4fr)]">
+                          <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_minmax(0,3fr)]">
                             <RequestLineInputField
                               label={`Количество по заявке, ${line.unit}`}
                             >
@@ -4924,37 +5192,6 @@ function RequestModal({
                                   updateDraft(
                                     lineId,
                                     'quantity',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Количество в альтернативной единице">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                inputMode="decimal"
-                                placeholder="Количество в альтернативной единице"
-                                value={draft?.altQuantity ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    lineId,
-                                    'altQuantity',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Альтернативная единица измерения">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Альтернативная единица измерения"
-                                value={
-                                  draft?.altUnit ?? line.alternativeUnit ?? ''
-                                }
-                                onChange={(event) =>
-                                  updateDraft(
-                                    lineId,
-                                    'altUnit',
                                     event.target.value,
                                   )
                                 }
@@ -4982,6 +5219,45 @@ function RequestModal({
                               ) : null}
                             </RequestLineInputField>
                           </div>
+                          {alternativeQuantity !== null ? (
+                            <p className="mt-2 text-sm text-slate-600">
+                              В альтернативной единице:{' '}
+                              <output
+                                aria-label="Количество в альтернативной единице"
+                                className="font-medium text-slate-900"
+                              >
+                                {formatAlternativeQuantity(alternativeQuantity)}{' '}
+                                {altUnit}
+                              </output>
+                            </p>
+                          ) : null}
+                          {conversion || alternativeQuantity !== null ? (
+                            <p className="mt-2 text-xs text-slate-500">
+                              {conversion
+                                ? `1 ${editingEntryByLineId.get(lineId)?.projectUnit ?? line.unit} = ${formatAlternativeQuantity(conversion.factor)} ${altUnit}. Количество рассчитывается автоматически${getMaterialRequestConversion(lineById.get(lineId), editingEntryByLineId.get(lineId)?.projectUnit) ? ' по текущему коэффициенту материала' : ' по последнему сохранённому коэффициенту заявки'}.`
+                                : 'Прежнее альтернативное количество сохранено. Для пересчёта задайте коэффициент в проектной базе.'}
+                            </p>
+                          ) : null}
+                          {alternative.error ? (
+                            <p
+                              role="alert"
+                              className="mt-2 text-sm text-rose-700"
+                            >
+                              {alternative.error}
+                            </p>
+                          ) : null}
+                          {unknownAltUnit ? (
+                            <p className="mt-1 text-xs text-amber-800">
+                              Единицы «{altUnit}» нет в настройках.
+                            </p>
+                          ) : null}
+                          {(conversion || alternativeQuantity !== null) &&
+                          alternativeUnits.length === 0 ? (
+                            <p className="mt-1 text-xs text-amber-800">
+                              Добавьте единицы в настройках базы, в разделе
+                              «Единицы измерения».
+                            </p>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -5161,7 +5437,6 @@ function RequestImportDialog({
                   <thead>
                     <tr>
                       <OperationHead>№ в файле</OperationHead>
-                      <OperationHead>ID</OperationHead>
                       <OperationHead>Наименование по проекту</OperationHead>
                       <OperationHead align="right">
                         Количество по заявке
@@ -5176,9 +5451,6 @@ function RequestImportDialog({
                         key={`${row.row.rowNumber}-${row.row.projectLineId}`}
                       >
                         <OperationCell>{row.row.rowNumber}</OperationCell>
-                        <OperationCell>
-                          {row.line?.materialId || row.row.materialId || '-'}
-                        </OperationCell>
                         <OperationCell className="min-w-96">
                           {row.line?.projectMaterialName ||
                             row.row.projectMaterialName ||
@@ -5389,6 +5661,42 @@ function RequestMetaPill({ label, value }: { label: string; value: string }) {
   )
 }
 
+function AutomaticAlternative({
+  label,
+  baseUnit,
+  conversion,
+  value,
+}: {
+  label: string
+  baseUnit: string
+  conversion: ReturnType<typeof getOperationConversion>
+  value: ReturnType<typeof getOperationAlternative>
+}) {
+  if (!conversion && value.altQuantity === null && !value.altUnit) return null
+  return (
+    <div className="mt-2 text-sm text-slate-600">
+      {value.altQuantity !== null ? (
+        <p>
+          {label}:{' '}
+          <output aria-label={label} className="font-medium text-slate-900">
+            {formatAlternativeQuantity(value.altQuantity)} {value.altUnit}
+          </output>
+        </p>
+      ) : null}
+      <p className="mt-1 text-xs text-slate-500">
+        {conversion
+          ? `1 ${baseUnit} = ${formatAlternativeQuantity(conversion.factor)} ${conversion.unit}. Количество рассчитывается автоматически.`
+          : 'Прежнее альтернативное количество сохранено. Для пересчёта задайте коэффициент в проектной базе.'}
+      </p>
+      {value.error ? (
+        <p role="alert" className="mt-2 text-sm text-rose-700">
+          {value.error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function RequestMetric({
   children,
   label,
@@ -5539,9 +5847,6 @@ function ReceiptModal({
             getReceiptDraftKey(entry),
             {
               actualName: entry.actualName,
-              altQuantity:
-                entry.altQuantity === null ? '' : String(entry.altQuantity),
-              altUnit: entry.altUnit,
               certificate: entry.certificate,
               customerArvk: entry.customerArvk,
               customerReceiptDocument: entry.customerReceiptDocument || '',
@@ -5747,15 +6052,46 @@ function ReceiptModal({
   const hasRows = Object.values(drafts).some(
     (draft) => parsePositiveNumber(draft.quantity) > 0,
   )
+  function getReceiptConversion(
+    request: MaterialRequestEntry,
+    receipt?: MaterialReceiptEntry | null,
+  ) {
+    return getOperationConversion(
+      lineById.get(request.projectLineId),
+      receipt?.projectUnit ?? request.projectUnit,
+      receipt,
+      request,
+    )
+  }
+  function getReceiptAlternative(
+    request: MaterialRequestEntry,
+    receipt: MaterialReceiptEntry | null | undefined,
+    quantity: number | null,
+  ) {
+    return getOperationAlternative(
+      quantity,
+      getReceiptConversion(request, receipt),
+      receipt,
+    )
+  }
+  const alternativeErrors = receiptWorkItems.flatMap(
+    ({ key, request, receipt }) => {
+      const quantity = parsePositiveNumber(drafts[key]?.quantity ?? '')
+      const error =
+        quantity > 0
+          ? getReceiptAlternative(request, receipt, quantity).error
+          : ''
+      return error ? [error] : []
+    },
+  )
   const receiptSaveBlockedReason = !hasRows
     ? 'Укажите поступившее количество хотя бы по одной позиции.'
     : missingInvoiceRowsCount > 0
       ? `Заполните номер накладной: ${missingInvoiceRowsCount} поз.`
       : receiptOverRestRowsCount > 0
         ? `Поступление превышает остаток к получению: ${receiptOverRestRowsCount} поз.`
-        : ''
-  const receiptSaveDisabled =
-    !hasRows || missingInvoiceRowsCount > 0 || receiptOverRestRowsCount > 0
+        : (alternativeErrors[0] ?? '')
+  const receiptSaveDisabled = Boolean(receiptSaveBlockedReason)
   const selectedRequestGroup = requestGroups.find(
     (group) => group.number === requestNumber,
   )
@@ -5782,8 +6118,6 @@ function ReceiptModal({
       [draftKey]: {
         actualName:
           current[draftKey]?.actualName ?? request.projectMaterialName,
-        altQuantity: current[draftKey]?.altQuantity ?? '',
-        altUnit: current[draftKey]?.altUnit ?? request.altUnit,
         certificate: current[draftKey]?.certificate ?? '',
         customerArvk: current[draftKey]?.customerArvk ?? '',
         customerReceiptDocument:
@@ -5808,7 +6142,8 @@ function ReceiptModal({
     downloadWorkbook(
       await createMaterialReceiptTemplateWorkbook({
         lines: receiptTemplateWorkItems.map(({ request, receipt }) => ({
-          altUnit: request.altUnit,
+          altUnit: getReceiptConversion(request, receipt)?.unit,
+          altUnitFactor: getReceiptConversion(request, receipt)?.factor,
           materialId: request.materialId,
           projectLineId: request.projectLineId,
           projectMaterialName: request.projectMaterialName,
@@ -5847,8 +6182,9 @@ function ReceiptModal({
       const quantity = row.quantity ?? 0
       const hasEditableData =
         quantity > 0 ||
-        (row.altQuantity ?? 0) > 0 ||
-        row.actualName.trim().length > 0 ||
+        (row.actualName.trim().length > 0 &&
+          normalizeSearchValue(row.actualName) !==
+            normalizeSearchValue(item?.request.projectMaterialName ?? '')) ||
         row.invoiceNumber.trim().length > 0 ||
         row.manufacturer.trim().length > 0 ||
         row.heatBatch.trim().length > 0 ||
@@ -5884,10 +6220,13 @@ function ReceiptModal({
         errors.push('Поступившее количество не может быть отрицательным.')
       }
 
-      if (row.altQuantity !== null && row.altQuantity < 0) {
-        errors.push(
-          'Количество в альтернативной единице не может быть отрицательным.',
-        )
+      if (item && hasEditableData) {
+        const error = getReceiptAlternative(
+          item.request,
+          item.receipt,
+          quantity,
+        ).error
+        if (error) errors.push(error)
       }
 
       if (
@@ -5915,11 +6254,6 @@ function ReceiptModal({
       return {
         draft: {
           actualName: row.actualName || item?.request.projectMaterialName || '',
-          altQuantity:
-            row.altQuantity === null
-              ? ''
-              : formatRawSpreadsheetNumber(row.altQuantity),
-          altUnit: row.altUnit || item?.request.altUnit || '',
           certificate: row.certificate,
           customerArvk: row.customerArvk,
           customerReceiptDocument: row.customerReceiptDocument,
@@ -5985,7 +6319,7 @@ function ReceiptModal({
   }
 
   function submit() {
-    if (missingInvoiceRowsCount > 0 || receiptOverRestRowsCount > 0) {
+    if (receiptSaveDisabled) {
       return
     }
 
@@ -6009,13 +6343,15 @@ function ReceiptModal({
         return
       }
 
+      const alternative = getReceiptAlternative(request, receipt, quantity)
       entries.push({
         actualName:
           draft?.actualName.trim() ||
           request.projectMaterialName ||
           'ТМЦ без наименования',
-        altQuantity: parseNullableNumber(draft?.altQuantity ?? ''),
-        altUnit: draft?.altUnit.trim() || request.altUnit,
+        altQuantity: alternative.altQuantity,
+        altUnit: alternative.altUnit,
+        altUnitFactor: alternative.altUnitFactor,
         certificate: draft?.certificate.trim() ?? '',
         customerArvk: draft?.customerArvk.trim() ?? '',
         customerReceiptDocument: draft?.customerReceiptDocument.trim() ?? '',
@@ -6027,7 +6363,7 @@ function ReceiptModal({
         manufacturer: draft?.manufacturer.trim() ?? '',
         note: draft?.note.trim() ?? '',
         projectLineId: request.projectLineId,
-        projectUnit: request.projectUnit,
+        projectUnit: receipt?.projectUnit ?? request.projectUnit,
         qualityDocument: draft?.qualityDocument.trim() ?? '',
         quantity,
         requestId: request.id,
@@ -6215,8 +6551,8 @@ function ReceiptModal({
                   className="h-11 bg-white pl-10 text-[15px]"
                   placeholder={
                     requestNumber
-                      ? 'Поиск по ID, наименованию, накладной, составу или документу'
-                      : 'Начните вводить ID, наименование, шифр, заявку, состав или документ'
+                      ? 'Поиск по наименованию, накладной, составу или документу'
+                      : 'Начните вводить наименование, шифр, заявку, состав или документ'
                   }
                   value={receiptSearch}
                   onChange={(event) => setReceiptSearch(event.target.value)}
@@ -6315,10 +6651,6 @@ function ReceiptModal({
                                 Шифр {request.cipher}
                               </span>
                               <RequestMetaPill
-                                label="ID"
-                                value={line?.materialId ?? request.materialId}
-                              />
-                              <RequestMetaPill
                                 label="Нормативный документ"
                                 value={line?.normativeDocument ?? request.note}
                               />
@@ -6360,7 +6692,7 @@ function ReceiptModal({
                         </div>
 
                         <div className="bg-white px-4 py-4">
-                          <div className="grid gap-3 xl:grid-cols-[minmax(260px,1.5fr)_minmax(150px,0.7fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)]">
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(150px,1fr)]">
                             <RequestLineInputField label="Наименование ТМЦ по факту поступления">
                               <Input
                                 className="h-10 bg-white text-sm"
@@ -6395,38 +6727,19 @@ function ReceiptModal({
                                 }
                               />
                             </RequestLineInputField>
-                            <RequestLineInputField label="Поступило в альтернативной единице">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                inputMode="decimal"
-                                placeholder="Поступило в альтернативной единице"
-                                value={draft?.altQuantity ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'altQuantity',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Альтернативная единица измерения">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Альтернативная единица измерения"
-                                value={draft?.altUnit ?? request.altUnit}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'altUnit',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
                           </div>
+                          <AutomaticAlternative
+                            label="Поступило в альтернативной единице"
+                            baseUnit={
+                              receipt?.projectUnit ?? request.projectUnit
+                            }
+                            conversion={getReceiptConversion(request, receipt)}
+                            value={getReceiptAlternative(
+                              request,
+                              receipt,
+                              parseNullableNumber(draft?.quantity ?? ''),
+                            )}
+                          />
 
                           {isReplacement ? (
                             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
@@ -7013,7 +7326,6 @@ function ReceiptImportDialog({
                   <thead>
                     <tr>
                       <OperationHead>№ в файле</OperationHead>
-                      <OperationHead>ID</OperationHead>
                       <OperationHead>Наименование по проекту</OperationHead>
                       <OperationHead>Факт поступления</OperationHead>
                       <OperationHead align="right">Поступило</OperationHead>
@@ -7034,9 +7346,6 @@ function ReceiptImportDialog({
                         key={`${row.row.rowNumber}-${row.row.requestId}`}
                       >
                         <OperationCell>{row.row.rowNumber}</OperationCell>
-                        <OperationCell>
-                          {row.request?.materialId || row.row.materialId || '-'}
-                        </OperationCell>
                         <OperationCell className="min-w-80">
                           {row.request?.projectMaterialName ||
                             row.row.projectMaterialName ||
@@ -7142,7 +7451,6 @@ function ReceiptImportDialog({
 
 function QualityControlModal({
   existingCount,
-  lineById,
   open,
   qualityControls,
   receipts,
@@ -7150,7 +7458,6 @@ function QualityControlModal({
   onSubmit,
 }: {
   existingCount: number
-  lineById: Map<string, SubobjectMaterialMetric>
   open: boolean
   qualityControls: Array<QualityControlEntry>
   receipts: Array<MaterialReceiptEntry>
@@ -7243,7 +7550,6 @@ function QualityControlModal({
         ) : (
           <div className="grid gap-4">
             {availableReceipts.map((receipt) => {
-              const line = lineById.get(receipt.projectLineId)
               const processed = qcByReceipt.get(receipt.id) ?? 0
               const rest = receipt.quantity - processed
               const draft = drafts[receipt.id]
@@ -7257,9 +7563,8 @@ function QualityControlModal({
                     {receipt.actualName}
                   </div>
                   <div className="mt-1 text-xs text-stone-500">
-                    {line?.materialId ?? '-'} · поступило{' '}
-                    {formatQuantity(receipt.quantity)} {receipt.projectUnit} · к
-                    ВК {formatQuantity(rest)}
+                    Поступило {formatQuantity(receipt.quantity)}{' '}
+                    {receipt.projectUnit} · к ВК {formatQuantity(rest)}
                   </div>
                   <div className="mt-4 grid gap-3 lg:grid-cols-4">
                     <Field label="Номер ЗНИ">
@@ -7403,6 +7708,23 @@ function IssueModal({
     (draft) => parsePositiveNumber(draft.quantity) > 0,
   )
 
+  function getIssueConversion(control: QualityControlEntry) {
+    const receipt = receiptById.get(control.receiptId)
+    return getOperationConversion(
+      lineById.get(control.projectLineId),
+      receipt?.projectUnit,
+      receipt,
+    )
+  }
+  const hasAlternativeError = availableControls.some((control) => {
+    const quantity = parsePositiveNumber(drafts[control.id]?.quantity ?? '')
+    return (
+      quantity > 0 &&
+      Boolean(
+        getOperationAlternative(quantity, getIssueConversion(control)).error,
+      )
+    )
+  })
   function updateDraft(
     controlId: string,
     key: keyof IssueDraft,
@@ -7411,7 +7733,6 @@ function IssueModal({
     setDrafts((current) => ({
       ...current,
       [controlId]: {
-        altQuantity: current[controlId]?.altQuantity ?? '',
         date: current[controlId]?.date ?? todayInputValue(),
         document:
           current[controlId]?.document ??
@@ -7425,8 +7746,9 @@ function IssueModal({
   }
 
   function submit() {
+    if (hasAlternativeError) return
     const entries = availableControls
-      .map((control) => {
+      .map((control): MaterialIssueEntry | null => {
         const draft = drafts[control.id]
         const quantity = parsePositiveNumber(draft?.quantity ?? '')
 
@@ -7434,8 +7756,15 @@ function IssueModal({
           return null
         }
 
+        const alternative = getOperationAlternative(
+          quantity,
+          getIssueConversion(control),
+        )
         return {
-          altQuantity: parseNullableNumber(draft?.altQuantity ?? ''),
+          altQuantity: alternative.altQuantity,
+          altUnit: alternative.altUnit,
+          altUnitFactor: alternative.altUnitFactor,
+          projectUnit: receiptById.get(control.receiptId)?.projectUnit,
           date: draft?.date ?? todayInputValue(),
           document:
             draft?.document.trim() || makeOperationNumber('ПМ', existingCount),
@@ -7458,7 +7787,7 @@ function IssueModal({
     <Modal open={open} size="lg" title="Выдача в монтаж" onClose={onClose}>
       <OperationModalLayout
         hint="Выдавайте только материал с подписанным входным контролем. Количество уменьшит остаток к выдаче."
-        primaryDisabled={!hasRows}
+        primaryDisabled={!hasRows || hasAlternativeError}
         primaryLabel="Сохранить выдачу"
         onCancel={onClose}
         onSubmit={submit}
@@ -7483,10 +7812,18 @@ function IssueModal({
                     {receipt?.actualName ?? line?.projectMaterialName ?? '-'}
                   </div>
                   <div className="mt-1 text-xs text-stone-500">
-                    {line?.materialId ?? '-'} · ВК подписан{' '}
-                    {formatQuantity(control.quantity)} · к выдаче{' '}
+                    ВК подписан {formatQuantity(control.quantity)} · к выдаче{' '}
                     {formatQuantity(rest)}
                   </div>
+                  <AutomaticAlternative
+                    label="Выдано в альтернативной единице"
+                    baseUnit={receipt?.projectUnit ?? ''}
+                    conversion={getIssueConversion(control)}
+                    value={getOperationAlternative(
+                      parseNullableNumber(draft?.quantity ?? ''),
+                      getIssueConversion(control),
+                    )}
+                  />
                   <div className="mt-4 grid gap-3 lg:grid-cols-3">
                     <Field label="Документ передачи">
                       <Input
@@ -7511,19 +7848,6 @@ function IssueModal({
                           updateDraft(
                             control.id,
                             'quantity',
-                            event.target.value,
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="Количество в альтернативной единице">
-                      <Input
-                        inputMode="decimal"
-                        value={draft?.altQuantity ?? ''}
-                        onChange={(event) =>
-                          updateDraft(
-                            control.id,
-                            'altQuantity',
                             event.target.value,
                           )
                         }
@@ -7692,8 +8016,6 @@ type DeletedOperationLineDescriptor = {
 }
 type ReceiptDraft = {
   actualName: string
-  altQuantity: string
-  altUnit: string
   certificate: string
   customerArvk: string
   date: string
@@ -7718,7 +8040,6 @@ type QualityDraft = {
   zniNumber: string
 }
 type IssueDraft = {
-  altQuantity: string
   date: string
   document: string
   note: string
@@ -7726,8 +8047,6 @@ type IssueDraft = {
   receiver: string
 }
 type RequestDraft = {
-  altQuantity: string
-  altUnit: string
   note: string
   quantity: string
   sourceCipher: string
@@ -8254,6 +8573,31 @@ function getProjectLineId(line: SubobjectMaterialMetric) {
   return line.id ?? getMaterialIdentityKey(line)
 }
 
+function buildRequestReferenceQuantities(
+  lines: Array<SubobjectMaterialMetric>,
+) {
+  const projectQuantityByIdentity = new Map<string, number>()
+  for (const line of lines) {
+    const key = getMaterialIdentityKey(line)
+    projectQuantityByIdentity.set(
+      key,
+      (projectQuantityByIdentity.get(key) ?? 0) + line.plannedQuantity,
+    )
+  }
+  return new Map<string, RequestProjectQuantities>(
+    lines.map((line) => [
+      getProjectLineId(line),
+      {
+        projectQuantity:
+          projectQuantityByIdentity.get(getMaterialIdentityKey(line)) ??
+          line.plannedQuantity,
+        cipherQuantity: line.plannedQuantity,
+        unit: line.unit,
+      },
+    ]),
+  )
+}
+
 function ensureOperationLineSummary(
   byLine: Map<string, OperationLineSummary>,
   lineId: string,
@@ -8365,6 +8709,24 @@ function buildRequestGroupMeta(
   })
 }
 
+function formatAlternativeTotals(entries: Array<MaterialReceiptEntry>) {
+  const totals = new Map<string, number>()
+  for (const entry of entries) {
+    if (entry.altQuantity === null || !Number.isFinite(entry.altQuantity))
+      continue
+    const unit = entry.altUnit.trim()
+    totals.set(unit, (totals.get(unit) ?? 0) + entry.altQuantity)
+  }
+  return (
+    [...totals]
+      .map(
+        ([unit, quantity]) =>
+          `${formatAlternativeQuantity(quantity)} ${unit || '(единица не указана)'}`,
+      )
+      .join(' · ') || '-'
+  )
+}
+
 function groupReceiptDocuments(
   entries: Array<MaterialReceiptEntry>,
   requests: Array<MaterialRequestEntry>,
@@ -8382,7 +8744,6 @@ function groupReceiptDocuments(
     if (!current) {
       groups.set(key, {
         actualName: entry.actualName,
-        altQuantity: entry.altQuantity ?? 0,
         date: entry.date,
         entries: [entry],
         invoiceNumbers,
@@ -8397,7 +8758,6 @@ function groupReceiptDocuments(
 
     current.entries.push(entry)
     current.quantity += entry.quantity
-    current.altQuantity += entry.altQuantity ?? 0
     current.latestChangeOrder = Math.min(current.latestChangeOrder, index)
     current.replacement =
       current.replacement || isReceiptReplacement(entry, request)
@@ -8616,12 +8976,10 @@ function getOverRequestState({
   }
 
   const lineId = getProjectLineId(line)
-  const available = Math.max(
-    0,
+  const available =
     availableOverride ??
-      summaryByLine.get(lineId)?.requestBalance ??
-      line.plannedQuantity,
-  )
+    summaryByLine.get(lineId)?.requestBalance ??
+    line.plannedQuantity
   const shortage = parsedQuantity - available
 
   if (shortage <= 0) {
@@ -8629,7 +8987,7 @@ function getOverRequestState({
   }
 
   return {
-    available,
+    available: Math.max(0, available),
     line,
     lineId,
     quantity: parsedQuantity,
@@ -8879,8 +9237,6 @@ function requestLineMatchesSearch(
 
 function emptyRequestDraft(): RequestDraft {
   return {
-    altQuantity: '',
-    altUnit: '',
     note: '',
     quantity: '',
     sourceCipher: '',
@@ -8891,8 +9247,6 @@ function emptyRequestDraft(): RequestDraft {
 function emptyReceiptDraft(): ReceiptDraft {
   return {
     actualName: '',
-    altQuantity: '',
-    altUnit: '',
     certificate: '',
     customerArvk: '',
     customerReceiptDocument: '',
@@ -9070,11 +9424,12 @@ function parseNullableNumber(value: string) {
 }
 
 function formatOptionalQuantity(value: number | null) {
-  return value === null ? '-' : formatQuantity(value)
+  return value === null ? '-' : formatAlternativeQuantity(value)
 }
 
 function ProjectMaterialMatrix({
   ciphers,
+  hiddenColumns,
   highlight,
   rows: matrixRows,
   selectedLineId,
@@ -9085,6 +9440,7 @@ function ProjectMaterialMatrix({
   onUpdateQuantity,
 }: {
   ciphers: Array<string>
+  hiddenColumns: Array<string>
   highlight: MaterialHighlight | null
   rows: Array<MaterialMatrixRow>
   selectedLineId: string
@@ -9101,154 +9457,125 @@ function ProjectMaterialMatrix({
   const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>(
     {},
   )
-  const [columnFilters, setColumnFilters] = useState<MatrixColumnFilters>({})
+  const [columnFilters, setColumnFilters] =
+    useWorkspaceViewState<MatrixColumnFilters>(
+      'database.filters',
+      {},
+      isViewFilters,
+    )
+  const visibleColumns = projectMatrixColumns.filter(
+    (column) => !hiddenColumns.includes(column.key),
+  )
+  const visibleCiphers = ciphers.filter(
+    (cipher) => !hiddenColumns.includes(getCipherFilterKey(cipher)),
+  )
+  const showActions = !hiddenColumns.includes('actions')
+  const columnCount =
+    visibleColumns.length + visibleCiphers.length + Number(showActions)
+  const activeFilters = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(columnFilters).filter(
+          ([key]) => !hiddenColumns.includes(key),
+        ),
+      ),
+    [columnFilters, hiddenColumns],
+  )
+  useEffect(() => {
+    setColumnFilters((current) => {
+      if (!hiddenColumns.some((key) => key in current)) return current
+      return Object.fromEntries(
+        Object.entries(current).filter(([key]) => !hiddenColumns.includes(key)),
+      )
+    })
+  }, [hiddenColumns])
   const visibleRows = useMemo(
     () =>
       matrixRows.filter((row) =>
-        matchesMatrixColumnFilters(row, columnFilters),
+        matchesMatrixColumnFilters(row, activeFilters),
       ),
-    [columnFilters, matrixRows],
+    [activeFilters, matrixRows],
   )
 
+  const previousFilterReset = useRef(tableFilterResetVersion)
   useEffect(() => {
+    if (previousFilterReset.current === tableFilterResetVersion) return
+    previousFilterReset.current = tableFilterResetVersion
     setColumnFilters({})
-  }, [tableFilterResetVersion])
+  }, [tableFilterResetVersion, setColumnFilters])
+
+  if (columnCount === 0) {
+    return (
+      <div className="px-5 py-10 text-center text-sm text-slate-500">
+        Все столбцы скрыты. Выберите нужные в настройках столбцов над таблицей.
+      </div>
+    )
+  }
 
   return (
     <Table
+      scrollId="project-matrix"
       className="border-separate border-spacing-0 text-[13px] text-slate-700 [&_td]:border-b [&_td]:border-r [&_td]:border-slate-200/80 [&_td:last-child]:border-r-0 [&_th]:border-b [&_th]:border-r [&_th]:border-slate-200 [&_th:last-child]:border-r-0"
-      style={{ minWidth: `${1240 + ciphers.length * 92}px` }}
+      style={{
+        minWidth: `${visibleColumns.reduce((sum, column) => sum + column.width, 0) + visibleCiphers.length * 96 + (showActions ? 96 : 0)}px`,
+      }}
     >
-      <TableHeader className="sticky top-0 z-20 bg-slate-50/95 shadow-[0_1px_0_rgba(148,163,184,0.18)] backdrop-blur">
+      <TableHeader className="sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_rgba(148,163,184,0.18)]">
         <TableRow className="hover:bg-transparent">
-          <TableHead className="sticky left-0 z-30 w-48 bg-slate-50/95 px-3 py-0">
-            <HeaderLabel>Тип материала</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-28 px-3 py-0">
-            <HeaderLabel>ID</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-[390px] px-3 py-0">
-            <HeaderLabel>Наименование по проекту</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-48 px-3 py-0">
-            <HeaderLabel>Нормативный документ</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-28 px-3 py-0">
-            <HeaderLabel align="center">Единица измерения</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-36 px-3 py-0">
-            <HeaderLabel>Состав</HeaderLabel>
-          </TableHead>
-          <TableHead className="w-32 px-3 py-0">
-            <HeaderLabel align="center">Масса единицы</HeaderLabel>
-          </TableHead>
-          {ciphers.map((cipher) => (
+          {visibleColumns.map((column) => (
+            <TableHead
+              key={column.key}
+              className={`px-3 py-0 ${column.key === 'materialType' ? 'sticky left-0 z-30 bg-slate-50' : ''}`}
+              style={{ width: column.width }}
+            >
+              <HeaderLabel align={column.align}>{column.label}</HeaderLabel>
+            </TableHead>
+          ))}
+          {visibleCiphers.map((cipher) => (
             <TableHead key={cipher} className="w-24 px-3 py-0">
               <HeaderLabel align="center">{cipher}</HeaderLabel>
             </TableHead>
           ))}
-          <TableHead className="sticky right-0 z-30 w-24 bg-slate-50/95 px-3 py-0">
-            <HeaderLabel align="center">Действия</HeaderLabel>
-          </TableHead>
+          {showActions ? (
+            <TableHead className="sticky right-0 z-30 w-24 bg-slate-50 px-3 py-0">
+              <HeaderLabel align="center">Действия</HeaderLabel>
+            </TableHead>
+          ) : null}
         </TableRow>
         <TableRow className="hover:bg-transparent">
-          <TableHead className="sticky left-0 z-30 bg-slate-50/95 px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.materialType ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({
-                  ...current,
-                  materialType: value,
-                }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.materialId ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({
-                  ...current,
-                  materialId: value,
-                }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.projectMaterialName ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({
-                  ...current,
-                  projectMaterialName: value,
-                }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.normativeDocument ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({
-                  ...current,
-                  normativeDocument: value,
-                }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.unit ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({ ...current, unit: value }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.material ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({ ...current, material: value }))
-              }
-            />
-          </TableHead>
-          <TableHead className="px-2 py-2">
-            <ColumnFilterInput
-              value={columnFilters.unitWeight ?? ''}
-              onChange={(value) =>
-                setColumnFilters((current) => ({
-                  ...current,
-                  unitWeight: value,
-                }))
-              }
-            />
-          </TableHead>
-          {ciphers.map((cipher) => {
-            const key = getCipherFilterKey(cipher)
-
-            return (
-              <TableHead key={key} className="px-2 py-2">
-                <ColumnFilterInput
-                  value={columnFilters[key] ?? ''}
-                  onChange={(value) =>
-                    setColumnFilters((current) => ({
-                      ...current,
-                      [key]: value,
-                    }))
-                  }
-                />
-              </TableHead>
-            )
-          })}
-          <TableHead className="sticky right-0 z-30 bg-slate-50/95 px-2 py-2">
-            <Button
-              className="h-8 w-full rounded-md border-slate-200 px-2 text-xs font-normal text-slate-500"
-              variant="outline"
-              onClick={() => setColumnFilters({})}
+          {[
+            ...visibleColumns,
+            ...visibleCiphers.map((cipher) => ({
+              key: getCipherFilterKey(cipher),
+              label: cipher,
+            })),
+          ].map((column) => (
+            <TableHead
+              key={column.key}
+              className={`px-2 py-2 ${column.key === 'materialType' ? 'sticky left-0 z-30 bg-slate-50' : ''}`}
             >
-              Сброс
-            </Button>
-          </TableHead>
+              <ColumnFilterInput
+                value={columnFilters[column.key] ?? ''}
+                onChange={(value) =>
+                  setColumnFilters((current) => ({
+                    ...current,
+                    [column.key]: value,
+                  }))
+                }
+              />
+            </TableHead>
+          ))}
+          {showActions ? (
+            <TableHead className="sticky right-0 z-30 bg-slate-50 px-2 py-2">
+              <Button
+                className="h-8 w-full rounded-md border-slate-200 px-2 text-xs font-normal text-slate-500"
+                variant="outline"
+                onClick={() => setColumnFilters({})}
+              >
+                Сброс
+              </Button>
+            </TableHead>
+          ) : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -9267,84 +9594,107 @@ function ProjectMaterialMatrix({
               key={row.key}
               className={`group border-slate-200 transition-colors ${
                 highlighted
-                  ? 'bg-emerald-50/70 hover:bg-emerald-50/90'
+                  ? 'bg-emerald-50 hover:bg-emerald-50'
                   : selected
-                    ? 'bg-blue-50/60 hover:bg-blue-50/80'
-                    : 'bg-white hover:bg-slate-50/70'
+                    ? 'bg-blue-50 hover:bg-blue-50'
+                    : 'bg-white hover:bg-slate-50'
               }`}
             >
-              <TableCell
-                className={`sticky left-0 z-10 w-48 bg-inherit px-3 py-2.5 ${
-                  highlightedCells.has('materialType')
-                    ? 'bg-emerald-100/80'
-                    : ''
-                }`}
-              >
-                <div className="max-w-40 leading-5 text-slate-700">
-                  {row.materialType || '-'}
-                </div>
-              </TableCell>
-              <TableCell
-                className={`w-28 px-3 py-2.5 font-mono text-xs leading-5 text-slate-500 ${
-                  highlightedCells.has('materialId') ? 'bg-emerald-100/80' : ''
-                }`}
-              >
-                {row.materialId || <EmptyCell />}
-              </TableCell>
-              <TableCell
-                className={`w-[390px] px-3 py-2.5 ${
-                  highlightedCells.has('projectMaterialName')
-                    ? 'bg-emerald-100/80'
-                    : ''
-                }`}
-              >
-                <div className="material-name-clamp leading-5 text-slate-800">
-                  {row.projectMaterialName}
-                </div>
-              </TableCell>
-              <TableCell
-                className={`w-48 px-3 py-2.5 ${
-                  highlightedCells.has('normativeDocument')
-                    ? 'bg-emerald-100/80'
-                    : ''
-                }`}
-              >
-                {row.normativeDocument ? (
-                  <span className="block text-[13px] font-normal leading-5 text-slate-600">
-                    {row.normativeDocument}
+              {!hiddenColumns.includes('materialType') ? (
+                <TableCell
+                  className={`sticky left-0 z-10 w-48 bg-inherit px-3 py-2.5 ${
+                    highlightedCells.has('materialType') ? 'bg-emerald-100' : ''
+                  }`}
+                >
+                  <div className="max-w-40 leading-5 text-slate-700">
+                    {row.materialType || '-'}
+                  </div>
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('projectMaterialName') ? (
+                <TableCell
+                  className={`w-[390px] px-3 py-2.5 ${
+                    highlightedCells.has('projectMaterialName')
+                      ? 'bg-emerald-100/80'
+                      : ''
+                  }`}
+                >
+                  <div className="material-name-clamp leading-5 text-slate-800">
+                    {row.projectMaterialName}
+                  </div>
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('normativeDocument') ? (
+                <TableCell
+                  className={`w-48 px-3 py-2.5 ${
+                    highlightedCells.has('normativeDocument')
+                      ? 'bg-emerald-100/80'
+                      : ''
+                  }`}
+                >
+                  {row.normativeDocument ? (
+                    <span className="block text-[13px] font-normal leading-5 text-slate-600">
+                      {row.normativeDocument}
+                    </span>
+                  ) : (
+                    <EmptyCell />
+                  )}
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('unit') ? (
+                <TableCell
+                  className={`w-20 px-3 py-2.5 text-center ${
+                    highlightedCells.has('unit') ? 'bg-emerald-100/80' : ''
+                  }`}
+                >
+                  <span className="inline-flex min-w-9 justify-center rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">
+                    {row.unit}
                   </span>
-                ) : (
-                  <EmptyCell />
-                )}
-              </TableCell>
-              <TableCell
-                className={`w-20 px-3 py-2.5 text-center ${
-                  highlightedCells.has('unit') ? 'bg-emerald-100/80' : ''
-                }`}
-              >
-                <span className="inline-flex min-w-9 justify-center rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">
-                  {row.unit}
-                </span>
-              </TableCell>
-              <TableCell
-                className={`w-36 px-3 py-2.5 leading-5 text-slate-700 ${
-                  highlightedCells.has('material') ? 'bg-emerald-100/80' : ''
-                }`}
-              >
-                {row.material || <EmptyCell />}
-              </TableCell>
-              <TableCell
-                className={`w-28 px-3 py-2.5 text-right tabular-nums text-slate-700 ${
-                  highlightedCells.has('unitWeight') ? 'bg-emerald-100/80' : ''
-                }`}
-              >
-                {row.unitWeight === null ? (
-                  <EmptyCell align="right" />
-                ) : (
-                  formatQuantity(row.unitWeight)
-                )}
-              </TableCell>
-              {ciphers.map((cipher) => {
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('material') ? (
+                <TableCell
+                  className={`w-36 px-3 py-2.5 text-center leading-5 text-slate-700 ${
+                    highlightedCells.has('material') ? 'bg-emerald-100/80' : ''
+                  }`}
+                >
+                  {row.material || <EmptyCell />}
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('unitWeight') ? (
+                <TableCell
+                  className={`w-28 px-3 py-2.5 text-center tabular-nums text-slate-700 ${
+                    highlightedCells.has('unitWeight')
+                      ? 'bg-emerald-100/80'
+                      : ''
+                  }`}
+                >
+                  {row.unitWeight === null ? (
+                    <EmptyCell />
+                  ) : (
+                    formatQuantity(row.unitWeight)
+                  )}
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('alternativeUnit') ? (
+                <TableCell
+                  className={`px-3 py-2.5 text-center ${highlightedCells.has('alternativeUnit') ? 'bg-emerald-100/80' : ''}`}
+                >
+                  {row.alternativeUnit || <EmptyCell />}
+                </TableCell>
+              ) : null}
+              {!hiddenColumns.includes('alternativeUnitFactor') ? (
+                <TableCell
+                  className={`px-3 py-2.5 text-center ${highlightedCells.has('alternativeUnitFactor') ? 'bg-emerald-100/80' : ''}`}
+                >
+                  {row.alternativeUnitFactor === null ? (
+                    <EmptyCell />
+                  ) : (
+                    formatAlternativeQuantity(row.alternativeUnitFactor)
+                  )}
+                </TableCell>
+              ) : null}
+              {visibleCiphers.map((cipher) => {
                 const lineId = row.cipherLineIds[cipher]
                 const value = row.cipherQuantities[cipher] ?? 0
                 const draftKey = `${row.key}|${cipher}`
@@ -9391,44 +9741,64 @@ function ProjectMaterialMatrix({
                   </TableCell>
                 )
               })}
-              <TableCell className="sticky right-0 z-10 bg-inherit px-3 py-2.5 text-right">
-                <div className="flex justify-end gap-1 opacity-70 transition group-hover:opacity-100">
-                  <button
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm shadow-slate-200/50 hover:bg-slate-50 hover:text-slate-900"
-                    type="button"
-                    aria-label="Редактировать материал"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onEditLine(row.firstLineId)
-                    }}
-                  >
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm shadow-slate-200/50 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-                    type="button"
-                    aria-label="Удалить материал"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onRequestDelete({
-                        lineIds: row.lineIds,
-                        name: row.projectMaterialName,
-                      })
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </TableCell>
+              {showActions ? (
+                <TableCell className="sticky right-0 z-10 bg-inherit px-3 py-2.5 text-right">
+                  <div className="flex justify-end gap-1 opacity-70 transition group-hover:opacity-100">
+                    <button
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm shadow-slate-200/50 hover:bg-slate-50 hover:text-slate-900"
+                      type="button"
+                      aria-label="Редактировать материал"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onEditLine(row.firstLineId)
+                      }}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm shadow-slate-200/50 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+                      type="button"
+                      aria-label="Удалить материал"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onRequestDelete({
+                          lineIds: row.lineIds,
+                          name: row.projectMaterialName,
+                        })
+                      }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </TableCell>
+              ) : null}
             </TableRow>
           )
         })}
+        {visibleRows.length === 0 ? (
+          <TableRow>
+            <TableCell
+              colSpan={columnCount}
+              className="py-8 text-center text-slate-500"
+            >
+              Ничего не найдено.
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setColumnFilters({})}
+              >
+                Сбросить фильтры столбцов
+              </Button>
+            </TableCell>
+          </TableRow>
+        ) : null}
       </TableBody>
     </Table>
   )
 }
 
 function MaterialModal({
+  alternativeUnits,
   alloys,
   documents,
   editing,
@@ -9436,7 +9806,6 @@ function MaterialModal({
   form,
   materialTypes,
   open,
-  projectNames,
   units,
   onChange,
   onClose,
@@ -9445,6 +9814,7 @@ function MaterialModal({
   onSubmit,
   onUseExisting,
 }: {
+  alternativeUnits: Array<string>
   alloys: Array<string>
   documents: Array<string>
   editing: boolean
@@ -9452,7 +9822,6 @@ function MaterialModal({
   form: typeof emptyNewLine
   materialTypes: Array<string>
   open: boolean
-  projectNames: Array<string>
   units: Array<string>
   onChange: (value: typeof emptyNewLine) => void
   onClose: () => void
@@ -9477,12 +9846,12 @@ function MaterialModal({
     [existingMaterials, isPassportVisible, search],
   )
   const saveHint = getMaterialFormSaveHint({
+    alternativeUnits,
     documents,
     editing,
     existingMaterials,
     form,
     materialTypes,
-    projectNames,
     units,
     alloys,
   })
@@ -9594,11 +9963,7 @@ function MaterialModal({
                           </button>
                         </div>
                       </div>
-                      <div className="grid overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-[120px_minmax(220px,1.35fr)_140px_minmax(140px,0.85fr)_110px]">
-                        <MaterialCombinationMeta
-                          label="ID материала"
-                          value={row.materialId || 'не указан'}
-                        />
+                      <div className="grid overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-[minmax(220px,1.35fr)_140px_minmax(140px,0.85fr)_110px]">
                         <MaterialCombinationMeta
                           label="Нормативный документ"
                           value={row.normativeDocument || 'не указан'}
@@ -9652,8 +10017,8 @@ function MaterialModal({
                         {editing ? 'Паспорт материала' : 'Новая комбинация'}
                       </div>
                       <div className="mt-1 text-sm leading-6 text-slate-500">
-                        Значения справочников выбираются только из подсказок,
-                        чтобы не плодить дубли.
+                        Наименование по проекту вводится свободно, а значения
+                        справочников выбираются из подсказок.
                       </div>
                     </div>
                     {isCreatePassportOnly ? (
@@ -9698,39 +10063,29 @@ function MaterialModal({
                     </div>
 
                     <FormSection title="Основные данные">
-                      <div className="grid grid-cols-2 gap-3">
-                        <Field label="Тип материала">
-                          <NativeSelect
-                            options={buildSelectOptions(
-                              'Выберите тип',
-                              materialTypes,
-                              form.materialType,
-                            )}
-                            value={form.materialType}
-                            onChange={(value) =>
-                              onChange({ ...form, materialType: value })
-                            }
-                          />
-                        </Field>
-                        <Field label="ID материала">
-                          <Input
-                            value={form.materialId}
-                            onChange={(event) =>
-                              onChange({
-                                ...form,
-                                materialId: event.target.value,
-                              })
-                            }
-                          />
-                        </Field>
-                      </div>
-                      <Field label="Наименование по проекту">
-                        <AutocompleteInput
-                          options={projectNames}
-                          placeholder="Начните вводить наименование"
-                          value={form.projectMaterialName}
+                      <Field label="Тип материала">
+                        <NativeSelect
+                          options={buildSelectOptions(
+                            'Выберите тип',
+                            materialTypes,
+                            form.materialType,
+                          )}
+                          value={form.materialType}
                           onChange={(value) =>
-                            onChange({ ...form, projectMaterialName: value })
+                            onChange({ ...form, materialType: value })
+                          }
+                        />
+                      </Field>
+                      <Field label="Наименование по проекту">
+                        <Input
+                          aria-label="Наименование по проекту"
+                          placeholder="Введите наименование по проекту"
+                          value={form.projectMaterialName}
+                          onChange={(event) =>
+                            onChange({
+                              ...form,
+                              projectMaterialName: event.target.value,
+                            })
                           }
                         />
                       </Field>
@@ -9781,6 +10136,45 @@ function MaterialModal({
                           />
                         </Field>
                       </div>
+                    </FormSection>
+
+                    <FormSection title="Пересчёт в альтернативную единицу">
+                      <Field label="Альтернативная единица измерения">
+                        <AutocompleteInput
+                          ariaLabel="Альтернативная единица измерения"
+                          options={alternativeUnits}
+                          placeholder="Например: кг"
+                          value={form.alternativeUnit}
+                          onChange={(value) =>
+                            onChange({ ...form, alternativeUnit: value })
+                          }
+                        />
+                      </Field>
+                      <Field
+                        label={`Количество альтернативных единиц на 1 ${form.unit || 'основную единицу'}`}
+                      >
+                        <Input
+                          aria-label="Количество альтернативных единиц на одну основную"
+                          inputMode="decimal"
+                          placeholder="Например: 2,5"
+                          value={form.alternativeUnitFactor}
+                          onChange={(event) =>
+                            onChange({
+                              ...form,
+                              alternativeUnitFactor: event.target.value,
+                            })
+                          }
+                        />
+                      </Field>
+                      <p className="text-sm text-slate-500">
+                        {form.alternativeUnit.trim() &&
+                        !getAlternativeConversionError(
+                          form.alternativeUnit,
+                          form.alternativeUnitFactor,
+                        )
+                          ? `1 ${form.unit} = ${form.alternativeUnitFactor} ${form.alternativeUnit}. Количество в заявках, получении и выдаче рассчитается автоматически.`
+                          : 'Необязательно. Укажите, сколько альтернативных единиц содержится в одной основной. Масса единицы не подставляется автоматически.'}
+                      </p>
                     </FormSection>
 
                     <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-800">
@@ -10737,11 +11131,17 @@ function Field({
 }
 
 function AutocompleteInput({
+  ariaLabel,
+  className,
+  invalid,
   options,
   placeholder,
   value,
   onChange,
 }: {
+  ariaLabel?: string
+  className?: string
+  invalid?: boolean
   options: Array<string>
   placeholder?: string
   value: string
@@ -10760,6 +11160,9 @@ function AutocompleteInput({
   return (
     <div className="relative">
       <Input
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
+        className={className}
         placeholder={placeholder}
         value={value}
         onBlur={() => {
@@ -11082,7 +11485,7 @@ function createMaterialImportDraft(
   )
   const missingUnits = unique(
     validation.rows
-      .map((row) => row.unit)
+      .flatMap((row) => [row.unit, row.alternativeUnit ?? ''])
       .filter((value) => value && !hasExactOption(context.units, value)),
   )
   const missingDocuments = unique(
@@ -11202,6 +11605,14 @@ function getMaterialImportReferenceErrors(
   if (row.unit && !hasExactOption(context.units, row.unit)) {
     errors.push(`Единица измерения «${row.unit}» отсутствует в настройках.`)
   }
+  if (
+    row.alternativeUnit &&
+    !hasExactOption(context.units, row.alternativeUnit)
+  ) {
+    errors.push(
+      `Альтернативная единица «${row.alternativeUnit}» отсутствует в настройках.`,
+    )
+  }
 
   if (
     row.normativeDocument &&
@@ -11248,6 +11659,7 @@ function applyMaterialImportRows(
         unit: importedLine.unit,
         unitWeight: importedLine.unitWeight,
         alternativeUnit: importedLine.alternativeUnit,
+        alternativeUnitFactor: importedLine.alternativeUnitFactor,
         plannedQuantity: row.quantity,
       })
     } else {
@@ -11281,6 +11693,7 @@ function buildIdentityLineFromImport(
     unit: row.unit,
     unitWeight: row.unitWeight,
     alternativeUnit: row.alternativeUnit,
+    alternativeUnitFactor: row.alternativeUnitFactor,
     requested: 0,
     received: 0,
     qcPending: 0,
@@ -11355,27 +11768,32 @@ function getInvalidDropdownSelections(
 }
 
 function getMaterialFormSaveHint({
+  alternativeUnits,
   alloys,
   documents,
   editing,
   existingMaterials,
   form,
   materialTypes,
-  projectNames,
   units,
 }: {
+  alternativeUnits: Array<string>
   alloys: Array<string>
   documents: Array<string>
   editing: boolean
   existingMaterials: Array<MaterialMatrixRow>
   form: typeof emptyNewLine
   materialTypes: Array<string>
-  projectNames: Array<string>
   units: Array<string>
 }) {
   if (!form.projectMaterialName.trim()) {
-    return 'Нельзя сохранить: выберите наименование по проекту из списка.'
+    return 'Нельзя сохранить: введите наименование по проекту.'
   }
+  const conversionError = getAlternativeConversionError(
+    form.alternativeUnit,
+    form.alternativeUnitFactor,
+  )
+  if (conversionError) return `Нельзя сохранить: ${conversionError}`
 
   if (!form.unit.trim()) {
     return 'Нельзя сохранить: выберите единицу измерения из списка.'
@@ -11393,12 +11811,6 @@ function getMaterialFormSaveHint({
       value: form.materialType,
     },
     {
-      label: 'наименование по проекту',
-      options: projectNames,
-      required: true,
-      value: form.projectMaterialName,
-    },
-    {
       label: 'нормативный документ',
       options: documents,
       value: form.normativeDocument,
@@ -11413,6 +11825,11 @@ function getMaterialFormSaveHint({
       options: units,
       required: true,
       value: form.unit,
+    },
+    {
+      label: 'альтернативную единицу измерения',
+      options: alternativeUnits,
+      value: form.alternativeUnit,
     },
   ])
 
@@ -11437,6 +11854,14 @@ function hasExactOption(options: Array<string>, value: string) {
 
   return options.some(
     (option) => normalizeOptionValue(option) === normalizedValue,
+  )
+}
+
+function normalizeReferenceOption(options: Array<string>, value: string) {
+  return (
+    options.find(
+      (option) => normalizeOptionValue(option) === normalizeOptionValue(value),
+    ) ?? value.trim()
   )
 }
 
@@ -11517,7 +11942,9 @@ function isMatrixColumnFilterKey(
   | 'normativeDocument'
   | 'unit'
   | 'material'
-  | 'unitWeight' {
+  | 'unitWeight'
+  | 'alternativeUnit'
+  | 'alternativeUnitFactor' {
   return [
     'materialType',
     'materialId',
@@ -11526,6 +11953,8 @@ function isMatrixColumnFilterKey(
     'unit',
     'material',
     'unitWeight',
+    'alternativeUnit',
+    'alternativeUnitFactor',
   ].includes(key)
 }
 
@@ -11578,6 +12007,7 @@ function buildMaterialMatrix(
         unit: line.unit,
         unitWeight: line.unitWeight ?? null,
         alternativeUnit: line.alternativeUnit ?? '',
+        alternativeUnitFactor: line.alternativeUnitFactor ?? null,
         totalQuantity: 0,
         cipherQuantities: {},
         cipherLineIds: {},
@@ -11597,7 +12027,7 @@ function buildMaterialMatrix(
 }
 
 function createLocalId() {
-  return `line-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return createClientId('line')
 }
 
 function buildEmptyAllocations(ciphers: Array<string>) {
@@ -11614,6 +12044,7 @@ function getMaterialIdentityKey(line: SubobjectMaterialMetric) {
     line.material,
     line.unitWeight ?? '',
     line.alternativeUnit ?? '',
+    line.alternativeUnitFactor ?? '',
   ]
     .join('|')
     .toLocaleLowerCase('ru')
@@ -11637,6 +12068,7 @@ function buildIdentityLineFromForm(
     unit: form.unit.trim(),
     unitWeight: optionalNumber(form.unitWeight),
     alternativeUnit: optionalText(form.alternativeUnit),
+    alternativeUnitFactor: optionalNumber(form.alternativeUnitFactor),
     requested: 0,
     received: 0,
     qcPending: 0,
@@ -11684,6 +12116,13 @@ function getChangedMaterialCellKeys(
   if ((line.unitWeight ?? null) !== nextUnitWeight) {
     changed.push('unitWeight')
   }
+  if (
+    (line.alternativeUnit ?? '') !== form.alternativeUnit.trim() ||
+    (line.alternativeUnitFactor ?? null) !==
+      optionalNumber(form.alternativeUnitFactor)
+  ) {
+    changed.push('alternativeUnit', 'alternativeUnitFactor')
+  }
 
   return changed
 }
@@ -11722,4 +12161,10 @@ function formatQuantity(value: number) {
   return new Intl.NumberFormat('ru-RU', {
     maximumFractionDigits: 3,
   }).format(value)
+}
+
+function formatAlternativeQuantity(value: number) {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 12 }).format(
+    value,
+  )
 }
