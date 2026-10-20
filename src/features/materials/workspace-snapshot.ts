@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { qualityWorkflowSchema } from './quality-workflow'
 
 const records = z.array(z.record(z.string(), z.json()))
 
@@ -15,6 +16,7 @@ export const workspaceSnapshotSchema = z
     materialReceipts: records,
     materialRequests: records,
     qualityControls: records,
+    qualityWorkflow: qualityWorkflowSchema.optional(),
   })
   .strict()
 

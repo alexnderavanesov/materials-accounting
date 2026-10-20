@@ -1,6 +1,7 @@
 {
   "name": "materials",
   "private": true,
+  "packageManager": "pnpm@10.30.3",
   "type": "module",
   "imports": {
     "#/*": "./src/*"
@@ -30,12 +31,17 @@
     "@tanstack/react-router-ssr-query": "latest",
     "@tanstack/react-start": "latest",
     "@tanstack/router-plugin": "^1.132.0",
+    "ag-grid-community": "35.2.1",
+    "ag-grid-enterprise": "35.2.1",
+    "ag-grid-react": "35.2.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "exceljs": "^4.4.0",
+    "jszip": "3.10.1",
     "lucide-react": "^0.545.0",
     "nitro": "npm:nitro-nightly@latest",
+    "pdfjs-dist": "5.6.205",
     "postgres": "^3.4.9",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

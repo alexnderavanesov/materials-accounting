@@ -84,6 +84,15 @@ export function createWorkspaceSaver(options: {
       return flush()
     },
     flush,
+    async waitUntilSaved(): Promise<string> {
+      // Printing must wait for every queued edit, not merely the first request.
+      while (running || (pending && !blocked)) await flush()
+      if (blocked || pending || !revision)
+        throw new Error(
+          'Заявка ещё не сохранена. Устраните ошибку сохранения перед печатью.',
+        )
+      return revision
+    },
     getLatest: () => latest,
   }
 }

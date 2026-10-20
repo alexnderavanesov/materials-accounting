@@ -1,0 +1,26 @@
+.operations-grid .ag-cell {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  line-height: 1.5;
+}
+.operations-grid .ag-cell-wrapper,
+.operations-grid .ag-cell-value {
+  width: 100%;
+}
+.operations-grid .ag-cell-value {
+  overflow-wrap: anywhere;
+}
+.operations-grid .operations-grid-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.operations-grid .operations-grid-deleted {
+  background-color: #fffbeb;
+}
+.operations-grid .operations-grid-focused {
+  background-color: #eff6ff;
+}
+.operations-grid .ag-row-pinned {
+  background-color: #f8fafc;
+  font-weight: 500;
+}

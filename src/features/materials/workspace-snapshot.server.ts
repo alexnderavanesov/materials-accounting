@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
+import { validateQualityWorkspace } from './quality-workflow'
 import type {
   LoadedWorkspace,
   SaveWorkspaceResult,
@@ -55,6 +56,7 @@ export function createWorkspaceStore(directory: string) {
         if (current.revision === nextRevision)
           return { status: 'saved', revision: nextRevision }
         if (current.revision !== expectedRevision) return { status: 'conflict' }
+        validateQualityWorkspace(parsed, current.workspace)
         await mkdir(directory, { recursive: true, mode: 0o700 })
         const temporary = `${file}.${randomUUID()}.tmp`
         try {

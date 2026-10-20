@@ -1,0 +1,34 @@
+.materials-project-grid .materials-grid-center {
+  text-align: center;
+}
+.materials-project-grid .materials-grid-quantity {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  background-color: #f8fbff;
+  cursor: text;
+}
+.materials-project-grid .materials-grid-header-center .ag-header-cell-label {
+  justify-content: center;
+}
+.materials-project-grid .ag-row.materials-grid-selected {
+  background-color: #eff6ff;
+}
+.materials-project-grid .ag-row.materials-grid-changed {
+  background-color: #ecfdf5;
+}
+.materials-project-grid .ag-cell {
+  display: flex;
+  align-items: center;
+}
+.materials-project-grid .materials-grid-center {
+  justify-content: center;
+}
+.materials-project-grid .materials-grid-quantity {
+  justify-content: flex-end;
+}
+.materials-project-grid .ag-cell-wrap-text {
+  line-height: 1.5;
+}
+.materials-project-grid .ag-cell-inline-editing {
+  padding: 0;
+}
