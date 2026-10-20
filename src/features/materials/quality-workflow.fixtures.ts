@@ -60,7 +60,20 @@ export function inspectionFixture() {
       },
     ],
   })
-  workflow.cases.push(newInspection(workflow, 'app', [receipt], [line]))
+  const legacy = newInspection(
+    workflow,
+    [{ receiptId: receipt.id, quantity: receipt.quantity }],
+    [receipt],
+    [line],
+  )
+  // Persisted documents from the original workflow must stay readable without migration.
+  legacy.appId = 'app'
+  delete legacy.revisions[0]!.zni.documents
+  for (const row of legacy.revisions[0]!.zni.rows) {
+    delete row.appNumber
+    delete row.appDate
+  }
+  workflow.cases.push(legacy)
   const workspace = workspaceSnapshotSchema.parse({
     configuredAlloys: [],
     configuredCiphers: [],
@@ -85,7 +98,7 @@ export function acceptFixture(quantity = 8) {
     quantity === 10 ? 'accepted' : quantity === 0 ? 'rejected' : 'remarks'
   revision.zni.rows[0]!.remarks =
     quantity < 10 ? 'Замечания к части партии' : ''
-  revision.avk = newInspectionAct(workspace.qualityWorkflow.apps[0]!)
+  revision.avk = newInspectionAct(workspace.qualityWorkflow.apps[0]!.documents)
   revision.avk.number = 'АВК-1'
   revision.avk.checks.fill('Проверено')
   revision.avk.conclusion = 'Принято по результатам проверки'
@@ -93,6 +106,23 @@ export function acceptFixture(quantity = 8) {
     signInspection(revision, 'zni', localToday()),
     'avk',
     localToday(),
+  )
+  return workspace
+}
+
+export function materialInspectionFixture(presented = 10) {
+  const workspace = inspectionFixture()
+  workspace.qualityWorkflow.apps = []
+  workspace.qualityWorkflow.cases = []
+  workspace.qualityWorkflow.cases.push(
+    newInspection(
+      workspace.qualityWorkflow,
+      [{ receiptId: 'receipt', quantity: presented }],
+      workspace.materialReceipts as unknown as Parameters<
+        typeof newInspection
+      >[2],
+      workspace.lines as unknown as Parameters<typeof newInspection>[3],
+    ),
   )
   return workspace
 }

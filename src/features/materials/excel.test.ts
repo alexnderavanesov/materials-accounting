@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import * as XLSX from 'xlsx'
 import ExcelJS from 'exceljs'
 
@@ -6,6 +6,7 @@ import {
   createMaterialRequestTemplateWorkbook,
   createMaterialReceiptTemplateWorkbook,
   createProjectMaterialsExportWorkbook,
+  parseMaterialReceiptWorkbook,
   parseProjectMaterialsWorkbook,
 } from './excel'
 import { validateImportDraft } from './domain'
@@ -154,4 +155,88 @@ describe('materials Excel import', () => {
       quantity: 1,
     })
   })
+})
+
+describe('receipt Excel dates', () => {
+  const line = {
+    projectLineId: 'line-0',
+    requestId: 'request-0',
+    projectMaterialName: 'Труба',
+    unit: 'м',
+    requestQuantity: 10,
+    receivedQuantity: 0,
+    requestRest: 10,
+  }
+
+  it('prefills an editable local calendar date and preserves a date selected in the form', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    // Local midnight must not turn into the previous UTC day.
+    vi.setSystemTime(new Date(2026, 9, 20, 0, 15))
+    try {
+      const buffer = await createMaterialReceiptTemplateWorkbook({
+        requestNumber: 'TEST',
+        lines: [line, { ...line, date: '2026-07-13' }],
+      })
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(buffer)
+      const sheet = workbook.getWorksheet('Получение')!
+      expect(sheet.getCell('M6').value).toEqual(
+        new Date('2026-10-20T00:00:00Z'),
+      )
+      expect(sheet.getCell('M6').numFmt).toBe('dd.mm.yyyy')
+      expect(sheet.getCell('M6').protection.locked).toBe(false)
+      expect(
+        parseMaterialReceiptWorkbook(buffer).map((row) => row.date),
+      ).toEqual(['2026-10-20', '2026-07-13'])
+      expect(
+        parseMaterialReceiptWorkbook(buffer).every(
+          (row) => row.quantity === null,
+        ),
+      ).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([false, true])(
+    'reads native Excel dates with date1904=%s',
+    async (date1904) => {
+      const workbook = new ExcelJS.Workbook()
+      workbook.properties.date1904 = date1904
+      const sheet = workbook.addWorksheet('Получение')
+      sheet.getRow(5).values = ['ID заявки', 'Дата поступления']
+      sheet.getRow(6).values = ['request-0', new Date('2026-07-13T23:00:00Z')]
+      sheet.getCell('B6').numFmt = 'dd.mm.yyyy'
+      const rows = parseMaterialReceiptWorkbook(
+        await workbook.xlsx.writeBuffer(),
+      )
+      expect(rows[0]!.date).toBe('2026-07-13')
+    },
+  )
+
+  it.each([
+    ['20.10.2026', '2026-10-20'],
+    [' 1.2.2026 ', '2026-02-01'],
+    ['2026-07-13', '2026-07-13'],
+    ['29.02.2024', '2024-02-29'],
+    [42785.75, '2017-02-19'],
+    ['', ''],
+    ['31.02.2026', '31.02.2026'],
+    ['29.02.2026', '29.02.2026'],
+    ['2026-13-01', '2026-13-01'],
+    [60, '60'], // Excel's fictitious 29 February 1900 is not a real date.
+    [-1, '-1'],
+  ])(
+    'normalizes %s while preserving invalid input for validation',
+    async (input, expected) => {
+      const workbook = new ExcelJS.Workbook()
+      const sheet = workbook.addWorksheet('Получение')
+      sheet.getRow(5).values = ['ID заявки', 'Дата поступления']
+      sheet.getRow(6).values = ['request-0', input]
+      expect(
+        parseMaterialReceiptWorkbook(await workbook.xlsx.writeBuffer())[0]!
+          .date,
+      ).toBe(expected)
+    },
+  )
 })

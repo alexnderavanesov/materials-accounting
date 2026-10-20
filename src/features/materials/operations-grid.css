@@ -24,3 +24,10 @@
   background-color: #f8fafc;
   font-weight: 500;
 }
+.operations-grid .operations-grid-readonly {
+  background-color: #f1f5f9;
+}
+.operations-grid .ag-cell-inline-editing {
+  padding-top: 0;
+  padding-bottom: 0;
+}

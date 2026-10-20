@@ -17,7 +17,11 @@ import {
 } from './quality-print-data'
 import { createQualityPrintHandler } from './quality-print-api.server'
 import { createWorkspaceStore } from './workspace-snapshot.server'
-import { acceptFixture } from './quality-workflow.fixtures'
+import {
+  acceptFixture,
+  materialInspectionFixture,
+} from './quality-workflow.fixtures'
+import { currentInspection, newInspectionAct } from './quality-workflow'
 import { convertRequestPdf } from './request-print-pdf.server'
 
 const directories: Array<string> = []
@@ -34,6 +38,47 @@ afterEach(async () => {
   )
 })
 describe('quality templates and PDF endpoint', () => {
+  it.each(['zni', 'avk'] as const)(
+    'fills %s for selected materials without an APP and preserves the workspace',
+    async (kind) => {
+      const workspace = materialInspectionFixture(2.5)
+      const entry = workspace.qualityWorkflow.cases[0]!
+      currentInspection(entry).avk = newInspectionAct()
+      const before = JSON.stringify(workspace)
+      const data = buildQualityPrintData(workspace, entry.id, 1, kind)
+      const template = await builtinQualityTemplate(kind)
+      const filled = await fillQualityPrintWorkbook(
+        Buffer.from(template.base64, 'base64'),
+        template.config,
+        data,
+      )
+      if (process.env.MATERIALS_QUALITY_PDF_QA) {
+        const directory = process.env.MATERIALS_QUALITY_PDF_QA
+        await mkdir(directory, { recursive: true })
+        await writeFile(
+          join(directory, `${kind}-materials.pdf`),
+          await convertRequestPdf(filled),
+        )
+      }
+      const sheet = (await readPrintWorkbook(filled)).worksheets[0]!
+      if (kind === 'zni') {
+        expect(sheet.getCell('C11').text).toContain(
+          'Входной контроль материалов: Клапан',
+        )
+        expect(sheet.getCell('C11').text).toContain('2,5 шт')
+        expect(sheet.getCell('C11').text).toContain('зав. №123')
+      } else {
+        const row = template.config.tables.find(
+          (table) => table.kind === 'materials',
+        )!.row
+        expect(sheet.getCell(`M${row}`).value).toBe(2.5)
+        expect(sheet.getCell(`O${row}`).text).toBe('')
+        expect(sheet.getCell(`P${row}`).text).toBe('')
+      }
+      expect(JSON.stringify(workspace)).toBe(before)
+    },
+    60000,
+  )
   it.each(['zni', 'avk'] as const)(
     'loads normalized %s sample and produces a filled workbook without formulas',
     async (kind) => {

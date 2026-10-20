@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,6 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as XLSX from 'xlsx'
 import { getGridApi } from 'ag-grid-community'
+import { localDateInputValue } from './calendar-date'
 import {
   gridCell,
   editGridQuantity,
@@ -18,11 +20,13 @@ import {
   filterGridName,
   projectGridApi,
   operationRowAction,
+  operationGridApi,
 } from './project-grid-test-support'
 import { ProjectWorkspace } from './project-workspace'
 import { saveProjectWorkspaceSnapshot } from './functions'
 import { demoObjects } from './demo-data'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
+import { emptyQualityWorkflow, newInspection } from './quality-workflow'
 
 // End-to-end workspace scenarios mount several real, unvirtualized grids in jsdom.
 vi.setConfig({ testTimeout: 20000 })
@@ -665,6 +669,480 @@ describe('receipts grouped by request', () => {
   })
 })
 
+describe('request deletion and receipt cards', () => {
+  it.each([false, true])(
+    'removes only empty receipt cards and preserves actual receipts after reload (own receipt: %s)',
+    async (hasReceipt) => {
+      const workspace = conversionWorkspace()
+      workspace.lines.push(base().lines[1]!)
+      workspace.materialRequests.push(
+        {
+          ...workspace.materialRequests[0]!,
+          id: 'request-unreceived',
+          projectLineId: 'line-1',
+          projectMaterialName: 'Бета',
+          quantity: 4,
+        },
+        {
+          ...workspace.materialRequests[0]!,
+          id: 'request-other',
+          number: 'OTHER',
+          quantity: 2,
+        },
+      )
+      // Another request for the same material must not affect the deletion.
+      workspace.materialReceipts = [
+        { ...legacyReceipt(), id: 'receipt-other', requestId: 'request-other' },
+        ...(hasReceipt ? [legacyReceipt()] : []),
+      ]
+      const view = mount(workspace)
+      fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+      expect(screen.getByRole('button', { name: /^CONVERSION/ })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+      fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+        target: { value: 'CONVERSION' },
+      })
+      fireEvent.click(
+        await screen.findByRole('button', { name: /Редактировать/ }),
+      )
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Удалить заявку' }),
+      )
+      expect(
+        within(dialog).getByText(
+          hasReceipt
+            ? 'По заявке уже оформлены получения: 1. Они сохранятся во вкладке «Получение» как история удалённой заявки.'
+            : 'Получений по заявке нет. Её карточка также исчезнет из вкладки «Получение».',
+        ),
+      ).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Удалить' }))
+      await waitFor(() =>
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+      )
+      const saved = structuredClone(lastSaved())
+      expect(saved.materialRequests.map((entry) => entry.id)).toEqual([
+        'request-other',
+      ])
+      expect(saved.materialReceipts.map((entry) => entry.id)).toEqual(
+        workspace.materialReceipts.map((entry) => entry.id),
+      )
+      expect(saved.lines).toEqual(workspace.lines)
+      function expectReceiptCards() {
+        fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+        expect(screen.queryByRole('button', { name: /^CONVERSION/ })).toBeNull()
+        expect(screen.getByRole('button', { name: /^OTHER/ })).toBeTruthy()
+        expect(
+          screen.queryAllByRole('button', { name: /^Заявка удалена/ }),
+        ).toHaveLength(hasReceipt ? 1 : 0)
+        const count = hasReceipt ? 2 : 1
+        expect(
+          screen.getByText(`Найдено ${count} из ${count} заявок`),
+        ).toBeTruthy()
+      }
+      expectReceiptCards()
+      view.unmount()
+      mount(saved)
+      expectReceiptCards()
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+    },
+  )
+})
+
+describe('receipt import dates and editing', () => {
+  function receiptFile(
+    date: string | number,
+    invoice = 'Н-Дата',
+    quantity = 1.2,
+  ) {
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        [],
+        [],
+        [],
+        [],
+        [
+          'ID заявки',
+          'Наименование ТМЦ по факту поступления',
+          'Поступило',
+          'Номер накладной',
+          'Дата поступления',
+        ],
+        ['request-conversion', 'Альфа', quantity, invoice, date],
+        // Prefilled dates alone must not cause empty template rows to import.
+        ['request-conversion', 'Альфа', '', '', '2026-10-20'],
+      ]),
+      'Получение',
+    )
+    const buffer = XLSX.write(workbook, {
+      type: 'array',
+      bookType: 'xlsx',
+    }) as ArrayBuffer
+    const file = new File([buffer], 'receipt-dates.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
+    return file
+  }
+
+  async function uploadReceiptFile(dialog: HTMLElement, file: File) {
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [file] },
+    })
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status').textContent).toBe(file.name),
+    )
+  }
+
+  async function importReceiptDate(
+    dialog: HTMLElement,
+    date: string | number,
+    invoice = 'Н-Дата',
+  ) {
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Импорт Excel' }),
+    )
+    await uploadReceiptFile(dialog, receiptFile(date, invoice))
+    await within(dialog).findByText('Позиций в файле')
+  }
+
+  async function editPreview(
+    field: string,
+    value: string,
+    key: 'Enter' | 'Escape' | null = 'Enter',
+    rowNumber = 6,
+  ) {
+    const api = await operationGridApi('receipt-import')
+    const node = api.getRowNode(`${rowNumber}-request-conversion`)!
+    act(() => api.startEditingCell({ rowIndex: node.rowIndex!, colKey: field }))
+    const cell = document.querySelector(
+      `[grid-id="receipt-import"] [row-id="${node.id}"] [col-id="${field}"]`,
+    )!
+    let input: HTMLInputElement | null = null
+    await waitFor(() => {
+      input = cell.querySelector('input')
+      expect(input).toBeTruthy()
+    })
+    fireEvent.input(input!, { target: { value } })
+    if (key)
+      fireEvent.keyDown(input!, {
+        key,
+        code: key,
+        keyCode: key === 'Escape' ? 27 : 13,
+      })
+    return input!
+  }
+
+  it('corrects invalid imports in the grid, preserves service fields and calculates alternatives on save', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '31.02.2026', '')
+    const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
+      name: 'Применить импорт',
+    })
+    expect(apply.disabled).toBe(true)
+    const api = await operationGridApi('receipt-import')
+    for (const field of ['row', 'name', 'unit', 'status']) {
+      expect(
+        api
+          .getColumn(field)!
+          .isCellEditable(api.getRowNode('6-request-conversion')!),
+      ).toBe(false)
+    }
+    await editPreview('invoiceNumber', 'Н-Исправлено')
+    await editPreview('date', '21.10.2026')
+    expect(apply.disabled).toBe(false)
+    await editPreview('quantity', '9')
+    expect(
+      await within(dialog).findByText(/Поступление превышает остаток/),
+    ).toBeTruthy()
+    expect(apply.disabled).toBe(true)
+    await editPreview('quantity', '2,5')
+    await editPreview('certificate', 'Паспорт-7')
+    await editPreview('factoryNumber', 'Зав-8')
+    await editPreview('qualityDocument', 'Качество-9')
+    await editPreview('customerArvk', 'АРВК-10')
+    await editPreview('technicalDecision', 'ТР-11')
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(apply)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+    )
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().materialReceipts).toHaveLength(1)
+    expect(lastSaved().materialReceipts[0]).toMatchObject({
+      quantity: 2.5,
+      altQuantity: 6.25,
+      altUnit: 'кг',
+      date: '2026-10-21',
+      invoiceNumber: 'Н-Исправлено',
+      certificate: 'Паспорт-7',
+      factoryNumber: 'Зав-8',
+      qualityDocument: 'Качество-9',
+      customerArvk: 'АРВК-10',
+      technicalDecision: 'ТР-11',
+    })
+  })
+
+  it('commits the active editor before Apply and does not apply a newly invalid value', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '20.10.2026')
+    const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
+      name: 'Применить импорт',
+    })
+    await editPreview('invoiceNumber', '', null)
+    fireEvent.click(apply)
+    expect(
+      await within(dialog).findByText(/Заполните номер накладной/),
+    ).toBeTruthy()
+    expect(apply.disabled).toBe(true)
+    await editPreview('invoiceNumber', 'Н-2')
+    await editPreview('quantity', '3,5', null)
+    fireEvent.click(apply)
+    expect(within(dialog).queryByText('Импорт получения из Excel')).toBeNull()
+    expect(
+      within(dialog).getByPlaceholderText<HTMLInputElement>('Поступило, м'),
+    ).toHaveProperty('value', '3,5')
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('keeps invalid text in the editor and Escape cancels only the edit', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '20.10.2026')
+    const input = await editPreview('quantity', 'не число')
+    const api = await operationGridApi('receipt-import')
+    expect(api.getEditingCells()).toHaveLength(1)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Применить импорт' }),
+    )
+    expect(within(dialog).getByText('Импорт получения из Excel')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', keyCode: 27 })
+    expect(api.getEditingCells()).toHaveLength(0)
+    expect(within(dialog).getByText('Импорт получения из Excel')).toBeTruthy()
+    expect(api.getRowNode('6-request-conversion')!.data.row.row.quantity).toBe(
+      1.2,
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('allows uploading immediately and replaces the entire draft with a corrected file of the same name', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Импорт Excel' }),
+    )
+    const fileInput =
+      dialog.querySelector<HTMLInputElement>('input[type="file"]')!
+    const choose = vi.spyOn(fileInput, 'click')
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: 'Загрузить файл',
+      }),
+    )
+    expect(choose).toHaveBeenCalledTimes(1)
+    await uploadReceiptFile(dialog, receiptFile('31.02.2026', ''))
+    await editPreview('manufacturer', 'Правка в черновике')
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: 'Загрузить исправленный файл',
+      }),
+    )
+    expect(choose).toHaveBeenCalledTimes(2)
+    await uploadReceiptFile(dialog, receiptFile('23.10.2026', 'Н-Новая', 4))
+    const api = await operationGridApi('receipt-import')
+    expect(
+      api.getRowNode('6-request-conversion')!.data.row.row.manufacturer,
+    ).toBe('')
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Применить импорт' }),
+    )
+    expect(
+      within(dialog).getByPlaceholderText<HTMLInputElement>('Номер накладной *')
+        .value,
+    ).toBe('Н-Новая')
+    expect(
+      dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+    ).toBe('2026-10-23')
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed replacement and prevents accidentally applying the previous file', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '20.10.2026')
+    const badFile = new File([], 'broken.xlsx')
+    Object.defineProperty(badFile, 'arrayBuffer', {
+      value: async () => {
+        throw new Error('Файл повреждён')
+      },
+    })
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [badFile] },
+    })
+    expect(await within(dialog).findByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringContaining('Файл повреждён'),
+    )
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить импорт',
+      }).disabled,
+    ).toBe(true)
+    await uploadReceiptFile(dialog, receiptFile('24.10.2026'))
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить импорт',
+      }).disabled,
+    ).toBe(false)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('edits the correct sorted row and rejects duplicate filled request positions', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '20.10.2026')
+    const api = await operationGridApi('receipt-import')
+    act(() => api.applyColumnState({ state: [{ colId: 'row', sort: 'desc' }] }))
+    expect(api.getDisplayedRowAtIndex(0)!.id).toBe('7-request-conversion')
+    await editPreview('invoiceNumber', 'Н-Сортировка')
+    expect(
+      api.getRowNode('6-request-conversion')!.data.row.row.invoiceNumber,
+    ).toBe('Н-Сортировка')
+    expect(
+      api.getRowNode('7-request-conversion')!.data.row.row.invoiceNumber,
+    ).toBe('')
+    await editPreview('quantity', '1', 'Enter', 7)
+    expect(
+      within(dialog).getAllByText(/Позиция заявки повторяется в файле/),
+    ).toHaveLength(2)
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить импорт',
+      }).disabled,
+    ).toBe(true)
+    await editPreview('quantity', '', 'Enter', 7)
+    expect(
+      within(dialog).queryByText(/Позиция заявки повторяется в файле/),
+    ).toBeNull()
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить импорт',
+      }).disabled,
+    ).toBe(false)
+  })
+
+  it('keeps the latest uploaded file if an earlier read completes later', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '20.10.2026')
+    const earlier = receiptFile('21.10.2026', 'Н-Старый')
+    const earlierBuffer = await earlier.arrayBuffer()
+    const slowFile = new File([], 'slow.xlsx')
+    let finishRead!: (value: ArrayBuffer) => void
+    const pending = new Promise<ArrayBuffer>((resolve) => {
+      finishRead = resolve
+    })
+    Object.defineProperty(slowFile, 'arrayBuffer', { value: () => pending })
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [slowFile] },
+    })
+    await uploadReceiptFile(dialog, receiptFile('22.10.2026', 'Н-Последний'))
+    await act(async () => {
+      finishRead(earlierBuffer)
+      await pending
+    })
+    const api = await operationGridApi('receipt-import')
+    expect(
+      api.getRowNode('6-request-conversion')!.data.row.row.invoiceNumber,
+    ).toBe('Н-Последний')
+    expect(within(dialog).getByRole('status').textContent).toBe(
+      'receipt-dates.xlsx',
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['20.10.2026', '2026-10-20'],
+    [42785.75, '2017-02-19'],
+    ['', ''],
+  ])(
+    'retains the imported receipt date %s in the form and saved data',
+    async (input, expected) => {
+      const view = mount(conversionWorkspace())
+      const dialog = openReceipt()
+      await importReceiptDate(dialog, input)
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Применить импорт' }),
+      )
+      const date = expected || localDateInputValue()
+      expect(
+        dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+      ).toBe(date)
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+      )
+      await waitFor(() =>
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+      )
+      const saved = structuredClone(lastSaved())
+      expect(saved.materialReceipts).toHaveLength(1)
+      expect(saved.materialReceipts[0]).toMatchObject({
+        date,
+        quantity: 1.2,
+        invoiceNumber: 'Н-Дата',
+      })
+      view.unmount()
+      mount(saved)
+      fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+      expandReceiptRequests()
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Редактировать получение' }),
+      )
+      expect(
+        screen
+          .getByRole('dialog')
+          .querySelector<HTMLInputElement>('input[type="date"]')!.value,
+      ).toBe(date)
+    },
+  )
+
+  it('reports an invalid date and blocks applying the import without saving anything', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    await importReceiptDate(dialog, '31.02.2026')
+    expect(
+      await within(dialog).findByText(/Некорректная дата поступления/),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить импорт',
+      }).disabled,
+    ).toBe(true)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('keeps the selected form date when an older template has an empty date', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+      target: { value: '2026-07-13' },
+    })
+    await importReceiptDate(dialog, '')
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Применить импорт' }),
+    )
+    expect(
+      dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+    ).toBe('2026-07-13')
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+})
+
 describe('operation deletion', () => {
   async function startDelete(tab: RegExp, label: string) {
     fireEvent.click(screen.getByRole('button', { name: tab }))
@@ -678,6 +1156,30 @@ describe('operation deletion', () => {
   function cancel(dialog: HTMLElement) {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
   }
+
+  it('blocks receipt deletion when a ZNI uses it without an APP or signed AVK', async () => {
+    const workspace = conversionWorkspace()
+    const receipts = [legacyReceipt()]
+    workspace.materialReceipts = receipts
+    workspace.qualityWorkflow = emptyQualityWorkflow()
+    workspace.qualityWorkflow.cases.push(
+      newInspection(
+        workspace.qualityWorkflow,
+        [{ receiptId: receipts[0]!.id, quantity: 1 }],
+        receipts,
+        workspace.lines as unknown as Parameters<typeof newInspection>[3],
+      ),
+    )
+    mount(workspace)
+    const dialog = await startDelete(/^Получение/, 'Удалить получение')
+    expect(within(dialog).getByRole('alert').textContent).toContain('ЗНИ')
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Удалить' })
+        .disabled,
+    ).toBe(true)
+    confirm(dialog)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
 
   it('cancels without saving, then deletes issue → control → receipt and restores balances after reload', async () => {
     const workspace = qualityWorkspace()
@@ -1243,219 +1745,237 @@ describe('workspace user workflows', () => {
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
-  it('calculates partial receipts and issues through quality control using only the material coefficient', async () => {
-    mount(conversionWorkspace())
-    let dialog = openReceipt()
-    expect(
-      within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
-    ).toBeNull()
-    fireEvent.change(within(dialog).getByPlaceholderText('Поступило, м'), {
-      target: { value: '2,4' },
-    })
-    expect(
-      within(dialog).getByRole('status', {
-        name: 'Поступило в альтернативной единице',
-      }).textContent,
-    ).toBe('6 кг')
-    fireEvent.change(within(dialog).getByPlaceholderText('Номер накладной *'), {
-      target: { value: 'Н-1' },
-    })
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
-    )
-    await waitFor(() =>
-      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
-    )
-    expect(lastSaved().materialReceipts[0]).toMatchObject({
-      quantity: 2.4,
-      altQuantity: 6,
-      altUnit: 'кг',
-      altUnitFactor: 2.5,
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Оформить АПП' }))
-    dialog = screen.getByRole('dialog')
-    fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
-      target: { value: 'АПП-1' },
-    })
-    fireEvent.click(within(dialog).getByRole('checkbox'))
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить АПП' }),
-    )
-    await waitFor(() =>
-      expect(lastSaved().qualityWorkflow?.apps).toHaveLength(1),
-    )
-    fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
-    fireEvent.change(screen.getByLabelText('АПП для новой ЗНИ'), {
-      target: { value: lastSaved().qualityWorkflow!.apps[0]!.id },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ по АПП' }))
-    dialog = screen.getByRole('dialog')
-    expect(
-      within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
-    ).toBeNull()
-    fireEvent.change(within(dialog).getByLabelText('Результат'), {
-      target: { value: 'remarks' },
-    })
-    fireEvent.change(within(dialog).getByLabelText('Принято, м'), {
-      target: { value: '2' },
-    })
-    fireEvent.change(within(dialog).getByLabelText('Замечания по позиции'), {
-      target: { value: 'Остаток требует повторной проверки' },
-    })
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Добавить черновик АВК' }),
-    )
-    fireEvent.change(within(dialog).getByLabelText('Номер АВК'), {
-      target: { value: 'АВК-1' },
-    })
-    for (const textarea of within(dialog)
-      .getAllByRole('textbox')
-      .filter((element) =>
-        /^\d+\. /.test(element.parentElement?.textContent ?? ''),
-      ))
-      fireEvent.change(textarea, { target: { value: 'Проверено' } })
-    fireEvent.change(within(dialog).getByLabelText('Заключение комиссии'), {
-      target: { value: 'Частичная приёмка' },
-    })
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить документы' }),
-    )
-    await waitFor(() =>
-      expect(lastSaved().qualityWorkflow?.cases).toHaveLength(1),
-    )
-    for (const kind of ['ЗНИ', 'АВК']) {
-      fireEvent.click(
-        await screen.findByRole('button', { name: `Подписать ${kind}` }),
+  it.each([true, false])(
+    'calculates partial receipts and issues through quality control using only the material coefficient (APP: %s)',
+    async (withApp) => {
+      mount(conversionWorkspace())
+      let dialog = openReceipt()
+      expect(
+        within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
+      ).toBeNull()
+      fireEvent.change(within(dialog).getByPlaceholderText('Поступило, м'), {
+        target: { value: '2,4' },
+      })
+      expect(
+        within(dialog).getByRole('status', {
+          name: 'Поступило в альтернативной единице',
+        }).textContent,
+      ).toBe('6 кг')
+      fireEvent.change(
+        within(dialog).getByPlaceholderText('Номер накладной *'),
+        {
+          target: { value: 'Н-1' },
+        },
       )
       fireEvent.click(
-        within(screen.getByRole('dialog')).getByRole('button', {
-          name: 'Подтвердить подписание',
-        }),
+        within(dialog).getByRole('button', { name: 'Сохранить получение' }),
       )
       await waitFor(() =>
-        expect(
-          lastSaved().qualityWorkflow!.cases[0]!.revisions[0]![
-            kind === 'ЗНИ' ? 'zni' : 'avk'
-          ]?.signedOn,
-        ).toBeTruthy(),
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
       )
-    }
-    expect(lastSaved().qualityControls).toEqual([])
-    const savesBeforeIssue = vi.mocked(saveProjectWorkspaceSnapshot).mock.calls
-      .length
-    fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
-    fireEvent.click(
-      screen.getAllByRole('button', { name: 'Выдать в монтаж' })[0]!,
-    )
-    dialog = screen.getByRole('dialog')
-    expect(
-      within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
-    ).toBeNull()
-    fireEvent.change(
-      within(dialog)
-        .getByText('Количество выдано')
-        .parentElement!.querySelector('input')!,
-      { target: { value: '0,4' } },
-    )
-    expect(
-      within(dialog).getByRole('status', {
-        name: 'Выдано в альтернативной единице',
-      }).textContent,
-    ).toBe('1 кг')
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
-    )
-    await waitFor(() =>
+      expect(lastSaved().materialReceipts[0]).toMatchObject({
+        quantity: 2.4,
+        altQuantity: 6,
+        altUnit: 'кг',
+        altUnitFactor: 2.5,
+      })
+      if (withApp) {
+        fireEvent.click(screen.getByRole('button', { name: 'Оформить АПП' }))
+        dialog = screen.getByRole('dialog')
+        fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+          target: { value: 'АПП-1' },
+        })
+        fireEvent.click(within(dialog).getByRole('checkbox'))
+        fireEvent.click(
+          within(dialog).getByRole('button', { name: 'Сохранить АПП' }),
+        )
+        await waitFor(() =>
+          expect(lastSaved().qualityWorkflow?.apps).toHaveLength(1),
+        )
+      }
+      fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
+      if (withApp)
+        fireEvent.change(screen.getByLabelText(/Выбрать весь АПП/), {
+          target: { value: lastSaved().qualityWorkflow!.apps[0]!.id },
+        })
+      else
+        fireEvent.click(
+          within(screen.getByRole('dialog')).getByRole('checkbox'),
+        )
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: 'Продолжить с выбранными материалами',
+        }),
+      )
+      dialog = screen.getByRole('dialog')
+      expect(
+        within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
+      ).toBeNull()
+      fireEvent.change(within(dialog).getByLabelText('Результат'), {
+        target: { value: 'remarks' },
+      })
+      fireEvent.change(within(dialog).getByLabelText('Принято, м'), {
+        target: { value: '2' },
+      })
+      fireEvent.change(within(dialog).getByLabelText('Замечания по позиции'), {
+        target: { value: 'Остаток требует повторной проверки' },
+      })
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Добавить черновик АВК' }),
+      )
+      fireEvent.change(within(dialog).getByLabelText('Номер АВК'), {
+        target: { value: 'АВК-1' },
+      })
+      for (const textarea of within(dialog)
+        .getAllByRole('textbox')
+        .filter((element) =>
+          /^\d+\. /.test(element.parentElement?.textContent ?? ''),
+        ))
+        fireEvent.change(textarea, { target: { value: 'Проверено' } })
+      fireEvent.change(within(dialog).getByLabelText('Заключение комиссии'), {
+        target: { value: 'Частичная приёмка' },
+      })
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Сохранить документы' }),
+      )
+      await waitFor(() =>
+        expect(lastSaved().qualityWorkflow?.cases).toHaveLength(1),
+      )
+      for (const kind of ['ЗНИ', 'АВК']) {
+        fireEvent.click(
+          await screen.findByRole('button', { name: `Подписать ${kind}` }),
+        )
+        fireEvent.click(
+          within(screen.getByRole('dialog')).getByRole('button', {
+            name: 'Подтвердить подписание',
+          }),
+        )
+        await waitFor(() =>
+          expect(
+            lastSaved().qualityWorkflow!.cases[0]!.revisions[0]![
+              kind === 'ЗНИ' ? 'zni' : 'avk'
+            ]?.signedOn,
+          ).toBeTruthy(),
+        )
+      }
+      expect(lastSaved().qualityControls).toEqual([])
+      const savesBeforeIssue = vi.mocked(saveProjectWorkspaceSnapshot).mock
+        .calls.length
+      fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
+      fireEvent.click(
+        screen.getAllByRole('button', { name: 'Выдать в монтаж' })[0]!,
+      )
+      dialog = screen.getByRole('dialog')
+      expect(
+        within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
+      ).toBeNull()
+      fireEvent.change(
+        within(dialog)
+          .getByText('Количество выдано')
+          .parentElement!.querySelector('input')!,
+        { target: { value: '0,4' } },
+      )
+      expect(
+        within(dialog).getByRole('status', {
+          name: 'Выдано в альтернативной единице',
+        }).textContent,
+      ).toBe('1 кг')
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      )
+      await waitFor(() =>
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
+          savesBeforeIssue + 1,
+        ),
+      )
+      expect(lastSaved().materialIssues[0]).toMatchObject({
+        quantity: 0.4,
+        altQuantity: 1,
+        altUnit: 'кг',
+        altUnitFactor: 2.5,
+        projectUnit: 'м',
+      })
+
+      const saved = structuredClone(lastSaved())
+      saved.lines[0]!.alternativeUnit = 'т'
+      saved.lines[0]!.alternativeUnitFactor = 0.1
+      cleanup()
+      mount(saved)
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
         savesBeforeIssue + 1,
-      ),
-    )
-    expect(lastSaved().materialIssues[0]).toMatchObject({
-      quantity: 0.4,
-      altQuantity: 1,
-      altUnit: 'кг',
-      altUnitFactor: 2.5,
-      projectUnit: 'м',
-    })
-
-    const saved = structuredClone(lastSaved())
-    saved.lines[0]!.alternativeUnit = 'т'
-    saved.lines[0]!.alternativeUnitFactor = 0.1
-    cleanup()
-    mount(saved)
-    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
-      savesBeforeIssue + 1,
-    )
-    fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    expandReceiptRequests()
-    fireEvent.click(
-      await screen.findByRole('button', { name: /Редактировать/ }),
-    )
-    dialog = screen.getByRole('dialog')
-    expect(
-      within(dialog).getByRole('status', {
-        name: 'Поступило в альтернативной единице',
-      }).textContent,
-    ).toBe('0,24 т')
-    fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
-      target: { value: 'Обновлено' },
-    })
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
-    )
-    await waitFor(() =>
-      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
-        savesBeforeIssue + 2,
-      ),
-    )
-    expect(lastSaved().materialRequests[0]).toMatchObject({
-      quantity: 8,
-      altQuantity: 0.8,
-      altUnit: 'т',
-    })
-    expect(lastSaved().materialReceipts[0]).toMatchObject({
-      quantity: 2.4,
-      altQuantity: 0.24,
-      altUnit: 'т',
-      altUnitFactor: 0.1,
-    })
-    expect(lastSaved().materialIssues[0]).toMatchObject({
-      quantity: 0.4,
-      altQuantity: 0.04,
-      altUnit: 'т',
-      altUnitFactor: 0.1,
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
-    await editGridMaterial('Альфа')
-    dialog = screen.getByRole('dialog')
-    fireEvent.change(within(dialog).getByRole('combobox'), {
-      target: { value: 'Оборудование' },
-    })
-    fireEvent.change(
-      within(dialog).getByRole('textbox', {
-        name: 'Количество альтернативных единиц на одну основную',
-      }),
-      { target: { value: '0,2' } },
-    )
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
-    await waitFor(() =>
-      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
-        savesBeforeIssue + 3,
-      ),
-    )
-    expect(lastSaved().materialRequests[0]).toMatchObject({
-      altQuantity: 1.6,
-      altUnit: 'т',
-    })
-    expect(lastSaved().materialReceipts[0]).toMatchObject({
-      altQuantity: 0.48,
-      altUnit: 'т',
-    })
-    expect(lastSaved().materialIssues[0]).toMatchObject({
-      altQuantity: 0.08,
-      altUnit: 'т',
-    })
-  })
+      )
+      fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+      expandReceiptRequests()
+      fireEvent.click(
+        await screen.findByRole('button', { name: /Редактировать/ }),
+      )
+      dialog = screen.getByRole('dialog')
+      expect(
+        within(dialog).getByRole('status', {
+          name: 'Поступило в альтернативной единице',
+        }).textContent,
+      ).toBe('0,24 т')
+      fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+        target: { value: 'Обновлено' },
+      })
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+      )
+      await waitFor(() =>
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
+          savesBeforeIssue + 2,
+        ),
+      )
+      expect(lastSaved().materialRequests[0]).toMatchObject({
+        quantity: 8,
+        altQuantity: 0.8,
+        altUnit: 'т',
+      })
+      expect(lastSaved().materialReceipts[0]).toMatchObject({
+        quantity: 2.4,
+        altQuantity: 0.24,
+        altUnit: 'т',
+        altUnitFactor: 0.1,
+      })
+      expect(lastSaved().materialIssues[0]).toMatchObject({
+        quantity: 0.4,
+        altQuantity: 0.04,
+        altUnit: 'т',
+        altUnitFactor: 0.1,
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+      await editGridMaterial('Альфа')
+      dialog = screen.getByRole('dialog')
+      fireEvent.change(within(dialog).getByRole('combobox'), {
+        target: { value: 'Оборудование' },
+      })
+      fireEvent.change(
+        within(dialog).getByRole('textbox', {
+          name: 'Количество альтернативных единиц на одну основную',
+        }),
+        { target: { value: '0,2' } },
+      )
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
+      await waitFor(() =>
+        expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
+          savesBeforeIssue + 3,
+        ),
+      )
+      expect(lastSaved().materialRequests[0]).toMatchObject({
+        altQuantity: 1.6,
+        altUnit: 'т',
+      })
+      expect(lastSaved().materialReceipts[0]).toMatchObject({
+        altQuantity: 0.48,
+        altUnit: 'т',
+      })
+      expect(lastSaved().materialIssues[0]).toMatchObject({
+        altQuantity: 0.08,
+        altUnit: 'т',
+      })
+    },
+  )
   it('preserves historical receipt values without manual fields and blocks quantity changes until conversion is configured', async () => {
     const workspace = conversionWorkspace()
     delete workspace.lines[0]!.alternativeUnitFactor

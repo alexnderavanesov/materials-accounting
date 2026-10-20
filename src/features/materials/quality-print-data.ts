@@ -2,7 +2,11 @@ import { getOperationAlternative, getOperationConversion } from './domain'
 import type { SubobjectMaterialMetric } from './types'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 import type { QualityPrintData, QualityPrintKind } from './quality-print'
-import { findInspectionMaterial, resultLabels } from './quality-workflow'
+import {
+  findInspectionMaterial,
+  inspectionDocuments,
+  resultLabels,
+} from './quality-workflow'
 
 const dateText = (value: string | null) =>
   value ? value.split('-').reverse().join('.') : ''
@@ -21,7 +25,7 @@ export function buildQualityPrintData(
   const app = workspace.qualityWorkflow?.apps.find(
     (item) => item.id === entry?.appId,
   )
-  if (!entry || !revision || !app)
+  if (!entry || !revision || (entry.appId && !app))
     throw new Error('Документ или ревизия не найдены.')
   const { zni, avk } = revision
   if (kind === 'avk' && !avk) throw new Error('АВК этой ревизии ещё не создан.')
@@ -31,7 +35,7 @@ export function buildQualityPrintData(
       (item) => item.id === row.receiptId,
     )
     const previous = {
-      quantity: row.presented,
+      quantity: Number(receipt?.quantity ?? row.presented),
       projectUnit: row.unit,
       altUnit: String(receipt?.altUnit ?? row.altUnit),
       altUnitFactor:
@@ -71,8 +75,8 @@ export function buildQualityPrintData(
       document: row.document,
       alloy: row.alloy,
       remarks: row.remarks,
-      appNumber: app.number,
-      appDate: dateText(app.date),
+      appNumber: row.appNumber ?? app?.number ?? '',
+      appDate: dateText(row.appDate ?? app?.date ?? ''),
     }
   })
   const partial = zni.rows
@@ -91,6 +95,12 @@ export function buildQualityPrintData(
         ? 'rejected'
         : 'remarks'
   const documentDate = kind === 'zni' ? zni.date : avk!.date
+  const appNumbers = [
+    ...new Set(materials.map((row) => row.appNumber).filter(Boolean)),
+  ].join('; ')
+  const appDates = [
+    ...new Set(materials.map((row) => row.appDate).filter(Boolean)),
+  ].join('; ')
   const fields: QualityPrintData['fields'] = {
     ...zni.details,
     number: kind === 'zni' ? zni.number : avk!.number,
@@ -117,11 +127,24 @@ export function buildQualityPrintData(
     zniNumber: zni.number,
     zniDate: dateText(zni.date),
     zniSignedOn: dateText(zni.signedOn),
-    appNumber: app.number,
-    appDate: dateText(app.date),
+    appNumber: appNumbers,
+    appDate: appDates,
     inspectionDate: dateText(zni.inspectionDate),
     inspectionTime: zni.inspectionTime,
-    description: `Входной контроль материалов согласно акту приёма-передачи №${app.number} от ${dateText(app.date)}.`,
+    description: app
+      ? `Входной контроль материалов согласно акту приёма-передачи №${app.number} от ${dateText(app.date)}.`
+      : `Входной контроль материалов: ${zni.rows
+          .map((row) =>
+            [
+              `${row.name} — ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(row.presented)} ${row.unit}`,
+              row.cipher ? `шифр ${row.cipher}` : '',
+              row.factoryNumber ? `зав. №${row.factoryNumber}` : '',
+              row.heatBatch ? `партия ${row.heatBatch}` : '',
+            ]
+              .filter(Boolean)
+              .join(', '),
+          )
+          .join('; ')}.`,
     materials: [...new Set(zni.rows.map((row) => row.name))].join('; '),
     ciphers: [
       ...new Set(zni.rows.map((row) => row.cipher).filter(Boolean)),
@@ -147,7 +170,10 @@ export function buildQualityPrintData(
   return {
     fields,
     materials,
-    documents: (avk?.documents ?? app.documents).map((doc, index) => ({
+    documents: (
+      avk?.documents ??
+      inspectionDocuments(workspace.qualityWorkflow!, entry, revision)
+    ).map((doc, index) => ({
       index: index + 1,
       name: doc.name,
       number: doc.number,
@@ -164,7 +190,7 @@ export const sampleQualityPrintData: QualityPrintData = {
     month: 'октября',
     year: 2026,
     project: 'Пример объекта строительства',
-    description: 'Входной контроль материалов согласно АПП №12 от 18.10.2026.',
+    description: 'Входной контроль материалов: клапан запорный Ду 25 Ру 160.',
     ciphers: 'ТКМ5',
     revision: 'РЕВИЗИЯ 1',
     location: 'Площадка строительства',

@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom'
 import { OperationsGrid } from './operations-grid'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import type { GridApi } from 'ag-grid-community'
 import {
   BarChart3,
   ClipboardCheck,
@@ -44,6 +45,7 @@ import {
   validateImportDraft,
 } from './domain'
 import { buildOperationActivityIndex } from './operation-activity'
+import { localDateInputValue, normalizeCalendarDate } from './calendar-date'
 import {
   isViewBoolean,
   isViewExpanded,
@@ -426,8 +428,9 @@ const operationTabMeta: Record<
     label: 'Получение',
   },
   quality: {
-    action: 'Создать ЗНИ по АПП',
-    description: 'ЗНИ по акту приёма-передачи и АВК с результатами приёмки.',
+    action: 'Создать ЗНИ',
+    description:
+      'ЗНИ на выбранные материалы или весь АПП и АВК с результатами приёмки.',
     empty: 'Документов входного контроля пока нет.',
     icon: <ClipboardCheck size={18} />,
     label: 'Входной контроль',
@@ -1504,19 +1507,12 @@ export function ProjectWorkspace({
   }
 
   function deleteOperation(target: OperationDeletion) {
-    if (
-      target.kind === 'receipts' &&
-      qualityWorkflow?.apps.some((app) =>
-        app.receiptIds.some((id) => target.ids.includes(id)),
-      )
-    )
-      return 'Получение связано с АПП. Сначала удалите или измените АПП; подписанные документы сохраняются в истории.'
-
     const error = getOperationDeletionError(
       target,
       materialReceipts,
       qualityControls,
       materialIssues,
+      qualityWorkflow,
     )
     if (error) return error
 
@@ -2111,6 +2107,7 @@ function OperationsSection({
         materialReceipts,
         qualityControls,
         materialIssues,
+        qualityWorkflow,
       ) || deleteError
     : ''
   function requestDelete(target: OperationDeletion) {
@@ -2407,6 +2404,9 @@ function OperationsSection({
                   : undefined
               }
               search={qualitySearch}
+              legacyReceiptIds={qualityControls
+                .filter((entry) => !entry.id.startsWith('inspection:'))
+                .map((entry) => entry.receiptId)}
             />
           )}
 
@@ -2634,6 +2634,7 @@ function OperationsSection({
         existingRequests={materialRequests}
         lines={lines}
         open={modal === 'requests'}
+        receipts={materialReceipts}
         summaryByLine={operationSummary.byLine}
         onAdjustProjectQuantity={onAdjustProjectQuantity}
         onClose={() => {
@@ -4804,6 +4805,7 @@ function RequestModal({
   existingRequests,
   lines,
   open,
+  receipts,
   summaryByLine,
   onAdjustProjectQuantity,
   onClose,
@@ -4816,6 +4818,7 @@ function RequestModal({
   existingRequests: Array<MaterialRequestEntry>
   lines: Array<SubobjectMaterialMetric>
   open: boolean
+  receipts: Array<MaterialReceiptEntry>
   summaryByLine: Map<string, OperationLineSummary>
   onAdjustProjectQuantity: (lineId: string, quantity: number) => void
   onClose: () => void
@@ -4830,6 +4833,10 @@ function RequestModal({
     () => buildRequestReferenceQuantities(lines),
     [lines],
   )
+  const receiptCount = useMemo(() => {
+    const requestIds = new Set(editingRequest?.entries.map((entry) => entry.id))
+    return receipts.filter((entry) => requestIds.has(entry.requestId)).length
+  }, [editingRequest, receipts])
   const ciphers = useMemo(
     () =>
       unique([
@@ -5422,7 +5429,14 @@ function RequestModal({
             <div className="flex items-center gap-2">
               {deleteConfirmOpen ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
-                  <span>Удалить заявку {editingRequest.number}?</span>
+                  <div className="basis-full">
+                    <p>Удалить заявку {editingRequest.number}?</p>
+                    <p className="mt-1 text-xs leading-5">
+                      {receiptCount > 0
+                        ? `По заявке уже оформлены получения: ${receiptCount}. Они сохранятся во вкладке «Получение» как история удалённой заявки.`
+                        : 'Получений по заявке нет. Её карточка также исчезнет из вкладки «Получение».'}
+                    </p>
+                  </div>
                   <Button
                     className="h-8 border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-100"
                     variant="outline"
@@ -6478,13 +6492,36 @@ function ReceiptModal({
   const [receiptSearch, setReceiptSearch] = useState('')
   const [receiptRequestSearch, setReceiptRequestSearch] = useState('')
   const [receiptImportOpen, setReceiptImportOpen] = useState(false)
-  const [receiptImportDraft, setReceiptImportDraft] =
+  const [receiptImportDraft, setStoredReceiptImportDraft] =
     useState<MaterialReceiptImportDraft | null>(null)
+  const receiptImportDraftRef = useRef<MaterialReceiptImportDraft | null>(null)
+  const receiptImportReadRef = useRef(0)
+  const [receiptImportFileName, setReceiptImportFileName] = useState('')
+  const [receiptImportError, setReceiptImportError] = useState('')
+  const [receiptImportLoading, setReceiptImportLoading] = useState(false)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const initializationKeyRef = useRef<string | null>(null)
   const initializationKey = editingReceipt
     ? `edit:${editingReceipt.key}`
     : 'create'
+
+  function setReceiptImportDraft(value: MaterialReceiptImportDraft | null) {
+    // Cell commit and Apply may happen in the same event, before React renders.
+    receiptImportDraftRef.current = value
+    setStoredReceiptImportDraft(value)
+    if (!value) {
+      receiptImportReadRef.current += 1
+      setReceiptImportFileName('')
+      setReceiptImportError('')
+      setReceiptImportLoading(false)
+    }
+  }
+
+  function closeReceiptImport() {
+    receiptImportReadRef.current += 1
+    setReceiptImportLoading(false)
+    setReceiptImportOpen(false)
+  }
 
   useEffect(() => {
     if (!open) {
@@ -6789,7 +6826,7 @@ function ReceiptModal({
         customerArvk: current[draftKey]?.customerArvk ?? '',
         customerReceiptDocument:
           current[draftKey]?.customerReceiptDocument ?? '',
-        date: current[draftKey]?.date ?? todayInputValue(),
+        date: current[draftKey]?.date ?? localDateInputValue(),
         factoryNumber: current[draftKey]?.factoryNumber ?? '',
         heatBatch: current[draftKey]?.heatBatch ?? '',
         invoiceNumber: current[draftKey]?.invoiceNumber ?? '',
@@ -6808,9 +6845,10 @@ function ReceiptModal({
 
     downloadWorkbook(
       await createMaterialReceiptTemplateWorkbook({
-        lines: receiptTemplateWorkItems.map(({ request, receipt }) => ({
+        lines: receiptTemplateWorkItems.map(({ key, request, receipt }) => ({
           altUnit: getReceiptConversion(request, receipt)?.unit,
           altUnitFactor: getReceiptConversion(request, receipt)?.factor,
+          date: drafts[key]?.date || receipt?.date || localDateInputValue(),
           materialId: request.materialId,
           projectLineId: request.projectLineId,
           projectMaterialName: request.projectMaterialName,
@@ -6832,8 +6870,59 @@ function ReceiptModal({
   }
 
   async function parseReceiptImportFile(file: File) {
-    const { parseMaterialReceiptWorkbook } = await import('./excel')
-    const rows = parseMaterialReceiptWorkbook(await file.arrayBuffer())
+    const readId = ++receiptImportReadRef.current
+    setReceiptImportLoading(true)
+    setReceiptImportError('')
+    try {
+      const { parseMaterialReceiptWorkbook } = await import('./excel')
+      const rows = parseMaterialReceiptWorkbook(await file.arrayBuffer())
+      if (readId !== receiptImportReadRef.current) return
+      if (rows.length === 0) {
+        throw new Error(
+          'В файле не найдены позиции. Используйте шаблон получения.',
+        )
+      }
+      setReceiptImportDraft(buildReceiptImportDraft(rows))
+      setReceiptImportFileName(file.name)
+    } catch (error) {
+      if (readId !== receiptImportReadRef.current) return
+      setReceiptImportError(
+        `Не удалось загрузить файл «${file.name}». ${
+          error instanceof Error ? error.message : 'Проверьте файл Excel.'
+        } Загрузите исправленный файл повторно.`,
+      )
+    } finally {
+      if (readId === receiptImportReadRef.current)
+        setReceiptImportLoading(false)
+    }
+  }
+
+  function editReceiptImportRow(
+    rowNumber: number,
+    field: keyof ReceiptDraft,
+    value: string,
+  ) {
+    const current = receiptImportDraftRef.current
+    if (!current) return
+    if (
+      field === 'quantity' &&
+      value.trim() &&
+      parseNullableNumber(value) === null
+    )
+      return
+    const rows = current.rows.map(({ row }) =>
+      row.rowNumber === rowNumber
+        ? {
+            ...row,
+            [field]:
+              field === 'quantity'
+                ? parseNullableNumber(value)
+                : field === 'date'
+                  ? normalizeCalendarDate(value) || value.trim()
+                  : value.trim(),
+          }
+        : row,
+    )
     setReceiptImportDraft(buildReceiptImportDraft(rows))
   }
 
@@ -6847,6 +6936,10 @@ function ReceiptModal({
       const errors: Array<string> = []
       const item = requestById.get(row.requestId)
       const quantity = row.quantity ?? 0
+      const date =
+        row.date ||
+        (item && (drafts[item.key]?.date || item.receipt?.date)) ||
+        localDateInputValue()
       const hasEditableData =
         quantity > 0 ||
         (row.actualName.trim().length > 0 &&
@@ -6856,6 +6949,10 @@ function ReceiptModal({
         row.manufacturer.trim().length > 0 ||
         row.heatBatch.trim().length > 0 ||
         row.customerReceiptDocument.trim().length > 0 ||
+        row.certificate.trim().length > 0 ||
+        row.factoryNumber.trim().length > 0 ||
+        row.qualityDocument.trim().length > 0 ||
+        row.customerArvk.trim().length > 0 ||
         row.note.trim().length > 0 ||
         row.technicalDecision.trim().length > 0
 
@@ -6881,6 +6978,12 @@ function ReceiptModal({
 
       if (hasEditableData && row.invoiceNumber.trim().length === 0) {
         errors.push('Заполните номер накладной.')
+      }
+
+      if (hasEditableData && !normalizeCalendarDate(date)) {
+        errors.push(
+          'Некорректная дата поступления. Укажите дату в формате ДД.ММ.ГГГГ или ГГГГ-ММ-ДД.',
+        )
       }
 
       if (row.quantity !== null && row.quantity < 0) {
@@ -6924,7 +7027,7 @@ function ReceiptModal({
           certificate: row.certificate,
           customerArvk: row.customerArvk,
           customerReceiptDocument: row.customerReceiptDocument,
-          date: row.date || todayInputValue(),
+          date,
           factoryNumber: row.factoryNumber,
           heatBatch: row.heatBatch,
           invoiceNumber: row.invoiceNumber,
@@ -6944,6 +7047,27 @@ function ReceiptModal({
       }
     })
 
+    const activeRequestCounts = new Map<string, number>()
+    for (const row of rowsDraft) {
+      if (row.status !== 'ignored') {
+        activeRequestCounts.set(
+          row.row.requestId,
+          (activeRequestCounts.get(row.row.requestId) ?? 0) + 1,
+        )
+      }
+    }
+    for (const row of rowsDraft) {
+      if (
+        row.status !== 'ignored' &&
+        (activeRequestCounts.get(row.row.requestId) ?? 0) > 1
+      ) {
+        row.errors.push(
+          'Позиция заявки повторяется в файле. Оставьте одно поступление на позицию.',
+        )
+        row.status = 'error'
+      }
+    }
+
     return {
       rows: rowsDraft,
       summary: {
@@ -6956,14 +7080,20 @@ function ReceiptModal({
   }
 
   function applyReceiptImportDraft() {
-    if (!receiptImportDraft || receiptImportDraft.summary.errors > 0) {
+    const importDraft = receiptImportDraftRef.current
+    if (!importDraft || receiptImportLoading || receiptImportError) return
+    const validated = buildReceiptImportDraft(
+      importDraft.rows.map(({ row }) => row),
+    )
+    setReceiptImportDraft(validated)
+    if (validated.summary.errors > 0 || !validated.summary.ready) {
       return
     }
 
     setDrafts((current) => {
       const next = { ...current }
 
-      for (const row of receiptImportDraft.rows) {
+      for (const row of validated.rows) {
         if (row.status !== 'ready' || !row.request) {
           continue
         }
@@ -7022,7 +7152,7 @@ function ReceiptModal({
         certificate: draft?.certificate.trim() ?? '',
         customerArvk: draft?.customerArvk.trim() ?? '',
         customerReceiptDocument: draft?.customerReceiptDocument.trim() ?? '',
-        date: draft?.date || todayInputValue(),
+        date: draft?.date || localDateInputValue(),
         factoryNumber: draft?.factoryNumber.trim() ?? '',
         heatBatch: draft?.heatBatch.trim() ?? '',
         id: receipt?.id ?? createClientId('receipt'),
@@ -7446,7 +7576,7 @@ function ReceiptModal({
                               <Input
                                 className="h-10 bg-white text-sm"
                                 type="date"
-                                value={draft?.date ?? todayInputValue()}
+                                value={draft?.date ?? localDateInputValue()}
                                 onChange={(event) =>
                                   updateDraft(
                                     key,
@@ -7643,13 +7773,17 @@ function ReceiptModal({
         </div>
         <ReceiptImportDialog
           draft={receiptImportDraft}
+          fileName={receiptImportFileName}
+          fileError={receiptImportError}
+          loading={receiptImportLoading}
           fileInputRef={importFileInputRef}
           open={receiptImportOpen}
           requestNumber={requestNumber}
           scopeCount={receiptTemplateWorkItems.length}
           onApply={applyReceiptImportDraft}
           onChooseFile={() => importFileInputRef.current?.click()}
-          onClose={() => setReceiptImportOpen(false)}
+          onClose={closeReceiptImport}
+          onEdit={editReceiptImportRow}
           onDownloadTemplate={() => void downloadReceiptTemplate()}
           onFileChange={(file) => void parseReceiptImportFile(file)}
         />
@@ -7864,6 +7998,9 @@ function ReceiptRequestOptionButton({
 
 function ReceiptImportDialog({
   draft,
+  fileName,
+  fileError,
+  loading,
   fileInputRef,
   open,
   requestNumber,
@@ -7873,8 +8010,12 @@ function ReceiptImportDialog({
   onClose,
   onDownloadTemplate,
   onFileChange,
+  onEdit,
 }: {
   draft: MaterialReceiptImportDraft | null
+  fileName: string
+  fileError: string
+  loading: boolean
   fileInputRef: React.RefObject<HTMLInputElement | null>
   open: boolean
   requestNumber: string
@@ -7884,45 +8025,55 @@ function ReceiptImportDialog({
   onClose: () => void
   onDownloadTemplate: () => void
   onFileChange: (file: File) => void
+  onEdit: (rowNumber: number, field: keyof ReceiptDraft, value: string) => void
 }) {
-  const [templateDownloaded, setTemplateDownloaded] = useState(false)
-
-  useEffect(() => {
-    if (open) {
-      setTemplateDownloaded(false)
-    }
-  }, [open, requestNumber])
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        onClose()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose, open])
+  const gridRef = useRef<GridApi<{
+    row: MaterialReceiptImportDraftRow
+  }> | null>(null)
 
   if (!open) {
     return null
   }
 
   const canApply = Boolean(
-    draft && draft.summary.ready > 0 && draft.summary.errors === 0,
+    draft &&
+    draft.summary.ready > 0 &&
+    draft.summary.errors === 0 &&
+    !loading &&
+    !fileError,
   )
-  const handleDownloadTemplate = () => {
-    onDownloadTemplate()
-    setTemplateDownloaded(true)
-  }
 
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6">
+    <div
+      className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6"
+      onKeyDownCapture={(event) => {
+        const grid = gridRef.current
+        if (
+          event.key === 'Escape' &&
+          grid &&
+          !grid.isDestroyed() &&
+          grid.getEditingCells().length > 0
+        ) {
+          event.preventDefault()
+          event.stopPropagation()
+          grid.stopEditing(true)
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          // AG Grid handles Escape in its editor; do not also close the import.
+          if (
+            !(
+              event.target instanceof Element &&
+              event.target.closest('[grid-id]')
+            )
+          )
+            onClose()
+        }
+      }}
+    >
       <div className="flex h-[min(820px,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
           <div>
@@ -7930,9 +8081,8 @@ function ReceiptImportDialog({
               Импорт получения из Excel
             </h3>
             <p className="mt-1 text-sm leading-6 text-slate-500">
-              Шаблон строится по текущему найденному списку позиций. Серые
-              колонки служебные, заполняйте фактическое поступление, документы и
-              сведения о замене.
+              Проверьте количество, дату и документы поступления. Значения можно
+              исправить в таблице перед применением импорта.
             </p>
           </div>
           <button
@@ -7963,6 +8113,31 @@ function ReceiptImportDialog({
               нужным позициям, затем загрузите файл обратно и проверьте
               черновик.
             </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button variant="outline" onClick={onDownloadTemplate}>
+                <Download size={16} /> Скачать шаблон
+              </Button>
+              <Button onClick={onChooseFile}>
+                <FileInput size={16} />
+                {draft ? 'Загрузить исправленный файл' : 'Загрузить файл'}
+              </Button>
+              <span className="break-all text-sm text-slate-600" role="status">
+                {loading ? 'Чтение файла…' : fileName}
+              </span>
+            </div>
+            {draft ? (
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                Дважды нажмите на ячейку, чтобы исправить значение. Enter или
+                Tab — подтвердить, Escape — отменить правку. Серые колонки не
+                редактируются. Новый файл заменит весь черновик, включая правки
+                в таблице.
+              </p>
+            ) : null}
+            {fileError ? (
+              <p role="alert" className="mt-2 text-sm text-red-600">
+                {fileError}
+              </p>
+            ) : null}
             <input
               ref={fileInputRef}
               className="hidden"
@@ -7972,6 +8147,8 @@ function ReceiptImportDialog({
                 const file = event.target.files?.[0]
 
                 if (file) {
+                  const grid = gridRef.current
+                  if (grid && !grid.isDestroyed()) grid.stopEditing(true)
                   onFileChange(file)
                 }
 
@@ -8014,6 +8191,9 @@ function ReceiptImportDialog({
                   rowId={({ row }) =>
                     `${row.row.rowNumber}-${row.row.requestId}`
                   }
+                  onReady={(api) => {
+                    gridRef.current = api
+                  }}
                   columns={[
                     {
                       id: 'row',
@@ -8048,6 +8228,8 @@ function ReceiptImportDialog({
                       id: 'actualName',
                       title: 'Факт поступления',
                       value: ({ row }) => row.row.actualName,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'actualName', value),
                       width: 300,
                       render: ({ row }) => <>{row.row.actualName || '-'}</>,
                     },
@@ -8055,6 +8237,12 @@ function ReceiptImportDialog({
                       id: 'quantity',
                       title: 'Поступило',
                       value: ({ row }) => row.row.quantity,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'quantity', value),
+                      validateEdit: (value) =>
+                        value.trim() && parseNullableNumber(value) === null
+                          ? 'Введите число, например 2,5.'
+                          : null,
                       numeric: true,
                       render: ({ row }) => (
                         <>
@@ -8074,27 +8262,56 @@ function ReceiptImportDialog({
                       ),
                     },
                     {
+                      id: 'date',
+                      title: 'Дата поступления',
+                      value: ({ row }) =>
+                        row.status === 'ignored'
+                          ? row.row.date
+                          : row.draft.date,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'date', value),
+                      render: ({ row }) => (
+                        <>
+                          {row.status === 'ignored'
+                            ? '-'
+                            : formatDate(row.draft.date)}
+                        </>
+                      ),
+                    },
+                    {
                       id: 'invoiceNumber',
                       title: 'Накладная',
                       value: ({ row }) => row.row.invoiceNumber,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'invoiceNumber', value),
                       render: ({ row }) => <>{row.row.invoiceNumber || '-'}</>,
                     },
                     {
                       id: 'manufacturer',
                       title: 'Завод-изготовитель',
                       value: ({ row }) => row.row.manufacturer,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'manufacturer', value),
                       render: ({ row }) => <>{row.row.manufacturer || '-'}</>,
                     },
                     {
                       id: 'heatBatch',
                       title: 'Партия плавки',
                       value: ({ row }) => row.row.heatBatch,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'heatBatch', value),
                       render: ({ row }) => <>{row.row.heatBatch || '-'}</>,
                     },
                     {
                       id: 'customerReceiptDocument',
                       title: 'Номер документа о получении (Заказчика)',
                       value: ({ row }) => row.row.customerReceiptDocument,
+                      onEdit: ({ row }, value) =>
+                        onEdit(
+                          row.row.rowNumber,
+                          'customerReceiptDocument',
+                          value,
+                        ),
                       render: ({ row }) => (
                         <>{row.row.customerReceiptDocument || '-'}</>
                       ),
@@ -8103,8 +8320,34 @@ function ReceiptImportDialog({
                       id: 'note',
                       title: 'Примечание',
                       value: ({ row }) => row.row.note,
+                      onEdit: ({ row }, value) =>
+                        onEdit(row.row.rowNumber, 'note', value),
                       render: ({ row }) => <>{row.row.note || '-'}</>,
                     },
+                    ...(
+                      [
+                        ['factoryNumber', 'Заводской номер'],
+                        ['certificate', 'Паспорт / сертификат'],
+                        ['qualityDocument', 'Документ о качестве'],
+                        ['customerArvk', 'АРВК Заказчика'],
+                        [
+                          'technicalDecision',
+                          'Техническое решение (согласование замены)',
+                        ],
+                      ] as const
+                    ).map(([field, title]) => ({
+                      id: field,
+                      title,
+                      value: ({
+                        row,
+                      }: {
+                        row: MaterialReceiptImportDraftRow
+                      }) => row.row[field],
+                      onEdit: (
+                        { row }: { row: MaterialReceiptImportDraftRow },
+                        value: string,
+                      ) => onEdit(row.row.rowNumber, field, value),
+                    })),
                     {
                       id: 'status',
                       title: 'Статус',
@@ -8152,20 +8395,6 @@ function ReceiptImportDialog({
                   загрузите файл обратно. После проверки позиции можно будет
                   применить к получению.
                 </p>
-                <Button
-                  className="mt-4"
-                  variant={templateDownloaded ? 'default' : 'outline'}
-                  onClick={
-                    templateDownloaded ? onChooseFile : handleDownloadTemplate
-                  }
-                >
-                  {templateDownloaded ? (
-                    <FileInput size={16} />
-                  ) : (
-                    <Download size={16} />
-                  )}
-                  {templateDownloaded ? 'Загрузить файл' : 'Скачать шаблон'}
-                </Button>
               </div>
             </div>
           )}
@@ -8175,7 +8404,17 @@ function ReceiptImportDialog({
           <Button variant="outline" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={!canApply} onClick={onApply}>
+          <Button
+            disabled={!canApply}
+            onClick={() => {
+              const grid = gridRef.current
+              if (grid && !grid.isDestroyed()) {
+                grid.stopEditing()
+                if (grid.getEditingCells().length > 0) return
+              }
+              onApply()
+            }}
+          >
             Применить импорт
           </Button>
         </div>
@@ -10106,7 +10345,7 @@ function emptyReceiptDraft(): ReceiptDraft {
     certificate: '',
     customerArvk: '',
     customerReceiptDocument: '',
-    date: todayInputValue(),
+    date: localDateInputValue(),
     factoryNumber: '',
     heatBatch: '',
     invoiceNumber: '',
@@ -10207,6 +10446,7 @@ function getOperationDeletionError(
   receipts: Array<MaterialReceiptEntry>,
   controls: Array<QualityControlEntry>,
   issues: Array<MaterialIssueEntry>,
+  workflow?: QualityWorkflow,
 ) {
   const missing =
     'Запись уже удалена или изменена. Закройте окно и выберите её заново.'
@@ -10217,6 +10457,16 @@ function getOperationDeletionError(
       receipts.filter((entry) => ids.has(entry.id)).length !== ids.size
     )
       return missing
+    if (
+      workflow?.cases.some((entry) =>
+        entry.revisions.some((revision) =>
+          revision.zni.rows.some((row) => ids.has(row.receiptId)),
+        ),
+      )
+    )
+      return 'Получение связано с ЗНИ. Сначала удалите её черновик; подписанные документы и связанные поступления сохраняются в истории.'
+    if (workflow?.apps.some((app) => app.receiptIds.some((id) => ids.has(id))))
+      return 'Получение связано с АПП. Сначала удалите или измените АПП; подписанные документы сохраняются в истории.'
     const controlCount = controls.filter((entry) =>
       ids.has(entry.receiptId),
     ).length

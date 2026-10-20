@@ -12,6 +12,8 @@ import {
   writeWorkspaceCache,
 } from './workspace-snapshot'
 import type { SaveWorkspaceResult } from './workspace-snapshot'
+import { materialInspectionFixture } from './quality-workflow.fixtures'
+import { currentInspection } from './quality-workflow'
 
 export function fixture(quantity = 1) {
   return workspaceSnapshotSchema.parse({
@@ -59,6 +61,29 @@ function memoryStorage(): Storage {
 }
 
 describe('workspace file safety', () => {
+  it('persists material-based ZNI without APP, rejects overbooking and protects the source receipt', async () => {
+    const { dir, store } = await setup()
+    const initial = materialInspectionFixture(4)
+    await store.save(initial, null)
+    const loaded = await createWorkspaceStore(dir).load()
+    expect(loaded.workspace).toEqual(initial)
+    const original = await readFile(join(dir, 'workspace.json'), 'utf8')
+    const overbooked = structuredClone(initial)
+    const second = structuredClone(initial.qualityWorkflow.cases[0]!)
+    second.id = 'second-inspection'
+    currentInspection(second).zni.number = '2'
+    currentInspection(second).zni.rows[0]!.presented = 7
+    overbooked.qualityWorkflow.cases.push(second)
+    await expect(store.save(overbooked, loaded.revision)).rejects.toThrow(
+      'Суммарное количество',
+    )
+    const removed = structuredClone(initial)
+    removed.materialReceipts = []
+    await expect(store.save(removed, loaded.revision)).rejects.toThrow(
+      'связанное с ЗНИ',
+    )
+    expect(await readFile(join(dir, 'workspace.json'), 'utf8')).toBe(original)
+  })
   it('loads an absent workspace without creating a file; preserves the legacy JSON shape', async () => {
     const { dir, store } = await setup()
     expect(await store.load()).toEqual({ workspace: null, revision: null })

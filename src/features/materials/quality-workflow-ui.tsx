@@ -11,6 +11,8 @@ import {
   findInspectionMaterial,
   inspectionChecks,
   inspectionMatches,
+  inspectionAvailableQuantities,
+  inspectionDocuments,
   localToday,
   newInspection,
   newInspectionAct,
@@ -21,6 +23,7 @@ import {
 import type {
   InspectionCase,
   InspectionRevision,
+  InspectionSelection,
   QualityDefaults,
   QualityDocument,
   QualityWorkflow,
@@ -44,6 +47,8 @@ type Receipt = {
   altQuantity: number | null
   date: string
   invoiceNumber: string
+  certificate?: string
+  qualityDocument?: string
 }
 type Props = {
   value?: QualityWorkflow
@@ -315,7 +320,8 @@ export function TransferActs({ value, receipts, lines, onChange }: Props) {
           Оформить АПП
         </Button>
         <span className="text-sm text-slate-500">
-          Объедините получения по акту заказчика, затем создайте ЗНИ.
+          АПП хранит акт заказчика. ЗНИ можно оформить на весь АПП или выбранные
+          материалы.
         </span>
       </div>
       {expanded && (
@@ -455,6 +461,206 @@ export function TransferActs({ value, receipts, lines, onChange }: Props) {
     </section>
   )
 }
+function InspectionMaterialPicker({
+  workflow,
+  receipts,
+  lines,
+  legacyReceiptIds,
+  onCreate,
+  onClose,
+}: {
+  workflow: QualityWorkflow
+  receipts: Array<Receipt>
+  lines: Array<SubobjectMaterialMetric>
+  legacyReceiptIds: Array<string>
+  onCreate: (selection: Array<InspectionSelection>) => void
+  onClose: () => void
+}) {
+  const [selected, setSelected] = useState<Record<string, string>>({})
+  const [search, setSearch] = useState('')
+  const [selectedApp, setSelectedApp] = useState('')
+  const [error, setError] = useState('')
+  const available = inspectionAvailableQuantities(workflow, receipts)
+  const eligible = receipts.filter(
+    (receipt) =>
+      (available.get(receipt.id) ?? 0) > 0 &&
+      !legacyReceiptIds.includes(receipt.id),
+  )
+  const eligibleById = new Map(eligible.map((receipt) => [receipt.id, receipt]))
+  const query = search.trim().toLocaleLowerCase('ru')
+  const visible = eligible.filter((receipt) => {
+    const line = findInspectionMaterial(lines, receipt.projectLineId)
+    return [
+      receipt.actualName,
+      line?.cipher,
+      line?.normativeDocument,
+      receipt.invoiceNumber,
+      receipt.factoryNumber,
+      receipt.heatBatch,
+      displayDate(receipt.date),
+    ].some((value) => value?.toLocaleLowerCase('ru').includes(query))
+  })
+  const entireAppAvailable = (app: TransferAct) =>
+    app.receiptIds.every((receiptId) => {
+      const receipt = eligibleById.get(receiptId)
+      return receipt && available.get(receiptId) === receipt.quantity
+    })
+  return (
+    <QualityModal title="Материалы для ЗНИ" onClose={onClose}>
+      <div className="grid gap-4">
+        <p className="text-sm text-slate-600">
+          Выберите поступившие материалы и количество для инспекции.
+          Поступления, партии и заводские номера учитываются отдельно. Создавать
+          АПП необязательно.
+        </p>
+        {workflow.apps.length > 0 && (
+          <label className="grid gap-1 text-sm text-slate-600">
+            Выбрать весь АПП
+            <select
+              className="rounded-lg border p-2"
+              value={selectedApp}
+              onChange={(event) => {
+                const app = workflow.apps.find(
+                  (item) => item.id === event.target.value,
+                )
+                setSelectedApp(event.target.value)
+                if (!app || !entireAppAvailable(app)) return
+                setSelected(
+                  Object.fromEntries(
+                    app.receiptIds.map((receiptId) => [
+                      receiptId,
+                      String(available.get(receiptId)),
+                    ]),
+                  ),
+                )
+                setSearch('')
+                setError('')
+              }}
+            >
+              <option value="">Выбрать материалы вручную</option>
+              {workflow.apps.map((app) => (
+                <option
+                  key={app.id}
+                  value={app.id}
+                  disabled={!entireAppAvailable(app)}
+                >
+                  АПП №{app.number} от {displayDate(app.date)}
+                  {!entireAppAvailable(app)
+                    ? ' — часть материалов уже в ЗНИ / ВК'
+                    : ''}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs">
+              Если часть АПП уже включена в ЗНИ, выберите оставшиеся материалы
+              ниже.
+            </span>
+          </label>
+        )}
+        <Input
+          aria-label="Поиск материалов для ЗНИ"
+          placeholder="Материал, шифр, накладная, партия или заводской номер"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+        <p className="text-sm text-slate-500">
+          Выбрано поступлений: {Object.keys(selected).length}. Доступно:{' '}
+          {eligible.length}.
+        </p>
+        <div className="grid max-h-[45vh] gap-2 overflow-auto">
+          {visible.map((receipt) => {
+            const line = findInspectionMaterial(lines, receipt.projectLineId)
+            const checked = selected[receipt.id] !== undefined
+            return (
+              <div
+                key={receipt.id}
+                className={`grid gap-3 rounded-lg border p-3 ${checked ? 'border-blue-200 bg-blue-50/40' : ''}`}
+              >
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => {
+                      setSelectedApp('')
+                      setSelected((current) => {
+                        const next = { ...current }
+                        if (event.target.checked)
+                          next[receipt.id] = String(available.get(receipt.id))
+                        else delete next[receipt.id]
+                        return next
+                      })
+                    }}
+                  />
+                  <span>
+                    <span className="font-medium">
+                      {receipt.actualName ||
+                        line?.projectMaterialName ||
+                        'Материал'}
+                    </span>
+                    <span className="block text-sm text-slate-500">
+                      {line?.cipher || 'Без шифра'} ·{' '}
+                      {displayDate(receipt.date)} · Накладная{' '}
+                      {receipt.invoiceNumber || '—'} · Партия{' '}
+                      {receipt.heatBatch || '—'} · Зав. №{' '}
+                      {receipt.factoryNumber || '—'}
+                    </span>
+                    <span className="block text-sm">
+                      Получено: {fmt(receipt.quantity)} {receipt.projectUnit}.
+                      Доступно для ЗНИ: {fmt(available.get(receipt.id) ?? 0)}{' '}
+                      {receipt.projectUnit}.
+                    </span>
+                  </span>
+                </label>
+                {checked && (
+                  <Field
+                    label={`Количество для ЗНИ: ${receipt.actualName} (${receipt.invoiceNumber || 'без накладной'}), ${receipt.projectUnit}`}
+                    value={selected[receipt.id]!}
+                    onChange={(amount) => {
+                      setSelectedApp('')
+                      setSelected({ ...selected, [receipt.id]: amount })
+                    }}
+                  />
+                )}
+              </div>
+            )
+          })}
+          {!visible.length && (
+            <p className="rounded-lg border border-dashed p-5 text-slate-500">
+              {eligible.length
+                ? 'Материалы по запросу не найдены.'
+                : 'Нет доступных материалов: оформите получение или откройте существующую ЗНИ для повторной проверки. Материалы из прежнего ВК учитываются отдельно.'}
+            </p>
+          )}
+        </div>
+        {error && (
+          <p role="alert" className="text-red-700">
+            {error}
+          </p>
+        )}
+        <Button
+          disabled={!Object.keys(selected).length}
+          onClick={() => {
+            try {
+              onCreate(
+                Object.entries(selected).map(([receiptId, amount]) => ({
+                  receiptId,
+                  quantity: Number(
+                    amount.trim().replace(/\s/g, '').replace(',', '.'),
+                  ),
+                })),
+              )
+            } catch (cause) {
+              setError(message(cause))
+            }
+          }}
+        >
+          Продолжить с выбранными материалами
+        </Button>
+      </div>
+    </QualityModal>
+  )
+}
+
 export function InspectionWorkspace({
   value,
   receipts,
@@ -463,15 +669,17 @@ export function InspectionWorkspace({
   prepare,
   search = '',
   focusId,
+  legacyReceiptIds = [],
 }: Props & {
   prepare: () => Promise<string>
   search?: string
   focusId?: string
+  legacyReceiptIds?: Array<string>
 }) {
   const workflow = value ?? emptyQualityWorkflow()
   const [draft, setDraft] = useState<InspectionCase | null>(null),
     [error, setError] = useState(''),
-    [appId, setAppId] = useState(''),
+    [choosingMaterials, setChoosingMaterials] = useState(false),
     [history, setHistory] = useState<InspectionCase | null>(null)
   const [signing, setSigning] = useState<{
     entry: InspectionCase
@@ -479,9 +687,6 @@ export function InspectionWorkspace({
     date: string
   } | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const availableApps = workflow.apps.filter(
-    (app) => !workflow.cases.some((entry) => entry.appId === app.id),
-  )
   const save = (entry: InspectionCase) => {
     onChange({
       ...workflow,
@@ -520,31 +725,18 @@ export function InspectionWorkspace({
   return (
     <section className="grid gap-4 p-4">
       <div className="flex flex-wrap gap-3">
-        <select
-          aria-label="АПП для новой ЗНИ"
-          className="min-w-64 rounded-lg border p-2"
-          value={appId}
-          onChange={(e) => setAppId(e.target.value)}
-        >
-          <option value="">Выберите акт приёма-передачи</option>
-          {availableApps.map((app) => (
-            <option key={app.id} value={app.id}>
-              АПП №{app.number} от {displayDate(app.date)}
-            </option>
-          ))}
-        </select>
         <Button
-          disabled={!appId}
-          onClick={() =>
-            run(() => setDraft(newInspection(workflow, appId, receipts, lines)))
-          }
+          onClick={() => {
+            setError('')
+            setChoosingMaterials(true)
+          }}
         >
-          Создать ЗНИ по АПП
+          Создать ЗНИ
         </Button>
       </div>
       <p className="text-sm text-slate-500">
-        ЗНИ охватывает весь АПП. К выдаче допускается принятое количество по
-        последней подписанной ревизии АВК.
+        Выберите весь АПП или отдельные полученные материалы, в том числе без
+        АПП. К выдаче допускается принятое количество по подписанным АВК.
       </p>
       {error && (
         <p role="alert" className="text-red-700">
@@ -555,13 +747,13 @@ export function InspectionWorkspace({
         <p className="rounded-lg border border-dashed p-8 text-center text-slate-500">
           {workflow.cases.length
             ? 'Документы по запросу не найдены.'
-            : 'ЗНИ ещё нет. Оформите АПП во вкладке «Получение».'}
+            : 'ЗНИ ещё нет. Создайте её по полученным материалам.'}
         </p>
       )}
       {visible.map((entry) => {
         const rev = currentInspection(entry),
           active = activeInspection(entry),
-          app = workflow.apps.find((item) => item.id === entry.appId)!
+          app = workflow.apps.find((item) => item.id === entry.appId)
         return (
           <article
             key={entry.id}
@@ -584,10 +776,16 @@ export function InspectionWorkspace({
                   ЗНИ №{rev.zni.number} · Ревизия {rev.revision}
                 </h3>
                 <p className="text-sm text-slate-500">
-                  АПП №{app.number} от {displayDate(app.date)} · ЗНИ:{' '}
+                  {app
+                    ? `АПП №${app.number} от ${displayDate(app.date)} · `
+                    : ''}
+                  {rev.zni.rows.length} поз. · ЗНИ:{' '}
                   {rev.zni.signedOn
                     ? `подписана ${displayDate(rev.zni.signedOn)}`
                     : 'в работе'}
+                </p>
+                <p className="text-sm text-slate-500">
+                  {[...new Set(rev.zni.rows.map((row) => row.name))].join('; ')}
                 </p>
                 <p className="text-sm text-slate-500">
                   АВК{' '}
@@ -642,7 +840,9 @@ export function InspectionWorkspace({
                   onClick={() =>
                     run(() => {
                       const next = structuredClone(entry)
-                      currentInspection(next).avk = newInspectionAct(app)
+                      currentInspection(next).avk = newInspectionAct(
+                        inspectionDocuments(workflow, next),
+                      )
                       save(next)
                       setDraft(next)
                     })
@@ -710,6 +910,19 @@ export function InspectionWorkspace({
           </article>
         )
       })}
+      {choosingMaterials && (
+        <InspectionMaterialPicker
+          workflow={workflow}
+          receipts={receipts}
+          lines={lines}
+          legacyReceiptIds={legacyReceiptIds}
+          onClose={() => setChoosingMaterials(false)}
+          onCreate={(selection) => {
+            setDraft(newInspection(workflow, selection, receipts, lines))
+            setChoosingMaterials(false)
+          }}
+        />
+      )}
       {draft && revision && (
         <QualityModal
           title={`ЗНИ №${revision.zni.number} и АВК · ревизия ${revision.revision}`}
@@ -772,6 +985,16 @@ export function InspectionWorkspace({
                 updateRevision({
                   ...revision,
                   zni: { ...revision.zni, details },
+                })
+              }
+            />
+            <DocumentsEditor
+              value={inspectionDocuments(workflow, draft, revision)}
+              disabled={!!revision.zni.signedOn}
+              onChange={(documents) =>
+                updateRevision({
+                  ...revision,
+                  zni: { ...revision.zni, documents },
                 })
               }
             />
@@ -888,9 +1111,7 @@ export function InspectionWorkspace({
                 onClick={() =>
                   updateRevision({
                     ...revision,
-                    avk: newInspectionAct(
-                      workflow.apps.find((app) => app.id === draft.appId)!,
-                    ),
+                    avk: newInspectionAct(inspectionDocuments(workflow, draft)),
                   })
                 }
               >

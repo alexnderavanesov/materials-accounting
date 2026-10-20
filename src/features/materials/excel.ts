@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
 import * as XLSX from 'xlsx'
+import { localDateInputValue, normalizeCalendarDate } from './calendar-date'
 
 import type { ImportRowInput, SubobjectMaterialMetric } from './types'
 
@@ -35,6 +36,7 @@ export type MaterialRequestImportRowInput = {
 export type MaterialReceiptTemplateLine = {
   altUnit?: string | null
   altUnitFactor?: number | null
+  date?: string
   materialId?: string | null
   projectLineId: string
   projectMaterialName: string
@@ -542,7 +544,7 @@ export async function createMaterialReceiptTemplateWorkbook({
   worksheet.getCell('A2').value = 'Заявка'
   worksheet.getCell('B2').value = requestNumber
   worksheet.getCell('A4').value =
-    'Серые колонки заполняются из заявки и не редактируются. Заполните фактическое поступление, документы и сведения о замене. Альтернативные значения рассчитываются автоматически по коэффициенту материала.'
+    'Серые колонки заполняются из заявки и не редактируются. Заполните фактическое поступление, документы и сведения о замене. Проверьте дату: по умолчанию указана дата из формы или сегодняшний день. Альтернативные значения рассчитываются автоматически по коэффициенту материала.'
   worksheet.mergeCells('A4:W4')
 
   const columns = [
@@ -675,7 +677,9 @@ export async function createMaterialReceiptTemplateWorkbook({
       certificate: '',
       customerArvk: '',
       customerReceiptDocument: '',
-      date: '',
+      date: new Date(
+        `${normalizeCalendarDate(line.date ?? '') ?? localDateInputValue()}T00:00:00.000Z`,
+      ),
       factoryNumber: '',
       heatBatch: '',
       invoiceNumber: '',
@@ -703,6 +707,7 @@ export async function createMaterialReceiptTemplateWorkbook({
       cell.protection = { locked: Boolean(locked) }
 
       cell.alignment = { vertical: 'middle', wrapText: true }
+      if (!isHeader && column?.key === 'date') cell.numFmt = 'dd.mm.yyyy'
       cell.border = {
         bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
         left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
@@ -807,6 +812,11 @@ export function parseMaterialReceiptWorkbook(buffer: ArrayBuffer) {
         field === 'requestRest'
       ) {
         parsed[field] = parseWorkbookOptionalNumber(value)
+      } else if (field === 'date') {
+        parsed.date = parseReceiptWorkbookDate(
+          value,
+          workbook.Workbook?.WBProps?.date1904 ?? false,
+        )
       } else {
         parsed[field] = String(value).trim()
       }
@@ -814,6 +824,24 @@ export function parseMaterialReceiptWorkbook(buffer: ArrayBuffer) {
 
     return parsed
   })
+}
+
+function parseReceiptWorkbookDate(value: unknown, date1904: boolean): string {
+  const text = String(value ?? '').trim()
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parts = XLSX.SSF.parse_date_code(value, { date1904 }) as {
+      y: number
+      m: number
+      d: number
+    } | null
+    if (parts) {
+      const date = normalizeCalendarDate(`${parts.y}-${parts.m}-${parts.d}`)
+      if (date) return date
+    }
+  }
+  // Keep invalid input visible so the import can explain it, rather than
+  // silently replacing an entered date with today's date.
+  return normalizeCalendarDate(text) ?? text
 }
 
 function buildExportRows(

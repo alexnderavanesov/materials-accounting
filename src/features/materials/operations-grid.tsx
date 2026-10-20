@@ -1,6 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ColDef, GridApi, ICellRendererParams } from 'ag-grid-community'
+import type {
+  ColDef,
+  GridApi,
+  ICellRendererParams,
+  ICellEditorParams,
+} from 'ag-grid-community'
 import { Download } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import {
@@ -20,6 +25,8 @@ export type DataColumn<T> = {
   width?: number
   numeric?: boolean
   actions?: boolean
+  onEdit?: (row: T, value: string) => void
+  validateEdit?: (value: string) => string | null
 }
 
 const defaults = {
@@ -47,7 +54,7 @@ function OperationCellRenderer<T>({
   return data ? render(data) : null
 }
 
-/** Read-only operation data. Mutations still go through the existing forms. */
+/** Read-only by default; draft forms can opt specific columns into editing. */
 export function OperationsGrid<T>({
   id,
   label,
@@ -57,6 +64,7 @@ export function OperationsGrid<T>({
   totals,
   isDeleted,
   focusRowId,
+  onReady,
 }: {
   id: string
   label: string
@@ -66,10 +74,12 @@ export function OperationsGrid<T>({
   totals?: Array<T>
   isDeleted?: (row: T) => boolean
   focusRowId?: string
+  onReady?: (api: GridApi<T>) => void
 }) {
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
+  const hasEditableColumns = columns.some((column) => column.onEdit)
   const [initialState] = useState(() => ({
     ...readDataGridState(id),
     partialColumnState: true,
@@ -89,7 +99,23 @@ export function OperationsGrid<T>({
         sortable: !column.actions,
         suppressColumnsToolPanel: column.actions,
         lockVisible: column.actions,
+        editable: Boolean(column.onEdit && !column.actions),
+        cellEditor: 'agTextCellEditor',
+        cellEditorParams: {
+          getValidationErrors: ({ value }) => {
+            const error = column.validateEdit?.(String(value ?? ''))
+            return error ? [error] : null
+          },
+        } satisfies Partial<ICellEditorParams<T>>,
         valueGetter: ({ data }) => (data ? (column.value(data) ?? null) : null),
+        valueSetter: ({ data, newValue }) => {
+          const value = String(newValue ?? '')
+          if (!column.validateEdit?.(value)) column.onEdit?.(data, value)
+          // Keep row data immutable; React supplies the validated draft.
+          // A setter is synchronous, unlike cellEditRequest, so Apply sees
+          // the final edit immediately after stopEditing().
+          return false
+        },
         valueFormatter: ({ value }) =>
           value == null || value === ''
             ? '—'
@@ -102,12 +128,19 @@ export function OperationsGrid<T>({
         cellRendererParams: column.render
           ? { render: column.render }
           : undefined,
-        cellClass: column.numeric ? 'operations-grid-number' : undefined,
-        tooltipValueGetter: column.render
-          ? undefined
-          : ({ value }) => (value == null ? '' : String(value)),
+        cellClass: [
+          ...(column.numeric ? ['operations-grid-number'] : []),
+          ...(hasEditableColumns && !column.onEdit
+            ? ['operations-grid-readonly']
+            : []),
+        ],
+        tooltipValueGetter: column.onEdit
+          ? () => 'Дважды нажмите для редактирования'
+          : column.render
+            ? undefined
+            : ({ value }) => (value == null ? '' : String(value)),
       })),
-    [columns],
+    [columns, hasEditableColumns],
   )
   useLayoutEffect(
     () => () => {
@@ -187,7 +220,9 @@ export function OperationsGrid<T>({
           initialState={initialState}
           sideBar={materialsGridSideBar}
           cellSelection
-          readOnlyEdit
+          readOnlyEdit={!hasEditableColumns}
+          invalidEditValueMode="block"
+          stopEditingWhenCellsLoseFocus
           rowHeight={64}
           suppressScrollOnNewData
           rowClassRules={{
@@ -199,6 +234,7 @@ export function OperationsGrid<T>({
           onGridReady={({ api: grid }) => {
             api.current = grid
             setReady(true)
+            onReady?.(grid)
           }}
           onStateUpdated={({ state }) => saveDataGridState(id, state)}
           onGridPreDestroyed={({ state }) => saveDataGridState(id, state)}
