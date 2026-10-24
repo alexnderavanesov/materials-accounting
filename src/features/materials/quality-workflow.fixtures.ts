@@ -3,7 +3,7 @@ import {
   emptyQualityWorkflow,
   localToday,
   newInspection,
-  newInspectionAct,
+  createAcceptedInspectionAct,
   signInspection,
 } from './quality-workflow'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
@@ -22,7 +22,8 @@ export function inspectionFixture() {
     altQuantity: 25,
     altUnitFactor: 2.5,
     date: localToday(),
-    invoiceNumber: 'Н-1',
+    appDocumentId: 'app',
+    certificate: 'Паспорт',
   }
   const line = {
     id: 'line',
@@ -45,35 +46,18 @@ export function inspectionFixture() {
     writtenOff: 0,
   }
   const workflow = emptyQualityWorkflow()
-  workflow.apps.push({
-    id: 'app',
-    number: 'АПП-1',
-    date: localToday(),
-    receiptIds: ['receipt'],
-    documents: [
-      {
-        id: 'passport',
-        name: 'Паспорт',
-        number: '1',
-        date: localToday(),
-        orderNumber: '12',
-      },
-    ],
-  })
-  const legacy = newInspection(
-    workflow,
-    [{ receiptId: receipt.id, quantity: receipt.quantity }],
-    [receipt],
-    [line],
+  workflow.receiptDocuments = [
+    { id: 'app', kind: 'app', number: 'АПП-1', date: localToday() },
+  ]
+  workflow.cases.push(
+    newInspection(
+      workflow,
+      [{ receiptId: receipt.id, quantity: receipt.quantity }],
+      [receipt],
+      [line],
+      'app',
+    ),
   )
-  // Persisted documents from the original workflow must stay readable without migration.
-  legacy.appId = 'app'
-  delete legacy.revisions[0]!.zni.documents
-  for (const row of legacy.revisions[0]!.zni.rows) {
-    delete row.appNumber
-    delete row.appDate
-  }
-  workflow.cases.push(legacy)
   const workspace = workspaceSnapshotSchema.parse({
     configuredAlloys: [],
     configuredCiphers: [],
@@ -98,21 +82,19 @@ export function acceptFixture(quantity = 8) {
     quantity === 10 ? 'accepted' : quantity === 0 ? 'rejected' : 'remarks'
   revision.zni.rows[0]!.remarks =
     quantity < 10 ? 'Замечания к части партии' : ''
-  revision.avk = newInspectionAct(workspace.qualityWorkflow.apps[0]!.documents)
-  revision.avk.number = 'АВК-1'
-  revision.avk.checks.fill('Проверено')
-  revision.avk.conclusion = 'Принято по результатам проверки'
-  entry.revisions[0] = signInspection(
-    signInspection(revision, 'zni', localToday()),
-    'avk',
-    localToday(),
-  )
+  entry.revisions[0] = signInspection(revision, 'zni', localToday())
+  if (!quantity) return workspace
+  const signed = currentInspection(entry)
+  signed.avk = createAcceptedInspectionAct(entry, signed.zni.documents)
+  signed.avk.number = 'АВК-1'
+  signed.avk.checks.fill('Проверено')
+  signed.avk.conclusion = 'Принято по результатам проверки'
+  entry.revisions[0] = signInspection(signed, 'avk', localToday())
   return workspace
 }
 
 export function materialInspectionFixture(presented = 10) {
   const workspace = inspectionFixture()
-  workspace.qualityWorkflow.apps = []
   workspace.qualityWorkflow.cases = []
   workspace.qualityWorkflow.cases.push(
     newInspection(
@@ -122,7 +104,46 @@ export function materialInspectionFixture(presented = 10) {
         typeof newInspection
       >[2],
       workspace.lines as unknown as Parameters<typeof newInspection>[3],
+      'app',
     ),
   )
+  return workspace
+}
+
+export function documentInspectionFixture(kind: 'app' | 'm15' = 'app') {
+  const workspace = inspectionFixture()
+  workspace.qualityWorkflow.cases = []
+  workspace.qualityWorkflow.receiptDocuments = [
+    { id: 'source', kind, number: '42', date: localToday() },
+  ]
+  Object.assign(workspace.materialReceipts[0]!, {
+    quantity: 4,
+    altQuantity: 10,
+    appDocumentId: kind === 'app' ? 'source' : '',
+    m15DocumentId: kind === 'm15' ? 'source' : '',
+  })
+  workspace.materialRequests = [
+    { id: 'request', number: 'ЗП-42-Материалы', quantity: 4 },
+  ]
+  const entry = newInspection(
+    workspace.qualityWorkflow,
+    [{ receiptId: 'receipt', quantity: 4 }],
+    workspace.materialReceipts as unknown as Parameters<
+      typeof newInspection
+    >[2],
+    workspace.lines as unknown as Parameters<typeof newInspection>[3],
+    'source',
+    [{ id: 'request', number: 'ЗП-42-Материалы' }],
+  )
+  const revision = currentInspection(entry)
+  Object.assign(revision.zni.rows[0]!, {
+    accepted: 3,
+    result: 'remarks',
+    remarks: 'Одна единица не принята. Возврат заказчику.',
+  })
+  entry.revisions[0] = signInspection(revision, 'zni', localToday())
+  currentInspection(entry).avk = createAcceptedInspectionAct(entry)
+  currentInspection(entry).avk!.number = 'АВК-42'
+  workspace.qualityWorkflow.cases = [entry]
   return workspace
 }

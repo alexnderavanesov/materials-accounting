@@ -1,3 +1,4 @@
+import { useState } from 'react'
 // @vitest-environment jsdom
 import {
   cleanup,
@@ -9,10 +10,11 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { operationGridApi } from './project-grid-test-support'
-import { InspectionWorkspace, TransferActs } from './quality-workflow-ui'
+import { InspectionWorkspace } from './quality-workflow-ui'
 import { QualityPrintButton } from './quality-print-ui'
 import {
   acceptFixture,
+  documentInspectionFixture,
   inspectionFixture,
   materialInspectionFixture,
 } from './quality-workflow.fixtures'
@@ -35,38 +37,10 @@ afterEach(() => {
 })
 const receiptsOf = (value: ReturnType<typeof inspectionFixture>) =>
   value.materialReceipts as unknown as Parameters<
-    typeof TransferActs
+    typeof InspectionWorkspace
   >[0]['receipts']
 const linesOf = (value: ReturnType<typeof inspectionFixture>) =>
   value.lines as unknown as Array<SubobjectMaterialMetric>
-it('cancels an APP without writing anything and reports an empty selection', () => {
-  const fixture = inspectionFixture(),
-    onChange = vi.fn((qualityWorkflow) =>
-      validateQualityWorkspace({ ...fixture, qualityWorkflow }),
-    )
-  fixture.qualityWorkflow.apps = []
-  fixture.qualityWorkflow.cases = []
-  render(
-    <TransferActs
-      value={fixture.qualityWorkflow}
-      receipts={receiptsOf(fixture)}
-      lines={linesOf(fixture)}
-      onChange={onChange}
-    />,
-  )
-  fireEvent.click(screen.getByRole('button', { name: 'Оформить АПП' }))
-  fireEvent.change(screen.getByLabelText('Номер АПП'), {
-    target: { value: 'АПП-12' },
-  })
-  fireEvent.click(screen.getByRole('button', { name: 'Закрыть документ' }))
-  expect(onChange).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Оформить АПП' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Сохранить АПП' }))
-  expect(screen.getByRole('alert').textContent).toContain(
-    'хотя бы одно получение',
-  )
-  expect(screen.getByRole('dialog')).toBeTruthy()
-})
 it('shows the effective signed revision during reinspection and keeps history read-only', async () => {
   const fixture = acceptFixture(),
     onChange = vi.fn()
@@ -138,9 +112,13 @@ it('does not start PDF generation when saving fails', async () => {
   expect(fetch).not.toHaveBeenCalled()
 })
 
-it('creates a partial material ZNI without APP, validates quantity and writes only after saving documents', () => {
+it('creates a partial material ZNI from M-15, validates quantity and writes only after saving documents', () => {
   const fixture = materialInspectionFixture()
   fixture.qualityWorkflow.cases = []
+  fixture.qualityWorkflow.receiptDocuments = [
+    { id: 'm15', kind: 'm15', number: '15', date: '2026-10-22' },
+  ]
+  fixture.materialReceipts[0]!.m15DocumentId = 'm15'
   const onChange = vi.fn((qualityWorkflow) =>
     validateQualityWorkspace({ ...fixture, qualityWorkflow }),
   )
@@ -155,7 +133,9 @@ it('creates a partial material ZNI without APP, validates quantity and writes on
   )
 
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  expect(screen.queryByLabelText('Выбрать весь АПП')).toBeNull()
+  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+    target: { value: 'm15' },
+  })
   fireEvent.click(screen.getByRole('checkbox', { name: /Клапан/ }))
   fireEvent.change(screen.getByLabelText(/Количество для ЗНИ/), {
     target: { value: '11' },
@@ -172,7 +152,11 @@ it('creates a partial material ZNI without APP, validates quantity and writes on
   )
   expect(screen.getByText(/Предъявлено: 2,5 шт/)).toBeTruthy()
   expect(onChange).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Добавить черновик АВК' }))
+  expect(
+    screen.getByRole<HTMLButtonElement>('button', {
+      name: 'Создать АВК на принятые позиции',
+    }).disabled,
+  ).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить документы' }))
   expect(onChange).toHaveBeenCalledTimes(1)
   const entry = onChange.mock.calls[0]![0].cases[0]
@@ -180,7 +164,9 @@ it('creates a partial material ZNI without APP, validates quantity and writes on
   expect(currentInspection(entry).zni.rows).toMatchObject([
     { receiptId: 'receipt', presented: 2.5 },
   ])
-  expect(currentInspection(entry).avk).not.toBeNull()
+  expect(currentInspection(entry).avk).toBeNull()
+  expect(entry.processVersion).toBe(2)
+  expect(entry.basis?.kind).toBe('m15')
 })
 
 it('selects a whole APP, keeps separate batches and selection during search, and cancels without writing', () => {
@@ -192,7 +178,6 @@ it('selects a whole APP, keeps separate batches and selection during search, and
     heatBatch: 'Партия 2',
     factoryNumber: '456',
   })
-  fixture.qualityWorkflow.apps[0]!.receiptIds.push('second')
   const onChange = vi.fn((qualityWorkflow) =>
     validateQualityWorkspace({ ...fixture, qualityWorkflow }),
   )
@@ -206,9 +191,12 @@ it('selects a whole APP, keeps separate batches and selection during search, and
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.change(screen.getByLabelText(/Выбрать весь АПП/), {
+  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Выбрать все позиции документа' }),
+  )
   expect(
     screen
       .getAllByRole<HTMLInputElement>('checkbox')
@@ -227,13 +215,15 @@ it('selects a whole APP, keeps separate batches and selection during search, and
   expect(onChange).not.toHaveBeenCalled()
 
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.change(screen.getByLabelText(/Выбрать весь АПП/), {
+  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
   fireEvent.click(
+    screen.getByRole('button', { name: 'Выбрать все позиции документа' }),
+  )
+  fireEvent.click(
     screen.getByRole('button', { name: 'Продолжить с выбранными материалами' }),
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Добавить черновик АВК' }))
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить документы' }))
   const revision = currentInspection(onChange.mock.calls[0]![0].cases[0])
   expect(
@@ -246,24 +236,23 @@ it('selects a whole APP, keeps separate batches and selection during search, and
     ['receipt', 10, '123'],
     ['second', 10, '456'],
   ])
-  expect(revision.avk?.documents).toEqual(revision.zni.documents)
-  expect(revision.avk?.documents).toHaveLength(1)
+  expect(revision.avk).toBeNull()
+  expect(revision.zni.documents).toHaveLength(1)
 })
 
-it('offers only the unallocated quantity and excludes receipts with legacy quality control', () => {
+it('offers only the unallocated quantity within the selected document', () => {
   const fixture = materialInspectionFixture(4)
-  fixture.qualityWorkflow.apps = inspectionFixture().qualityWorkflow.apps
   fixture.materialReceipts.push({
     ...fixture.materialReceipts[0]!,
-    id: 'legacy',
-    actualName: 'Старый ВК',
+    id: 'other-document',
+    appDocumentId: 'other-app',
+    actualName: 'Другой документ',
   })
   render(
     <InspectionWorkspace
       value={fixture.qualityWorkflow}
       receipts={receiptsOf(fixture)}
       lines={linesOf(fixture)}
-      legacyReceiptIds={['legacy']}
       onChange={vi.fn()}
       prepare={async () => 'revision'}
     />,
@@ -272,11 +261,84 @@ it('offers only the unallocated quantity and excludes receipts with legacy quali
   const dialog = within(screen.getByRole('dialog'))
   expect(
     dialog.getByRole<HTMLOptionElement>('option', { name: /АПП №/ }).disabled,
-  ).toBe(true)
+  ).toBe(false)
+  fireEvent.change(dialog.getByLabelText('Документ получения для ЗНИ'), {
+    target: { value: 'app' },
+  })
   expect(dialog.getAllByRole('checkbox')).toHaveLength(1)
-  expect(dialog.queryByText('Старый ВК')).toBeNull()
+  expect(dialog.queryByText('Другой документ')).toBeNull()
   fireEvent.click(dialog.getByRole('checkbox'))
   expect(
     dialog.getByLabelText<HTMLInputElement>(/Количество для ЗНИ/).value,
   ).toBe('6')
+})
+
+it('records only an actual return, supports fractions and keeps the form open on a rejected save', () => {
+  const workspace = documentInspectionFixture()
+  const changes = vi.fn()
+  let rejectSave = true
+  function Harness() {
+    const [workflow, setWorkflow] = useState(workspace.qualityWorkflow)
+    return (
+      <InspectionWorkspace
+        value={workflow}
+        receipts={receiptsOf(workspace)}
+        lines={linesOf(workspace)}
+        onChange={(next) => {
+          if (rejectSave) throw new Error('Ошибка сохранения: конфликт вкладок')
+          validateQualityWorkspace(
+            { ...workspace, qualityWorkflow: next },
+            { ...workspace, qualityWorkflow: workflow },
+          )
+          changes(next)
+          setWorkflow(next)
+        }}
+        prepare={async () => 'revision'}
+      />
+    )
+  }
+  render(<Harness />)
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Оформить возврат заказчику' }),
+  )
+  let dialog = screen.getByRole('dialog', { name: 'Возврат заказчику' })
+  fireEvent.change(within(dialog).getByLabelText('Возвратить: Клапан'), {
+    target: { value: '2' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', {
+      name: 'Сохранить фактический возврат',
+    }),
+  )
+  expect(changes).not.toHaveBeenCalled()
+  fireEvent.change(within(dialog).getByLabelText('Возвратить: Клапан'), {
+    target: { value: '0,4' },
+  })
+  expect(within(dialog).getByText('1 кг')).toBeTruthy()
+  fireEvent.click(
+    within(dialog).getByRole('button', {
+      name: 'Сохранить фактический возврат',
+    }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'конфликт вкладок',
+  )
+  rejectSave = false
+  const save = within(dialog).getByRole('button', {
+    name: 'Сохранить фактический возврат',
+  })
+  fireEvent.click(save)
+  fireEvent.click(save)
+  expect(changes).toHaveBeenCalledTimes(1)
+  expect(changes.mock.calls[0]![0].customerReturns[0].quantity).toBe(0.4)
+  expect(
+    screen.queryByRole('button', { name: 'Повторная проверка' }),
+  ).toBeNull()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Оформить возврат заказчику' }),
+  )
+  dialog = screen.getByRole('dialog', { name: 'Возврат заказчику' })
+  expect(within(dialog).getByText(/к возврату 0.6 шт/)).toBeTruthy()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+  expect(changes).toHaveBeenCalledTimes(1)
 })

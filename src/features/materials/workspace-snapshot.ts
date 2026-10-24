@@ -15,7 +15,8 @@ export const workspaceSnapshotSchema = z
     materialIssues: records,
     materialReceipts: records,
     materialRequests: records,
-    qualityControls: records,
+    // Old empty envelopes may still have this key; legacy controls are not accepted.
+    qualityControls: z.array(z.never()).max(0).optional(),
     qualityWorkflow: qualityWorkflowSchema.optional(),
   })
   .strict()

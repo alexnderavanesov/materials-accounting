@@ -19,9 +19,15 @@ import { createQualityPrintHandler } from './quality-print-api.server'
 import { createWorkspaceStore } from './workspace-snapshot.server'
 import {
   acceptFixture,
+  documentInspectionFixture,
   materialInspectionFixture,
 } from './quality-workflow.fixtures'
-import { currentInspection, newInspectionAct } from './quality-workflow'
+import {
+  currentInspection,
+  createAcceptedInspectionAct,
+  signInspection,
+  localToday,
+} from './quality-workflow'
 import { convertRequestPdf } from './request-print-pdf.server'
 
 const directories: Array<string> = []
@@ -39,11 +45,20 @@ afterEach(async () => {
 })
 describe('quality templates and PDF endpoint', () => {
   it.each(['zni', 'avk'] as const)(
-    'fills %s for selected materials without an APP and preserves the workspace',
+    'fills %s for selected materials from an APP and preserves the workspace',
     async (kind) => {
       const workspace = materialInspectionFixture(2.5)
       const entry = workspace.qualityWorkflow.cases[0]!
-      currentInspection(entry).avk = newInspectionAct()
+      Object.assign(currentInspection(entry).zni.rows[0]!, {
+        accepted: 2.5,
+        result: 'accepted',
+      })
+      entry.revisions[0] = signInspection(
+        currentInspection(entry),
+        'zni',
+        localToday(),
+      )
+      currentInspection(entry).avk = createAcceptedInspectionAct(entry)
       const before = JSON.stringify(workspace)
       const data = buildQualityPrintData(workspace, entry.id, 1, kind)
       const template = await builtinQualityTemplate(kind)
@@ -63,7 +78,7 @@ describe('quality templates and PDF endpoint', () => {
       const sheet = (await readPrintWorkbook(filled)).worksheets[0]!
       if (kind === 'zni') {
         expect(sheet.getCell('C11').text).toContain(
-          'Входной контроль материалов: Клапан',
+          'Входной контроль материалов по АПП',
         )
         expect(sheet.getCell('C11').text).toContain('2,5 шт')
         expect(sheet.getCell('C11').text).toContain('зав. №123')
@@ -72,8 +87,8 @@ describe('quality templates and PDF endpoint', () => {
           (table) => table.kind === 'materials',
         )!.row
         expect(sheet.getCell(`M${row}`).value).toBe(2.5)
-        expect(sheet.getCell(`O${row}`).text).toBe('')
-        expect(sheet.getCell(`P${row}`).text).toBe('')
+        expect(sheet.getCell(`O${row}`).text).toContain('АПП')
+        expect(sheet.getCell(`P${row}`).text).not.toBe('')
       }
       expect(JSON.stringify(workspace)).toBe(before)
     },
@@ -282,3 +297,52 @@ describe('quality templates and PDF endpoint', () => {
     expect(await readFile(join(path, 'workspace.json'))).toEqual(before)
   })
 })
+
+it.each(['app', 'm15'] as const)(
+  'prints presented ZNI and accepted AVK quantities for %s without changing saved history',
+  async (sourceKind) => {
+    const workspace = documentInspectionFixture(sourceKind)
+    const before = JSON.stringify(workspace)
+    for (const kind of ['zni', 'avk'] as const) {
+      const data = buildQualityPrintData(
+        workspace,
+        workspace.qualityWorkflow.cases[0]!.id,
+        1,
+        kind,
+      )
+      expect(data.materials[0]!.quantity).toBe(kind === 'zni' ? 4 : 3)
+      const template = await builtinQualityTemplate(kind)
+      const bytes = await fillQualityPrintWorkbook(
+        Buffer.from(template.base64, 'base64'),
+        template.config,
+        data,
+      )
+      const sheet = (await readPrintWorkbook(bytes)).worksheets[0]!
+      if (kind === 'zni') {
+        expect(sheet.getCell('C11').text).toContain('4 шт')
+        expect(sheet.getCell('C11').text).toContain(
+          sourceKind === 'app' ? 'АПП №42' : 'М-15 №42',
+        )
+        expect(sheet.getCell('C11').text).toContain('ЗП-42-Материалы')
+      } else {
+        expect(sheet.getCell('M33').value).toBe(3)
+        expect(sheet.getCell('O33').text).toBe(
+          sourceKind === 'app' ? 'АПП №42' : 'М-15 №42',
+        )
+        expect(sheet.getCell('O32').text).toBe('Документ получения')
+      }
+      if (process.env.MATERIALS_QUALITY_PDF_QA) {
+        await mkdir(process.env.MATERIALS_QUALITY_PDF_QA, { recursive: true })
+        await writeFile(
+          join(
+            process.env.MATERIALS_QUALITY_PDF_QA,
+            `${kind}-${sourceKind}-partial.pdf`,
+          ),
+          await convertRequestPdf(bytes),
+        )
+      }
+    }
+    expect(JSON.stringify(workspace)).toBe(before)
+  },
+  60000,
+)

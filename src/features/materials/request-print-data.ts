@@ -10,6 +10,8 @@ const requestSchema = z.object({
   date: z.string(),
   cipher: text,
   requester: text,
+  requestNote: text,
+  materialType: text,
   projectLineId: z.string(),
   projectMaterialName: text,
   projectUnit: z.string(),
@@ -83,11 +85,17 @@ export function buildRequestPrintData(
         ? first.date.split('-').reverse().join('.')
         : first.date,
       requester: requests.find((entry) => entry.requester)?.requester ?? '',
+      requestNote: requests[0]?.requestNote ?? '',
       cipher: unique(requests.map((entry) => entry.cipher)),
       materialType: unique(
         requests.map((entry) => {
           const line = lineById.get(entry.projectLineId)
-          return line?.materialType ?? line?.category ?? 'Материалы'
+          return (
+            entry.materialType ||
+            line?.materialType ||
+            line?.category ||
+            'Материалы'
+          )
         }),
       ),
     },

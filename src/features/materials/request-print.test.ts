@@ -171,6 +171,41 @@ describe('Excel print template', () => {
       'Договор № 25/НИ260 от 19.08.2025г.',
     )
   })
+  it('prints all mixed request positions and an optional common note without changing existing template mappings', async () => {
+    const workspace = fixture()
+    Object.assign(workspace.materialRequests[0]!, {
+      requestNote: 'Доставить вместе на участок',
+      materialType: 'Детали',
+    })
+    Object.assign(workspace.materialRequests[1]!, {
+      requestNote: 'Доставить вместе на участок',
+      materialType: 'Трубы',
+    })
+    const data = buildRequestPrintData(workspace, 'one')
+    expect(data.rows).toHaveLength(2)
+    expect(data.headers.materialType).toContain('Детали')
+    expect(data.headers.materialType).toContain('Трубы')
+    expect(data.headers.requestNote).toBe('Доставить вместе на участок')
+    expect(defaultPrintConfig.fields.requestNote).toBe('')
+    const config = structuredClone(defaultPrintConfig)
+    config.fields.requestNote = 'A4'
+    const custom = await workbook(await createDefaultPrintWorkbook())
+    custom.worksheets[0]!.mergeCells('A4:I4')
+    const bytes = await fillPrintWorkbook(
+      Buffer.from(await custom.xlsx.writeBuffer()),
+      config,
+      data,
+    )
+    const sheet = (await workbook(bytes)).worksheets[0]!
+    expect(sheet.getCell('A4').text).toBe(data.headers.requestNote)
+    expect(sheet.getCell('B8').text).toContain('Отвод')
+    expect(sheet.getCell('B9').text).toContain('Удалённый материал')
+    if (process.env.MATERIALS_TEST_PDF && process.env.MATERIALS_PRINT_QA_DIR)
+      await writeFile(
+        join(process.env.MATERIALS_PRINT_QA_DIR, 'request-mixed.pdf'),
+        await convertRequestPdf(bytes),
+      )
+  })
   it('keeps one-row requests and moves mappings and PNG anchors below a growing table', async () => {
     const source = await workbook(await createDefaultPrintWorkbook()),
       sheet = source.worksheets[0]!

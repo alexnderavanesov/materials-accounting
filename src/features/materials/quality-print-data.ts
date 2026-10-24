@@ -1,12 +1,9 @@
+import { receiptDocumentLabel } from './receipt-documents'
 import { getOperationAlternative, getOperationConversion } from './domain'
 import type { SubobjectMaterialMetric } from './types'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 import type { QualityPrintData, QualityPrintKind } from './quality-print'
-import {
-  findInspectionMaterial,
-  inspectionDocuments,
-  resultLabels,
-} from './quality-workflow'
+import { findInspectionMaterial, resultLabels } from './quality-workflow'
 
 const dateText = (value: string | null) =>
   value ? value.split('-').reverse().join('.') : ''
@@ -22,63 +19,64 @@ export function buildQualityPrintData(
   const revision = entry?.revisions.find(
     (item) => item.revision === revisionNumber,
   )
-  const app = workspace.qualityWorkflow?.apps.find(
-    (item) => item.id === entry?.appId,
-  )
-  if (!entry || !revision || (entry.appId && !app))
-    throw new Error('Документ или ревизия не найдены.')
+  if (!entry || !revision) throw new Error('Документ или ревизия не найдены.')
   const { zni, avk } = revision
   if (kind === 'avk' && !avk) throw new Error('АВК этой ревизии ещё не создан.')
   const lines = workspace.lines as unknown as Array<SubobjectMaterialMetric>
-  const materials = zni.rows.map((row, index) => {
-    const receipt = workspace.materialReceipts.find(
-      (item) => item.id === row.receiptId,
-    )
-    const previous = {
-      quantity: Number(receipt?.quantity ?? row.presented),
-      projectUnit: row.unit,
-      altUnit: String(receipt?.altUnit ?? row.altUnit),
-      altUnitFactor:
-        (receipt?.altUnitFactor as number | null | undefined) ??
-        row.altUnitFactor,
-      altQuantity: (receipt?.altQuantity as number | null) ?? null,
-    }
-    const conversion = getOperationConversion(
-      findInspectionMaterial(lines, row.projectLineId),
-      row.unit,
-      previous,
-    )
-    const alternative = getOperationAlternative(
-      row.presented,
-      conversion,
-      previous,
-    )
-    const acceptedAlternative = getOperationAlternative(
-      row.accepted,
-      conversion,
-      row.accepted === null ? null : previous,
-    )
-    if (alternative.error || acceptedAlternative.error)
-      throw new Error(alternative.error || acceptedAlternative.error)
-    return {
-      index: index + 1,
-      name: row.name,
-      cipher: row.cipher,
-      factoryNumber: row.factoryNumber,
-      heatBatch: row.heatBatch,
-      quantity: row.presented,
-      accepted: row.accepted,
-      unit: row.unit,
-      altQuantity: alternative.altQuantity,
-      altAccepted: acceptedAlternative.altQuantity,
-      altUnit: alternative.altUnit,
-      document: row.document,
-      alloy: row.alloy,
-      remarks: row.remarks,
-      appNumber: row.appNumber ?? app?.number ?? '',
-      appDate: dateText(row.appDate ?? app?.date ?? ''),
-    }
-  })
+  const acceptedAct = kind === 'avk'
+  const materials = zni.rows
+    .filter((row) => !acceptedAct || (row.accepted ?? 0) > 0)
+    .map((row, index) => {
+      const receipt = workspace.materialReceipts.find(
+        (item) => item.id === row.receiptId,
+      )
+      const previous = {
+        quantity: Number(receipt?.quantity ?? row.presented),
+        projectUnit: row.unit,
+        altUnit: String(receipt?.altUnit ?? row.altUnit),
+        altUnitFactor:
+          (receipt?.altUnitFactor as number | null | undefined) ??
+          row.altUnitFactor,
+        altQuantity: (receipt?.altQuantity as number | null) ?? null,
+      }
+      const conversion = getOperationConversion(
+        findInspectionMaterial(lines, row.projectLineId),
+        row.unit,
+        previous,
+      )
+      const alternative = getOperationAlternative(
+        acceptedAct ? row.accepted : row.presented,
+        conversion,
+        previous,
+      )
+      const acceptedAlternative = getOperationAlternative(
+        row.accepted,
+        conversion,
+        row.accepted === null ? null : previous,
+      )
+      if (alternative.error || acceptedAlternative.error)
+        throw new Error(alternative.error || acceptedAlternative.error)
+      return {
+        index: index + 1,
+        name: row.name,
+        cipher: row.cipher,
+        factoryNumber: row.factoryNumber,
+        heatBatch: row.heatBatch,
+        quantity: acceptedAct ? row.accepted : row.presented,
+        accepted: row.accepted,
+        unit: row.unit,
+        altQuantity: alternative.altQuantity,
+        altAccepted: acceptedAlternative.altQuantity,
+        altUnit: alternative.altUnit,
+        document: row.document,
+        alloy: row.alloy,
+        remarks: row.remarks,
+        receiptDocument: `${entry.basis.kind === 'app' ? 'АПП' : 'М-15'} №${entry.basis.number}`,
+        receiptDocumentDate: dateText(entry.basis.date),
+        appNumber: row.appNumber ?? '',
+        appDate: dateText(row.appDate ?? ''),
+      }
+    })
   const partial = zni.rows
     .filter((row) => row.result && (row.result !== 'accepted' || row.remarks))
     .map(
@@ -94,6 +92,19 @@ export function buildQualityPrintData(
       : zni.rows.every((row) => row.result === 'rejected')
         ? 'rejected'
         : 'remarks'
+  const materialDescription = zni.rows
+    .map((row) =>
+      [
+        `${row.name} — ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(row.presented)} ${row.unit}`,
+        row.requestNumber ? `заявка ${row.requestNumber}` : '',
+        row.cipher ? `шифр ${row.cipher}` : '',
+        row.factoryNumber ? `зав. №${row.factoryNumber}` : '',
+        row.heatBatch ? `партия ${row.heatBatch}` : '',
+      ]
+        .filter(Boolean)
+        .join(', '),
+    )
+    .join(';\n')
   const documentDate = kind === 'zni' ? zni.date : avk!.date
   const appNumbers = [
     ...new Set(materials.map((row) => row.appNumber).filter(Boolean)),
@@ -103,6 +114,7 @@ export function buildQualityPrintData(
   ].join('; ')
   const fields: QualityPrintData['fields'] = {
     ...zni.details,
+    processVersion: entry.processVersion,
     number: kind === 'zni' ? zni.number : avk!.number,
     date: dateText(documentDate),
     day: Number(documentDate.slice(8)),
@@ -127,25 +139,16 @@ export function buildQualityPrintData(
     zniNumber: zni.number,
     zniDate: dateText(zni.date),
     zniSignedOn: dateText(zni.signedOn),
+    basisLabel: receiptDocumentLabel(entry.basis),
+    basisNumber: entry.basis.number,
+    basisDate: dateText(entry.basis.date),
     appNumber: appNumbers,
     appDate: appDates,
     inspectionDate: dateText(zni.inspectionDate),
     inspectionTime: zni.inspectionTime,
-    description: app
-      ? `Входной контроль материалов согласно акту приёма-передачи №${app.number} от ${dateText(app.date)}.`
-      : `Входной контроль материалов: ${zni.rows
-          .map((row) =>
-            [
-              `${row.name} — ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(row.presented)} ${row.unit}`,
-              row.cipher ? `шифр ${row.cipher}` : '',
-              row.factoryNumber ? `зав. №${row.factoryNumber}` : '',
-              row.heatBatch ? `партия ${row.heatBatch}` : '',
-            ]
-              .filter(Boolean)
-              .join(', '),
-          )
-          .join('; ')}.`,
-    materials: [...new Set(zni.rows.map((row) => row.name))].join('; '),
+    description: `Входной контроль материалов по ${receiptDocumentLabel(entry.basis)}.
+${materialDescription}`,
+    materials: [...new Set(materials.map((row) => row.name))].join('; '),
     ciphers: [
       ...new Set(zni.rows.map((row) => row.cipher).filter(Boolean)),
     ].join('; '),
@@ -160,7 +163,13 @@ export function buildQualityPrintData(
     supplier: avk?.supplier ?? '',
     manufacturer: avk?.manufacturer ?? '',
     standards: avk?.standards ?? '',
-    conclusion: [avk?.conclusion, partial].filter(Boolean).join('\n'),
+    conclusion: [
+      `Основание: ${receiptDocumentLabel(entry.basis)}.`,
+      avk?.conclusion,
+      partial,
+    ]
+      .filter(Boolean)
+      .join('\n'),
     attachments: avk?.attachments ?? '',
     photosYes: avk?.photos === 'yes' ? '☑' : '☐',
     photosNo: avk?.photos === 'no' ? '☑' : '☐',
@@ -170,10 +179,7 @@ export function buildQualityPrintData(
   return {
     fields,
     materials,
-    documents: (
-      avk?.documents ??
-      inspectionDocuments(workspace.qualityWorkflow!, entry, revision)
-    ).map((doc, index) => ({
+    documents: (avk?.documents ?? zni.documents).map((doc, index) => ({
       index: index + 1,
       name: doc.name,
       number: doc.number,

@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiRequestPrintRouteImport } from './routes/api.request-print'
 import { Route as ApiQualityPrintRouteImport } from './routes/api.quality-print'
-import { Route as ApiDocumentsDocumentIdPdfRouteImport } from './routes/api.documents.$documentId.pdf'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -29,58 +28,35 @@ const ApiQualityPrintRoute = ApiQualityPrintRouteImport.update({
   path: '/api/quality-print',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiDocumentsDocumentIdPdfRoute =
-  ApiDocumentsDocumentIdPdfRouteImport.update({
-    id: '/api/documents/$documentId/pdf',
-    path: '/api/documents/$documentId/pdf',
-    getParentRoute: () => rootRouteImport,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/quality-print': typeof ApiQualityPrintRoute
   '/api/request-print': typeof ApiRequestPrintRoute
-  '/api/documents/$documentId/pdf': typeof ApiDocumentsDocumentIdPdfRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/quality-print': typeof ApiQualityPrintRoute
   '/api/request-print': typeof ApiRequestPrintRoute
-  '/api/documents/$documentId/pdf': typeof ApiDocumentsDocumentIdPdfRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/quality-print': typeof ApiQualityPrintRoute
   '/api/request-print': typeof ApiRequestPrintRoute
-  '/api/documents/$documentId/pdf': typeof ApiDocumentsDocumentIdPdfRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    | '/'
-    | '/api/quality-print'
-    | '/api/request-print'
-    | '/api/documents/$documentId/pdf'
+  fullPaths: '/' | '/api/quality-print' | '/api/request-print'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/api/quality-print'
-    | '/api/request-print'
-    | '/api/documents/$documentId/pdf'
-  id:
-    | '__root__'
-    | '/'
-    | '/api/quality-print'
-    | '/api/request-print'
-    | '/api/documents/$documentId/pdf'
+  to: '/' | '/api/quality-print' | '/api/request-print'
+  id: '__root__' | '/' | '/api/quality-print' | '/api/request-print'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiQualityPrintRoute: typeof ApiQualityPrintRoute
   ApiRequestPrintRoute: typeof ApiRequestPrintRoute
-  ApiDocumentsDocumentIdPdfRoute: typeof ApiDocumentsDocumentIdPdfRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -106,13 +82,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiQualityPrintRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/documents/$documentId/pdf': {
-      id: '/api/documents/$documentId/pdf'
-      path: '/api/documents/$documentId/pdf'
-      fullPath: '/api/documents/$documentId/pdf'
-      preLoaderRoute: typeof ApiDocumentsDocumentIdPdfRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -120,7 +89,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiQualityPrintRoute: ApiQualityPrintRoute,
   ApiRequestPrintRoute: ApiRequestPrintRoute,
-  ApiDocumentsDocumentIdPdfRoute: ApiDocumentsDocumentIdPdfRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

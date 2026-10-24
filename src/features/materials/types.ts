@@ -1,20 +1,3 @@
-export type DocumentType =
-  | 'material_request'
-  | 'receipt'
-  | 'quality_control'
-  | 'issue'
-  | 'return'
-  | 'write_off'
-  | 'inventory_adjustment'
-
-export type QcStatus =
-  | 'pending'
-  | 'accepted'
-  | 'rejected'
-  | 'accepted_with_notes'
-
-export type LedgerDirection = 'in' | 'out'
-
 export type ImportRowInput = {
   project?: string
   cipher?: string
@@ -68,20 +51,6 @@ export type ImportDraftValidation = {
   }
 }
 
-export type LedgerMovement = {
-  lotId: string
-  projectMaterialLineId: string
-  direction: LedgerDirection
-  quantity: number
-  reason: DocumentType
-}
-
-export type LotBalance = {
-  lotId: string
-  projectMaterialLineId: string
-  quantity: number
-}
-
 export type SubobjectMaterialMetric = {
   id?: string
   project: string
@@ -105,26 +74,4 @@ export type SubobjectMaterialMetric = {
   issued: number
   returned: number
   writtenOff: number
-}
-
-export type SubobjectMaterialSummaryRow = SubobjectMaterialMetric & {
-  balance: number
-  deviation: number
-}
-
-export type CategorySummary = {
-  category: string
-  rows: Array<SubobjectMaterialSummaryRow>
-  totals: {
-    plannedQuantity: number
-    requested: number
-    received: number
-    qcPending: number
-    accepted: number
-    issued: number
-    returned: number
-    writtenOff: number
-    balance: number
-    deviation: number
-  }
 }

@@ -5,6 +5,7 @@ export const printHeaderFields = {
   date: 'Дата заявки',
   numberAndDate: 'Номер и дата одной строкой',
   requester: 'Заявитель',
+  requestNote: 'Примечание к заявке',
   cipher: 'Шифр',
   materialType: 'Тип материала',
 } as const
@@ -40,6 +41,7 @@ export const printConfigSchema = z
         date: cell,
         numberAndDate: cell.default(''),
         requester: cell,
+        requestNote: cell.default(''),
         cipher: cell,
         materialType: cell,
       })
@@ -73,6 +75,7 @@ export const defaultPrintConfig: PrintConfig = {
     date: '',
     numberAndDate: 'A6',
     requester: 'H9',
+    requestNote: '',
     cipher: '',
     materialType: '',
   },
@@ -138,6 +141,7 @@ export const samplePrintData: PrintData = {
     number: 'ЗП-2026-0001',
     date: '16.10.2026',
     requester: 'Иванов И.И.',
+    requestNote: '',
     cipher: 'ТК1',
     materialType: 'Соединительные детали трубопроводов',
   },

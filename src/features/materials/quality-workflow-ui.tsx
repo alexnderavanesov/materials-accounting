@@ -1,6 +1,13 @@
+import { CustomerReturnModal } from './customer-return-modal'
+import { customerReturnAlternative } from './receipt-balances'
+import {
+  documentsForReceipt,
+  receiptDocuments,
+  receiptDocumentLabel,
+} from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Plus, X } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import {
@@ -12,10 +19,10 @@ import {
   inspectionChecks,
   inspectionMatches,
   inspectionAvailableQuantities,
-  inspectionDocuments,
   localToday,
   newInspection,
-  newInspectionAct,
+  createAcceptedInspectionAct,
+  pendingCustomerReturns,
   reopenInspection,
   resultLabels,
   signInspection,
@@ -27,13 +34,14 @@ import type {
   QualityDefaults,
   QualityDocument,
   QualityWorkflow,
-  TransferAct,
 } from './quality-workflow'
 import type { SubobjectMaterialMetric } from './types'
 import { QualityPrintButton, QualityPrintSettings } from './quality-print-ui'
 import { getOperationAlternative, getOperationConversion } from './domain'
 
 type Receipt = {
+  appDocumentId?: string
+  m15DocumentId?: string
   id: string
   requestId: string
   projectLineId: string
@@ -46,11 +54,11 @@ type Receipt = {
   altUnitFactor?: number | null
   altQuantity: number | null
   date: string
-  invoiceNumber: string
   certificate?: string
   qualityDocument?: string
 }
 type Props = {
+  requests?: Array<{ id: string; number: string }>
   value?: QualityWorkflow
   receipts: Array<Receipt>
   lines: Array<SubobjectMaterialMetric>
@@ -278,288 +286,98 @@ function DocumentsEditor({
     </div>
   )
 }
-export function TransferActs({ value, receipts, lines, onChange }: Props) {
-  const workflow = value ?? emptyQualityWorkflow()
-  const [draft, setDraft] = useState<TransferAct | null>(null),
-    [error, setError] = useState(''),
-    [expanded, setExpanded] = useState(false)
-  const save = () => {
-    try {
-      if (!draft) return
-      onChange({
-        ...workflow,
-        apps: [...workflow.apps.filter((app) => app.id !== draft.id), draft],
-      })
-      setDraft(null)
-      setError('')
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
-  return (
-    <section className="border-b bg-slate-50 p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="outline" onClick={() => setExpanded(!expanded)}>
-          <ChevronDown size={16} />
-          Акты приёма-передачи ({workflow.apps.length})
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => {
-            setError('')
-            setDraft({
-              id: crypto.randomUUID(),
-              number: '',
-              date: localToday(),
-              receiptIds: [],
-              documents: [],
-            })
-          }}
-        >
-          <Plus size={16} />
-          Оформить АПП
-        </Button>
-        <span className="text-sm text-slate-500">
-          АПП хранит акт заказчика. ЗНИ можно оформить на весь АПП или выбранные
-          материалы.
-        </span>
-      </div>
-      {expanded && (
-        <div className="mt-3 grid gap-2">
-          {workflow.apps.map((app) => (
-            <div
-              key={app.id}
-              className="flex flex-wrap items-center gap-3 rounded-lg border bg-white p-3"
-            >
-              <span className="mr-auto">
-                АПП №{app.number} от {displayDate(app.date)} · Получений:{' '}
-                {app.receiptIds.length}
-              </span>
-              {workflow.cases.some((entry) => entry.appId === app.id) ? (
-                <span className="text-sm text-slate-500">ЗНИ оформлена</span>
-              ) : (
-                <>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setError('')
-                      setDraft(structuredClone(app))
-                    }}
-                  >
-                    Изменить АПП
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Удалить АПП №${app.number}? Получения сохранятся.`,
-                        )
-                      ) {
-                        try {
-                          onChange({
-                            ...workflow,
-                            apps: workflow.apps.filter(
-                              (entry) => entry.id !== app.id,
-                            ),
-                          })
-                        } catch (cause) {
-                          setError(message(cause))
-                        }
-                      }
-                    }}
-                  >
-                    Удалить АПП
-                  </Button>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {error && !draft && (
-        <p role="alert" className="text-red-700">
-          {error}
-        </p>
-      )}
-      {draft && (
-        <QualityModal
-          title="Акт приёма-передачи материала"
-          onClose={() => setDraft(null)}
-        >
-          <div className="grid gap-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <Field
-                label="Номер АПП"
-                value={draft.number}
-                onChange={(number) => setDraft({ ...draft, number })}
-              />
-              <Field
-                label="Дата АПП"
-                type="date"
-                value={draft.date}
-                onChange={(date) => setDraft({ ...draft, date })}
-              />
-            </div>
-            <h3 className="font-semibold">Получения по этому АПП</h3>
-            <div className="max-h-72 overflow-auto rounded-lg border p-3">
-              {receipts
-                .filter(
-                  (receipt) =>
-                    !workflow.apps.some(
-                      (app) =>
-                        app.id !== draft.id &&
-                        app.receiptIds.includes(receipt.id),
-                    ),
-                )
-                .map((receipt) => (
-                  <label
-                    key={receipt.id}
-                    className="flex cursor-pointer items-center gap-3 border-b py-3"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.receiptIds.includes(receipt.id)}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          receiptIds: e.target.checked
-                            ? [...draft.receiptIds, receipt.id]
-                            : draft.receiptIds.filter(
-                                (id) => id !== receipt.id,
-                              ),
-                        })
-                      }
-                    />
-                    <span>
-                      {receipt.actualName ||
-                        lines.find((line) => line.id === receipt.projectLineId)
-                          ?.projectMaterialName}{' '}
-                      · {fmt(receipt.quantity)} {receipt.projectUnit} ·{' '}
-                      {displayDate(receipt.date)} ·{' '}
-                      {receipt.invoiceNumber || 'Без накладной'} · Партия:{' '}
-                      {receipt.heatBatch || '—'} · Зав. №{' '}
-                      {receipt.factoryNumber || '—'}
-                    </span>
-                  </label>
-                ))}
-              {!receipts.length && <p>Сначала оформите получение материала.</p>}
-            </div>
-            <DocumentsEditor
-              value={draft.documents}
-              onChange={(documents) => setDraft({ ...draft, documents })}
-            />
-            {error && (
-              <p role="alert" className="text-red-700">
-                {error}
-              </p>
-            )}
-            <Button onClick={save}>Сохранить АПП</Button>
-          </div>
-        </QualityModal>
-      )}
-    </section>
-  )
-}
 function InspectionMaterialPicker({
   workflow,
+  requests,
   receipts,
   lines,
-  legacyReceiptIds,
   onCreate,
   onClose,
 }: {
+  requests: Array<{ id: string; number: string }>
   workflow: QualityWorkflow
   receipts: Array<Receipt>
   lines: Array<SubobjectMaterialMetric>
-  legacyReceiptIds: Array<string>
-  onCreate: (selection: Array<InspectionSelection>) => void
+  onCreate: (selection: Array<InspectionSelection>, basisId: string) => void
   onClose: () => void
 }) {
   const [selected, setSelected] = useState<Record<string, string>>({})
   const [search, setSearch] = useState('')
-  const [selectedApp, setSelectedApp] = useState('')
+  const [basisId, setBasisId] = useState('')
   const [error, setError] = useState('')
   const available = inspectionAvailableQuantities(workflow, receipts)
-  const eligible = receipts.filter(
-    (receipt) =>
-      (available.get(receipt.id) ?? 0) > 0 &&
-      !legacyReceiptIds.includes(receipt.id),
+  const allEligible = receipts.filter(
+    (receipt) => (available.get(receipt.id) ?? 0) > 0,
   )
-  const eligibleById = new Map(eligible.map((receipt) => [receipt.id, receipt]))
+  const eligible = allEligible.filter((receipt) =>
+    documentsForReceipt(receipt, workflow).some((doc) => doc.id === basisId),
+  )
+  const availableDocuments = receiptDocuments(workflow).filter((doc) =>
+    allEligible.some((receipt) =>
+      documentsForReceipt(receipt, workflow).some((item) => item.id === doc.id),
+    ),
+  )
   const query = search.trim().toLocaleLowerCase('ru')
   const visible = eligible.filter((receipt) => {
     const line = findInspectionMaterial(lines, receipt.projectLineId)
     return [
       receipt.actualName,
+      requests.find((request) => request.id === receipt.requestId)?.number,
       line?.cipher,
       line?.normativeDocument,
-      receipt.invoiceNumber,
       receipt.factoryNumber,
       receipt.heatBatch,
       displayDate(receipt.date),
     ].some((value) => value?.toLocaleLowerCase('ru').includes(query))
   })
-  const entireAppAvailable = (app: TransferAct) =>
-    app.receiptIds.every((receiptId) => {
-      const receipt = eligibleById.get(receiptId)
-      return receipt && available.get(receiptId) === receipt.quantity
-    })
   return (
     <QualityModal title="Материалы для ЗНИ" onClose={onClose}>
       <div className="grid gap-4">
         <p className="text-sm text-slate-600">
-          Выберите поступившие материалы и количество для инспекции.
-          Поступления, партии и заводские номера учитываются отдельно. Создавать
-          АПП необязательно.
+          Выберите один АПП или М-15, затем материалы и количество для
+          инспекции. Количество, уже включённое в ЗНИ, исключается по
+          поступлению, даже если к нему добавлен второй документ.
         </p>
-        {workflow.apps.length > 0 && (
-          <label className="grid gap-1 text-sm text-slate-600">
-            Выбрать весь АПП
-            <select
-              className="rounded-lg border p-2"
-              value={selectedApp}
-              onChange={(event) => {
-                const app = workflow.apps.find(
-                  (item) => item.id === event.target.value,
-                )
-                setSelectedApp(event.target.value)
-                if (!app || !entireAppAvailable(app)) return
-                setSelected(
-                  Object.fromEntries(
-                    app.receiptIds.map((receiptId) => [
-                      receiptId,
-                      String(available.get(receiptId)),
-                    ]),
-                  ),
-                )
-                setSearch('')
-                setError('')
-              }}
-            >
-              <option value="">Выбрать материалы вручную</option>
-              {workflow.apps.map((app) => (
-                <option
-                  key={app.id}
-                  value={app.id}
-                  disabled={!entireAppAvailable(app)}
-                >
-                  АПП №{app.number} от {displayDate(app.date)}
-                  {!entireAppAvailable(app)
-                    ? ' — часть материалов уже в ЗНИ / ВК'
-                    : ''}
-                </option>
-              ))}
-            </select>
-            <span className="text-xs">
-              Если часть АПП уже включена в ЗНИ, выберите оставшиеся материалы
-              ниже.
-            </span>
-          </label>
-        )}
+        <label className="grid gap-1 text-sm">
+          Документ получения
+          <select
+            aria-label="Документ получения для ЗНИ"
+            className="rounded-lg border p-2"
+            value={basisId}
+            onChange={(event) => {
+              setBasisId(event.target.value)
+              setSelected({})
+              setSearch('')
+              setError('')
+            }}
+          >
+            <option value="">Выберите АПП или М-15</option>
+            {availableDocuments.map((doc) => (
+              <option key={doc.id} value={doc.id}>
+                {receiptDocumentLabel(doc)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button
+          variant="outline"
+          disabled={!eligible.length}
+          onClick={() =>
+            setSelected(
+              Object.fromEntries(
+                eligible.map((receipt) => [
+                  receipt.id,
+                  String(available.get(receipt.id)),
+                ]),
+              ),
+            )
+          }
+        >
+          Выбрать все позиции документа
+        </Button>
         <Input
           aria-label="Поиск материалов для ЗНИ"
-          placeholder="Материал, шифр, накладная, партия или заводской номер"
+          placeholder="Материал, заявка, шифр, партия или заводской номер"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
@@ -581,7 +399,6 @@ function InspectionMaterialPicker({
                     type="checkbox"
                     checked={checked}
                     onChange={(event) => {
-                      setSelectedApp('')
                       setSelected((current) => {
                         const next = { ...current }
                         if (event.target.checked)
@@ -599,9 +416,11 @@ function InspectionMaterialPicker({
                     </span>
                     <span className="block text-sm text-slate-500">
                       {line?.cipher || 'Без шифра'} ·{' '}
-                      {displayDate(receipt.date)} · Накладная{' '}
-                      {receipt.invoiceNumber || '—'} · Партия{' '}
-                      {receipt.heatBatch || '—'} · Зав. №{' '}
+                      {displayDate(receipt.date)} ·{' '}
+                      {requests.find(
+                        (request) => request.id === receipt.requestId,
+                      )?.number || 'Заявка удалена'}{' '}
+                      · Партия {receipt.heatBatch || '—'} · Зав. №{' '}
                       {receipt.factoryNumber || '—'}
                     </span>
                     <span className="block text-sm">
@@ -613,10 +432,9 @@ function InspectionMaterialPicker({
                 </label>
                 {checked && (
                   <Field
-                    label={`Количество для ЗНИ: ${receipt.actualName} (${receipt.invoiceNumber || 'без накладной'}), ${receipt.projectUnit}`}
+                    label={`Количество для ЗНИ: ${receipt.actualName} (${receiptDocumentLabel(receiptDocuments(workflow).find((doc) => doc.id === basisId)!)}), ${receipt.projectUnit}`}
                     value={selected[receipt.id]!}
                     onChange={(amount) => {
-                      setSelectedApp('')
                       setSelected({ ...selected, [receipt.id]: amount })
                     }}
                   />
@@ -628,7 +446,7 @@ function InspectionMaterialPicker({
             <p className="rounded-lg border border-dashed p-5 text-slate-500">
               {eligible.length
                 ? 'Материалы по запросу не найдены.'
-                : 'Нет доступных материалов: оформите получение или откройте существующую ЗНИ для повторной проверки. Материалы из прежнего ВК учитываются отдельно.'}
+                : 'Выберите документ с доступными позициями. Если документов нет, добавьте реквизиты АПП или М-15 в получение.'}
             </p>
           )}
         </div>
@@ -638,7 +456,7 @@ function InspectionMaterialPicker({
           </p>
         )}
         <Button
-          disabled={!Object.keys(selected).length}
+          disabled={!basisId || !Object.keys(selected).length}
           onClick={() => {
             try {
               onCreate(
@@ -648,6 +466,7 @@ function InspectionMaterialPicker({
                     amount.trim().replace(/\s/g, '').replace(',', '.'),
                   ),
                 })),
+                basisId,
               )
             } catch (cause) {
               setError(message(cause))
@@ -663,20 +482,20 @@ function InspectionMaterialPicker({
 
 export function InspectionWorkspace({
   value,
+  requests = [],
   receipts,
   lines,
   onChange,
   prepare,
   search = '',
   focusId,
-  legacyReceiptIds = [],
 }: Props & {
   prepare: () => Promise<string>
   search?: string
   focusId?: string
-  legacyReceiptIds?: Array<string>
 }) {
   const workflow = value ?? emptyQualityWorkflow()
+  const [returnCase, setReturnCase] = useState<InspectionCase | null>(null)
   const [draft, setDraft] = useState<InspectionCase | null>(null),
     [error, setError] = useState(''),
     [choosingMaterials, setChoosingMaterials] = useState(false),
@@ -715,11 +534,7 @@ export function InspectionWorkspace({
     if (entry) setExpanded((current) => ({ ...current, [entry.id]: true }))
   }, [focusId, value])
   const visible = workflow.cases.filter((entry) =>
-    inspectionMatches(
-      entry,
-      workflow.apps.find((app) => app.id === entry.appId),
-      search,
-    ),
+    inspectionMatches(entry, search),
   )
 
   return (
@@ -735,8 +550,9 @@ export function InspectionWorkspace({
         </Button>
       </div>
       <p className="text-sm text-slate-500">
-        Выберите весь АПП или отдельные полученные материалы, в том числе без
-        АПП. К выдаче допускается принятое количество по подписанным АВК.
+        Выберите АПП или М-15, затем все или отдельные позиции документа и
+        предъявляемое количество. К выдаче допускается принятое количество по
+        подписанным АВК.
       </p>
       {error && (
         <p role="alert" className="text-red-700">
@@ -752,8 +568,7 @@ export function InspectionWorkspace({
       )}
       {visible.map((entry) => {
         const rev = currentInspection(entry),
-          active = activeInspection(entry),
-          app = workflow.apps.find((item) => item.id === entry.appId)
+          active = activeInspection(entry)
         return (
           <article
             key={entry.id}
@@ -776,9 +591,6 @@ export function InspectionWorkspace({
                   ЗНИ №{rev.zni.number} · Ревизия {rev.revision}
                 </h3>
                 <p className="text-sm text-slate-500">
-                  {app
-                    ? `АПП №${app.number} от ${displayDate(app.date)} · `
-                    : ''}
                   {rev.zni.rows.length} поз. · ЗНИ:{' '}
                   {rev.zni.signedOn
                     ? `подписана ${displayDate(rev.zni.signedOn)}`
@@ -834,23 +646,27 @@ export function InspectionWorkspace({
               >
                 Подписать ЗНИ
               </Button>
-              {!rev.avk && (
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    run(() => {
-                      const next = structuredClone(entry)
-                      currentInspection(next).avk = newInspectionAct(
-                        inspectionDocuments(workflow, next),
-                      )
-                      save(next)
-                      setDraft(next)
-                    })
-                  }
-                >
-                  Создать АВК
-                </Button>
-              )}
+              {!rev.avk &&
+                rev.zni.signedOn &&
+                rev.zni.rows.some((row) => (row.accepted ?? 0) > 0) && (
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      run(() => {
+                        const next = structuredClone(entry)
+                        currentInspection(next).avk =
+                          createAcceptedInspectionAct(
+                            next,
+                            currentInspection(next).zni.documents,
+                          )
+                        save(next)
+                        setDraft(next)
+                      })
+                    }
+                  >
+                    Создать АВК
+                  </Button>
+                )}
               {rev.avk && !rev.avk.signedOn && (
                 <Button
                   variant="outline"
@@ -862,20 +678,23 @@ export function InspectionWorkspace({
                   Подписать АВК
                 </Button>
               )}
-              {rev.zni.signedOn && (
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    run(() => {
-                      const next = reopenInspection(entry)
-                      save(next)
-                      setDraft(next)
-                    })
-                  }
-                >
-                  Повторная проверка
-                </Button>
-              )}
+              {rev.zni.signedOn &&
+                !(workflow.customerReturns ?? []).some(
+                  (item) => item.caseId === entry.id,
+                ) && (
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      run(() => {
+                        const next = reopenInspection(entry)
+                        save(next)
+                        setDraft(next)
+                      })
+                    }
+                  >
+                    Повторная проверка
+                  </Button>
+                )}
               {!entry.revisions.some((item) => item.zni.signedOn) && (
                 <Button
                   variant="ghost"
@@ -899,6 +718,54 @@ export function InspectionWorkspace({
                 </Button>
               )}
             </div>
+            <p className="mt-3 text-sm text-slate-600">
+              Основание: {receiptDocumentLabel(entry.basis)}
+            </p>
+            {pendingCustomerReturns(workflow, entry).length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <span>
+                  К возврату:{' '}
+                  {pendingCustomerReturns(workflow, entry)
+                    .map(
+                      (item) =>
+                        `${item.row.name}: ${fmt(item.quantity)} ${item.row.unit}`,
+                    )
+                    .join('; ')}
+                </span>
+                <Button variant="outline" onClick={() => setReturnCase(entry)}>
+                  Оформить возврат заказчику
+                </Button>
+              </div>
+            )}
+            {(workflow.customerReturns ?? [])
+              .filter((item) => item.caseId === entry.id)
+              .map((item) => {
+                const row = rev.zni.rows.find(
+                  (candidate) => candidate.receiptId === item.receiptId,
+                )!
+                const alternative = customerReturnAlternative(
+                  item.quantity,
+                  row,
+                  receipts.find((receipt) => receipt.id === item.receiptId),
+                  findInspectionMaterial(lines, row.projectLineId),
+                )
+                return (
+                  <p key={item.id} className="mt-2 text-sm text-slate-600">
+                    Возвращено {displayDate(item.date)} (
+                    {item.kind === 'surplus'
+                      ? 'лишний материал'
+                      : 'не принято по ЗНИ'}
+                    ): {row.name} — {fmt(item.quantity)} {row.unit}
+                    {!alternative.error && alternative.altQuantity !== null && (
+                      <>
+                        {' '}
+                        ({fmt(alternative.altQuantity)} {alternative.altUnit})
+                      </>
+                    )}
+                    . {item.documentNumber} {item.note}
+                  </p>
+                )
+              })}
             {expanded[entry.id] && (
               <InspectionRows
                 gridId={`inspection:${entry.id}:${rev.revision}`}
@@ -910,15 +777,37 @@ export function InspectionWorkspace({
           </article>
         )
       })}
-      {choosingMaterials && (
-        <InspectionMaterialPicker
+      {returnCase && (
+        <CustomerReturnModal
+          entry={returnCase}
           workflow={workflow}
           receipts={receipts}
           lines={lines}
-          legacyReceiptIds={legacyReceiptIds}
+          onClose={() => setReturnCase(null)}
+          onSave={(next) => {
+            onChange(next)
+            setReturnCase(null)
+          }}
+        />
+      )}
+      {choosingMaterials && (
+        <InspectionMaterialPicker
+          workflow={workflow}
+          requests={requests}
+          receipts={receipts}
+          lines={lines}
           onClose={() => setChoosingMaterials(false)}
-          onCreate={(selection) => {
-            setDraft(newInspection(workflow, selection, receipts, lines))
+          onCreate={(selection, basisId) => {
+            setDraft(
+              newInspection(
+                workflow,
+                selection,
+                receipts,
+                lines,
+                basisId,
+                requests,
+              ),
+            )
             setChoosingMaterials(false)
           }}
         />
@@ -989,7 +878,7 @@ export function InspectionWorkspace({
               }
             />
             <DocumentsEditor
-              value={inspectionDocuments(workflow, draft, revision)}
+              value={revision.zni.documents}
               disabled={!!revision.zni.signedOn}
               onChange={(documents) =>
                 updateRevision({
@@ -1104,18 +993,29 @@ export function InspectionWorkspace({
               }
             />
             {revision.avk ? (
-              <ActEditor revision={revision} onChange={updateRevision} />
+              <ActEditor
+                revision={revision}
+                onChange={updateRevision}
+                acceptedOnly
+              />
             ) : (
               <Button
                 variant="outline"
+                disabled={
+                  !revision.zni.signedOn ||
+                  !revision.zni.rows.some((row) => (row.accepted ?? 0) > 0)
+                }
                 onClick={() =>
                   updateRevision({
                     ...revision,
-                    avk: newInspectionAct(inspectionDocuments(workflow, draft)),
+                    avk: createAcceptedInspectionAct(
+                      draft,
+                      currentInspection(draft).zni.documents,
+                    ),
                   })
                 }
               >
-                Добавить черновик АВК
+                Создать АВК на принятые позиции
               </Button>
             )}
             {error && (
@@ -1314,9 +1214,11 @@ function InspectionRows({
   )
 }
 function ActEditor({
+  acceptedOnly = false,
   revision,
   onChange,
 }: {
+  acceptedOnly?: boolean
   revision: InspectionRevision
   onChange: (next: InspectionRevision) => void
 }) {
@@ -1330,6 +1232,18 @@ function ActEditor({
         Материалы и результаты берутся из ЗНИ этой ревизии. Проверки заполняются
         по факту; для неприменимых укажите «Не применимо».
       </p>
+      {acceptedOnly && (
+        <div className="rounded-lg border bg-emerald-50 p-3 text-sm">
+          <strong>Принятые позиции АВК</strong>
+          {revision.zni.rows
+            .filter((row) => (row.accepted ?? 0) > 0)
+            .map((row) => (
+              <p key={row.receiptId}>
+                {row.name}: {fmt(row.accepted!)} {row.unit}
+              </p>
+            ))}
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-2">
         {(
           [

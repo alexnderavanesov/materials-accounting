@@ -9,6 +9,7 @@ type WorkbookMaterialType = {
   name: string
 }
 export type MaterialRequestTemplateLine = {
+  materialType?: string
   alternativeUnit?: string | null
   alternativeUnitFactor?: number | null
   lineId: string
@@ -47,16 +48,18 @@ export type MaterialReceiptTemplateLine = {
   unit: string
 }
 export type MaterialReceiptImportRowInput = {
+  appNumber: string
+  appDate: string
+  m15Number: string
+  m15Date: string
   actualName: string
   altQuantity: number | null
   altUnit: string
   certificate: string
   customerArvk: string
-  customerReceiptDocument: string
   date: string
   factoryNumber: string
   heatBatch: string
-  invoiceNumber: string
   manufacturer: string
   materialId: string
   note: string
@@ -180,16 +183,16 @@ const receiptHeaderMap: Partial<
   поступило_в_альтернативной_единице: 'altQuantity',
   альтернативная_единица_измерения: 'altUnit',
   дата_поступления: 'date',
-  номер_накладной: 'invoiceNumber',
+  номер_апп: 'appNumber',
+  дата_апп: 'appDate',
+  номер_м_15: 'm15Number',
+  дата_м_15: 'm15Date',
   заводской_номер: 'factoryNumber',
   завод_изготовитель: 'manufacturer',
   изготовитель: 'manufacturer',
   производитель: 'manufacturer',
   партия_плавки: 'heatBatch',
   плавка: 'heatBatch',
-  номер_документа_о_получении_заказчика: 'customerReceiptDocument',
-  документ_о_получении_заказчика: 'customerReceiptDocument',
-  документ_получения_заказчика: 'customerReceiptDocument',
   арвк_заказчика: 'customerArvk',
   документ_качества: 'qualityDocument',
   паспорт_сертификат: 'certificate',
@@ -315,16 +318,16 @@ export async function createMaterialRequestTemplateWorkbook({
     views: [{ state: 'frozen', ySplit: 5 }],
   })
 
-  worksheet.mergeCells('A1:L1')
+  worksheet.mergeCells('A1:M1')
   worksheet.getCell('A1').value = 'Шаблон заявки на получение'
   worksheet.getCell('A1').font = { bold: true, size: 15 }
   worksheet.getCell('A2').value = 'Шифр проекта'
   worksheet.getCell('B2').value = cipher
-  worksheet.getCell('A3').value = 'Тип материала'
+  worksheet.getCell('A3').value = 'Типы материала'
   worksheet.getCell('B3').value = materialType || 'Не выбран'
   worksheet.getCell('A4').value =
     'Заполните количество по заявке и примечание. Альтернативные значения рассчитываются по коэффициенту материала. Изменять единицу и коэффициент можно только в проектной базе.'
-  worksheet.mergeCells('A4:L4')
+  worksheet.mergeCells('A4:M4')
 
   const columns = [
     { header: 'ID позиции', key: 'projectLineId', width: 18, locked: true },
@@ -379,6 +382,7 @@ export async function createMaterialRequestTemplateWorkbook({
       locked: true,
     },
     { header: 'Примечание', key: 'note', width: 34, locked: false },
+    { header: 'Тип материала', key: 'materialType', width: 34, locked: true },
   ]
 
   worksheet.columns = columns.map((column) => ({
@@ -407,6 +411,7 @@ export async function createMaterialRequestTemplateWorkbook({
       note: '',
       plannedQuantity: line.plannedQuantity,
       projectLineId: line.lineId,
+      materialType: line.materialType ?? materialType,
       projectMaterialName: line.projectMaterialName ?? '',
       quantity: '',
       requestBalance: line.requestBalance,
@@ -601,12 +606,10 @@ export async function createMaterialReceiptTemplateWorkbook({
       locked: true,
     },
     { header: 'Дата поступления', key: 'date', width: 18, locked: false },
-    {
-      header: 'Номер накладной',
-      key: 'invoiceNumber',
-      width: 22,
-      locked: false,
-    },
+    { header: 'Номер АПП', key: 'appNumber', width: 24, locked: false },
+    { header: 'Дата АПП', key: 'appDate', width: 18, locked: false },
+    { header: 'Номер М-15', key: 'm15Number', width: 24, locked: false },
+    { header: 'Дата М-15', key: 'm15Date', width: 18, locked: false },
     {
       header: 'Заводской номер',
       key: 'factoryNumber',
@@ -623,12 +626,6 @@ export async function createMaterialReceiptTemplateWorkbook({
       header: 'Партия плавки',
       key: 'heatBatch',
       width: 22,
-      locked: false,
-    },
-    {
-      header: 'Номер документа о получении (Заказчика)',
-      key: 'customerReceiptDocument',
-      width: 36,
       locked: false,
     },
     { header: 'АРВК заказчика', key: 'customerArvk', width: 22, locked: false },
@@ -676,13 +673,15 @@ export async function createMaterialReceiptTemplateWorkbook({
       altUnit: line.altUnit ?? '',
       certificate: '',
       customerArvk: '',
-      customerReceiptDocument: '',
       date: new Date(
         `${normalizeCalendarDate(line.date ?? '') ?? localDateInputValue()}T00:00:00.000Z`,
       ),
       factoryNumber: '',
       heatBatch: '',
-      invoiceNumber: '',
+      appNumber: '',
+      appDate: '',
+      m15Number: '',
+      m15Date: '',
       manufacturer: '',
       materialId: line.materialId ?? '',
       note: '',
@@ -776,11 +775,13 @@ export function parseMaterialReceiptWorkbook(buffer: ArrayBuffer) {
       altUnit: '',
       certificate: '',
       customerArvk: '',
-      customerReceiptDocument: '',
       date: '',
       factoryNumber: '',
       heatBatch: '',
-      invoiceNumber: '',
+      appNumber: '',
+      appDate: '',
+      m15Number: '',
+      m15Date: '',
       manufacturer: '',
       materialId: '',
       note: '',
@@ -812,8 +813,12 @@ export function parseMaterialReceiptWorkbook(buffer: ArrayBuffer) {
         field === 'requestRest'
       ) {
         parsed[field] = parseWorkbookOptionalNumber(value)
-      } else if (field === 'date') {
-        parsed.date = parseReceiptWorkbookDate(
+      } else if (
+        field === 'date' ||
+        field === 'appDate' ||
+        field === 'm15Date'
+      ) {
+        parsed[field] = parseReceiptWorkbookDate(
           value,
           workbook.Workbook?.WBProps?.date1904 ?? false,
         )

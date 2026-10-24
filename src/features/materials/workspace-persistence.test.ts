@@ -12,8 +12,15 @@ import {
   writeWorkspaceCache,
 } from './workspace-snapshot'
 import type { SaveWorkspaceResult } from './workspace-snapshot'
-import { materialInspectionFixture } from './quality-workflow.fixtures'
-import { currentInspection } from './quality-workflow'
+import {
+  documentInspectionFixture,
+  materialInspectionFixture,
+} from './quality-workflow.fixtures'
+import {
+  currentInspection,
+  localToday,
+  recordCustomerReturn,
+} from './quality-workflow'
 
 export function fixture(quantity = 1) {
   return workspaceSnapshotSchema.parse({
@@ -61,7 +68,7 @@ function memoryStorage(): Storage {
 }
 
 describe('workspace file safety', () => {
-  it('persists material-based ZNI without APP, rejects overbooking and protects the source receipt', async () => {
+  it('persists a document-based ZNI, rejects overbooking and protects the source receipt', async () => {
     const { dir, store } = await setup()
     const initial = materialInspectionFixture(4)
     await store.save(initial, null)
@@ -75,7 +82,7 @@ describe('workspace file safety', () => {
     currentInspection(second).zni.rows[0]!.presented = 7
     overbooked.qualityWorkflow.cases.push(second)
     await expect(store.save(overbooked, loaded.revision)).rejects.toThrow(
-      'Суммарное количество',
+      'Суммарное количество в ЗНИ превышает поступление',
     )
     const removed = structuredClone(initial)
     removed.materialReceipts = []
@@ -83,6 +90,36 @@ describe('workspace file safety', () => {
       'связанное с ЗНИ',
     )
     expect(await readFile(join(dir, 'workspace.json'), 'utf8')).toBe(original)
+  })
+  it('persists document references and partial returns atomically and rejects a stale tab and duplicate return', async () => {
+    const { dir, store } = await setup()
+    const initial = documentInspectionFixture('m15')
+    await store.save(initial, null)
+    const base = await store.load()
+    const next = structuredClone(initial)
+    const entry = next.qualityWorkflow.cases[0]!
+    next.qualityWorkflow = recordCustomerReturn(
+      next.qualityWorkflow,
+      entry.id,
+      [{ receiptId: 'receipt', quantity: 0.4 }],
+      localToday(),
+    )
+    expect((await store.save(next, base.revision)).status).toBe('saved')
+    expect((await store.save(initial, base.revision)).status).toBe('conflict')
+    const restarted = createWorkspaceStore(dir),
+      saved = await restarted.load()
+    expect(saved.workspace).toEqual(next)
+    const before = await readFile(join(dir, 'workspace.json'), 'utf8')
+    const invalid = structuredClone(next)
+    invalid.qualityWorkflow.customerReturns!.push({
+      ...invalid.qualityWorkflow.customerReturns![0]!,
+      id: 'duplicate',
+      quantity: 0.7,
+    })
+    await expect(restarted.save(invalid, saved.revision)).rejects.toThrow(
+      /возврат/,
+    )
+    expect(await readFile(join(dir, 'workspace.json'), 'utf8')).toBe(before)
   })
   it('loads an absent workspace without creating a file; preserves the legacy JSON shape', async () => {
     const { dir, store } = await setup()

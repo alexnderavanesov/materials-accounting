@@ -93,6 +93,39 @@ describe('materials Excel import', () => {
     expect(isCellLocked(sheet.getCell('K6'))).toBe(true)
     expect(sheet.getCell('H6').protection.locked).toBe(false)
   })
+  it('keeps every type in a mixed request template without changing quantity input columns', async () => {
+    const buffer = await createMaterialRequestTemplateWorkbook({
+      cipher: 'ТК1',
+      materialType: 'Трубы, Детали',
+      lines: [
+        {
+          lineId: 'pipe',
+          materialType: 'Трубы',
+          projectMaterialName: 'Труба',
+          unit: 'м',
+          plannedQuantity: 10,
+          requestBalance: 10,
+        },
+        {
+          lineId: 'bend',
+          materialType: 'Детали',
+          projectMaterialName: 'Отвод',
+          unit: 'шт',
+          plannedQuantity: 5,
+          requestBalance: 5,
+        },
+      ],
+    })
+    const book = new ExcelJS.Workbook()
+    await book.xlsx.load(buffer)
+    const sheet = book.getWorksheet('Заявка')!
+    expect([sheet.getCell('M6').value, sheet.getCell('M7').value]).toEqual([
+      'Трубы',
+      'Детали',
+    ])
+    expect(sheet.getCell('H6').protection.locked).toBe(false)
+    expect(sheet.getCell('H7').protection.locked).toBe(false)
+  })
   it('makes receipt alternatives calculated, protected columns while leaving receipt inputs editable', async () => {
     const line = {
       projectLineId: 'line-0',

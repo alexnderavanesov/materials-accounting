@@ -232,13 +232,34 @@ export async function fillQualityPrintWorkbook(
       sheet.getCell(move(pos.row), pos.column).value = data.fields[key] ?? ''
       changedCells.add(sheet.getCell(move(pos.row), pos.column).address)
     }
-  for (const block of blocks)
+  for (const block of blocks) {
+    // Adapt only the standard reference form's generic delivery-document column
+    // in the filled copy, leaving the saved template intact.
+    const sourceColumn =
+      block.kind === 'materials' ? block.columns.appNumber : undefined
+    const sourceHeader = sourceColumn
+      ? sheet.getCell(`${sourceColumn}${move(block.row) - 1}`).master
+      : null
+    const standardSource =
+      !!sourceHeader &&
+      /^(№\s*)?(ТТН\s*[/]\s*УПД|АПП)$/u.test(sourceHeader.text.trim())
+    if (standardSource) {
+      sourceHeader.value = 'Документ получения'
+      sourceHeader.alignment = { ...sourceHeader.alignment, wrapText: true }
+      changedCells.add(sourceHeader.address)
+    }
     for (const [index, values] of block.values.entries())
       for (const [key, col] of Object.entries(block.columns)) {
         const cell = sheet.getCell(`${col}${move(block.row) + index}`)
-        cell.value = values[key] ?? null
+        cell.value =
+          standardSource && key === 'appNumber'
+            ? (values.receiptDocument ?? values[key] ?? null)
+            : standardSource && key === 'appDate'
+              ? (values.receiptDocumentDate ?? values[key] ?? null)
+              : (values[key] ?? null)
         changedCells.add(cell.address)
       }
+  }
   for (const image of original.getImages()) {
     const imageId = book.addImage(source.getImage(Number(image.imageId)))
     sheet.addImage(imageId, copyPrintImageRange(image.range, move))
