@@ -342,3 +342,36 @@ it('records only an actual return, supports fractions and keeps the form open on
   fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
   expect(changes).toHaveBeenCalledTimes(1)
 })
+
+it('paginates inspection cases and opens a linked inspection on another page', async () => {
+  const fixture = inspectionFixture()
+  const original = fixture.qualityWorkflow.cases[0]!
+  fixture.qualityWorkflow.cases = Array.from({ length: 32 }, (_, i) => ({
+    ...structuredClone(original),
+    id: `case-${i}`,
+    revisions: original.revisions.map((revision) => ({
+      ...structuredClone(revision),
+      zni: { ...structuredClone(revision.zni), number: `ЗНИ-${i}` },
+    })),
+  }))
+  const onChange = vi.fn()
+  const props = {
+    value: fixture.qualityWorkflow,
+    receipts: receiptsOf(fixture),
+    lines: linesOf(fixture),
+    onChange,
+    prepare: async () => 'revision',
+  }
+  const view = render(<InspectionWorkspace {...props} />)
+  expect(document.querySelectorAll('article')).toHaveLength(25)
+  view.rerender(
+    <InspectionWorkspace {...props} focusId="inspection:case-30:1" />,
+  )
+  expect(document.querySelectorAll('article')).toHaveLength(7)
+  expect(screen.getAllByText('Страница 2 из 2')).toHaveLength(2)
+  const grid = await operationGridApi('inspection:case-30:1')
+  expect(grid.getDisplayedRowCount()).toBe(1)
+  view.rerender(<InspectionWorkspace {...props} search="ЗНИ-5" />)
+  expect(document.querySelectorAll('article')).toHaveLength(1)
+  expect(onChange).not.toHaveBeenCalled()
+})

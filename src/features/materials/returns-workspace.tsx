@@ -218,6 +218,8 @@ export function ReturnsWorkspace({
         (visiblePending.length ? (
           <OperationsGrid
             id="returns-pending"
+            pagination
+            paginationFilterKey={search}
             label="Непринятые материалы к возврату"
             rows={visiblePending}
             rowId={(row) => row.id}
@@ -284,6 +286,8 @@ export function ReturnsWorkspace({
           {visibleStock.length ? (
             <OperationsGrid
               id="returns-stock"
+              pagination
+              paginationFilterKey={search}
               label="Полученные материалы для возврата"
               rows={visibleStock}
               rowId={(row) => row.receipt.id}
@@ -378,6 +382,8 @@ export function ReturnsWorkspace({
         (visibleHistory.length ? (
           <OperationsGrid
             id="returns-history"
+            pagination
+            paginationFilterKey={search}
             label="История возвратов заказчику"
             rows={visibleHistory}
             rowId={(row) => row.item.id}

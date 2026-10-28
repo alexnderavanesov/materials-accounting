@@ -18,6 +18,10 @@ import type {
 import { receivedByRequest, receiptBalances } from './receipt-balances'
 import { createPortal } from 'react-dom'
 import { OperationsGrid } from './operations-grid'
+import {
+  OperationPagination,
+  useOperationPagination,
+} from './operation-pagination'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GridApi } from 'ag-grid-community'
 import {
@@ -2506,6 +2510,7 @@ function OperationsSection({
 
           {activeTab === 'issues' ? (
             <IssuesTable
+              search={issueSearch}
               entries={visibleIssues}
               focusEntryId={
                 focusTarget?.tab === 'issues' ? focusTarget.targetId : undefined
@@ -2755,6 +2760,19 @@ function OperationOverview({
     [cipherFilter, materialTypeFilter, rows, search],
   )
 
+  const pagination = useOperationPagination(
+    'overview',
+    filteredRows,
+    JSON.stringify([search, cipherFilter, materialTypeFilter]),
+    {
+      key:
+        !search && !cipherFilter && !materialTypeFilter
+          ? focusRowKey
+          : undefined,
+      index: filteredRows.findIndex((row) => row.key === focusRowKey),
+    },
+  )
+
   useEffect(() => {
     if (!focusRowKey) {
       return
@@ -2844,8 +2862,12 @@ function OperationOverview({
         </div>
       ) : null}
 
-      <div className="grid gap-3 p-4">
-        {filteredRows.map((row) => {
+      <div
+        ref={pagination.containerRef}
+        className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 p-4"
+      >
+        <OperationPagination pagination={pagination} label="Общие данные" />
+        {pagination.items.map((row) => {
           const isExpanded = expandedRows[row.key] ?? false
           const rowTone = getOperationOverviewRowTone(row)
           const rowFocusClass =
@@ -3052,6 +3074,9 @@ function OperationOverview({
             </div>
           )
         })}
+        {pagination.pageCount > 1 && (
+          <OperationPagination pagination={pagination} label="Общие данные" />
+        )}
       </div>
     </div>
   )
@@ -3445,6 +3470,18 @@ function RequestsTable({
           item.searchText.includes(normalizedSearch),
         )
 
+  const pagination = useOperationPagination(
+    'requests',
+    filteredGroupMeta,
+    normalizedSearch,
+    {
+      key: focusDocumentNumber,
+      index: filteredGroupMeta.findIndex(
+        ({ group }) => group.number === focusDocumentNumber,
+      ),
+    },
+  )
+
   useEffect(() => {
     if (!focusDocumentNumber) {
       return
@@ -3471,14 +3508,18 @@ function RequestsTable({
   }
 
   return (
-    <div className="grid gap-3 bg-stone-50/50 p-4">
+    <div
+      ref={pagination.containerRef}
+      className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 bg-stone-50/50 p-4"
+    >
+      <OperationPagination pagination={pagination} label="Заявки" />
       {filteredGroupMeta.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">
           Заявки по такому запросу не найдены.
         </div>
       ) : null}
 
-      {filteredGroupMeta.map(({ group, materialType: requestMaterialType }) => {
+      {pagination.items.map(({ group, materialType: requestMaterialType }) => {
         const isExpanded = expandedGroups[group.number] ?? false
         const lineIds = Array.from(
           new Set(group.entries.map((entry) => entry.projectLineId)),
@@ -3831,6 +3872,9 @@ function RequestsTable({
           </div>
         )
       })}
+      {pagination.pageCount > 1 && (
+        <OperationPagination pagination={pagination} label="Заявки" />
+      )}
     </div>
   )
 }
@@ -4009,9 +4053,6 @@ function ReceiptsTable({
     })
   }, [expandedGroups, focusEntryId, focusedGroup, lineById])
 
-  if (receiptGroupMeta.length === 0) {
-    return null
-  }
   const requestById = new Map(requests.map((request) => [request.id, request]))
   const normalizedSearch = normalizeSearchValue(search)
   const visibleGroups = normalizedSearch
@@ -4020,12 +4061,29 @@ function ReceiptsTable({
       )
     : receiptGroupMeta
 
+  const pagination = useOperationPagination(
+    'receipts',
+    visibleGroups,
+    normalizedSearch,
+    {
+      key: focusEntryId,
+      index: visibleGroups.findIndex(
+        ({ group }) => group.key === focusedGroup?.key,
+      ),
+    },
+  )
+  if (receiptGroupMeta.length === 0) return null
+
   return (
-    <div className="grid gap-3 bg-stone-50/60 p-4">
+    <div
+      ref={pagination.containerRef}
+      className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 bg-stone-50/60 p-4"
+    >
+      <OperationPagination pagination={pagination} label="Получение" />
       {visibleGroups.length === 0 ? (
         <OperationFormEmpty text="Получения по такому запросу не найдены." />
       ) : null}
-      {visibleGroups.map(({ group }) => {
+      {pagination.items.map(({ group }) => {
         const isExpanded = expandedGroups[group.key] ?? false
         const isDeletedProjectMaterial = group.entries.some(
           (entry) => !lineById.has(entry.projectLineId),
@@ -4394,6 +4452,9 @@ function ReceiptsTable({
           </div>
         )
       })}
+      {pagination.pageCount > 1 && (
+        <OperationPagination pagination={pagination} label="Получение" />
+      )}
     </div>
   )
 }
@@ -4407,12 +4468,14 @@ function ReplacementBadge() {
 }
 
 function IssuesTable({
+  search,
   entries,
   focusEntryId,
   lineById,
   receipts,
   onDelete,
 }: {
+  search: string
   entries: Array<MaterialIssueEntry>
   focusEntryId?: string
   lineById: Map<string, SubobjectMaterialMetric>
@@ -4439,6 +4502,8 @@ function IssuesTable({
   return (
     <OperationsGrid
       id={'issues'}
+      pagination
+      paginationFilterKey={search}
       label={'Выдача'}
       rows={[
         ...entries.map((entry) => {

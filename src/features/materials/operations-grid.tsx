@@ -11,6 +11,11 @@ import { Button } from '#/components/ui/button'
 import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { projectGridLocale } from './project-grid-locale'
 import { readDataGridState, saveDataGridState } from './project-grid-state'
+import {
+  defaultOperationPageSize,
+  operationPageSizes,
+} from './operation-pagination'
+import { isViewString, useWorkspaceViewState } from './workspace-view'
 import './operations-grid.css'
 
 export type DataColumn<T> = {
@@ -60,6 +65,8 @@ export function OperationsGrid<T>({
   totals,
   isDeleted,
   focusRowId,
+  pagination = false,
+  paginationFilterKey = '',
   onReady,
 }: {
   id: string
@@ -70,16 +77,35 @@ export function OperationsGrid<T>({
   totals?: Array<T>
   isDeleted?: (row: T) => boolean
   focusRowId?: string
+  pagination?: boolean
+  paginationFilterKey?: string
   onReady?: (api: GridApi<T>) => void
 }) {
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   const hasEditableColumns = columns.some((column) => column.onEdit)
-  const [initialState] = useState(() => ({
-    ...readDataGridState(id),
-    partialColumnState: true,
-  }))
+  const [savedFilterKey, setSavedFilterKey] = useWorkspaceViewState(
+    `${id}.paginationFilter`,
+    paginationFilterKey,
+    isViewString,
+  )
+  const [initialState] = useState(() => {
+    const saved = readDataGridState(id)
+    return {
+      ...saved,
+      pagination: pagination
+        ? {
+            page:
+              savedFilterKey === paginationFilterKey
+                ? (saved.pagination?.page ?? 0)
+                : 0,
+            pageSize: saved.pagination?.pageSize ?? defaultOperationPageSize,
+          }
+        : undefined,
+      partialColumnState: true,
+    }
+  })
   const definitions = useMemo<Array<ColDef<T>>>(
     () =>
       columns.map((column) => ({
@@ -146,15 +172,31 @@ export function OperationsGrid<T>({
     [id],
   )
   useEffect(() => {
+    if (!pagination || !ready || savedFilterKey === paginationFilterKey) return
+    api.current?.paginationGoToFirstPage()
+    setSavedFilterKey(paginationFilterKey)
+  }, [
+    pagination,
+    ready,
+    savedFilterKey,
+    paginationFilterKey,
+    setSavedFilterKey,
+  ])
+  useEffect(() => {
     const grid = api.current
     if (!ready || !grid || grid.isDestroyed() || !focusRowId) return
     const row = grid.getRowNode(focusRowId)
     if (!row) return
     // A document link must remain reachable even after a saved column filter.
     grid.setFilterModel(null)
+    if (pagination && row.rowIndex !== null) {
+      grid.paginationGoToPage(
+        Math.floor(row.rowIndex / grid.paginationGetPageSize()),
+      )
+    }
     grid.ensureNodeVisible(row, 'middle')
     container.current?.scrollIntoView({ block: 'nearest' })
-  }, [ready, focusRowId])
+  }, [ready, focusRowId, pagination])
 
   return (
     <div
@@ -214,6 +256,9 @@ export function OperationsGrid<T>({
           columnDefs={definitions}
           defaultColDef={defaults}
           initialState={initialState}
+          pagination={pagination}
+          paginationPageSize={defaultOperationPageSize}
+          paginationPageSizeSelector={operationPageSizes}
           cellSelection
           readOnlyEdit={!hasEditableColumns}
           invalidEditValueMode="block"

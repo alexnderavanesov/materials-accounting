@@ -6,6 +6,10 @@ import {
   receiptDocumentLabel,
 } from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
+import {
+  OperationPagination,
+  useOperationPagination,
+} from './operation-pagination'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
@@ -531,15 +535,31 @@ export function InspectionWorkspace({
     const entry = value?.cases.find((item) =>
       focusId?.startsWith(`inspection:${item.id}:`),
     )
-    if (entry) setExpanded((current) => ({ ...current, [entry.id]: true }))
+    if (entry) {
+      setExpanded((current) => ({ ...current, [entry.id]: true }))
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`inspection-case-${entry.id}`)
+          ?.scrollIntoView({ block: 'center' })
+      })
+    }
   }, [focusId, value])
   const visible = workflow.cases.filter((entry) =>
     inspectionMatches(entry, search),
   )
+  const pagination = useOperationPagination('quality', visible, search, {
+    key: focusId,
+    index: visible.findIndex((entry) =>
+      focusId?.startsWith(`inspection:${entry.id}:`),
+    ),
+  })
 
   return (
     <section className="grid gap-4 p-4">
-      <div className="flex flex-wrap gap-3">
+      <div
+        ref={pagination.containerRef}
+        className="flex scroll-mt-[32rem] flex-wrap gap-3 md:scroll-mt-48 xl:scroll-mt-32"
+      >
         <Button
           onClick={() => {
             setError('')
@@ -566,12 +586,14 @@ export function InspectionWorkspace({
             : 'ЗНИ ещё нет. Создайте её по полученным материалам.'}
         </p>
       )}
-      {visible.map((entry) => {
+      <OperationPagination pagination={pagination} label="Входной контроль" />
+      {pagination.items.map((entry) => {
         const rev = currentInspection(entry),
           active = activeInspection(entry)
         return (
           <article
             key={entry.id}
+            id={`inspection-case-${entry.id}`}
             className={`rounded-xl border p-4 ${rev.avk?.signedOn ? 'border-emerald-200 bg-emerald-50/40' : 'bg-white'}`}
           >
             <div className="flex flex-wrap items-center gap-3">
@@ -777,6 +799,9 @@ export function InspectionWorkspace({
           </article>
         )
       })}
+      {pagination.pageCount > 1 && (
+        <OperationPagination pagination={pagination} label="Входной контроль" />
+      )}
       {returnCase && (
         <CustomerReturnModal
           entry={returnCase}

@@ -3310,3 +3310,101 @@ it('does not mark replacement delivery after a rejected return as excess', async
   expect(card?.classList.contains('border-rose-300')).toBe(false)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 })
+
+it('paginates 2566 overview materials without mounting off-page cards or saving workspace data', async () => {
+  const workspace = base()
+  workspace.lines = Array.from({ length: 2566 }, (_, i) => ({
+    ...workspace.lines[0]!,
+    id: `page-line-${i}`,
+    materialId: `PAGE-${i}`,
+    projectMaterialName: `Материал ${String(i).padStart(4, '0')}`,
+  }))
+  const before = structuredClone(workspace)
+  let view = mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+  const cards = () => document.querySelectorAll('[id^="operation-overview-"]')
+  expect(cards()).toHaveLength(25)
+  expect(screen.getByText('Найдено 2566 из 2566 позиций')).toBeTruthy()
+  fireEvent.click(
+    screen.getAllByRole('button', { name: 'Последняя страница' })[0]!,
+  )
+  expect(cards()).toHaveLength(16)
+  expect(screen.getByText('Материал 2565')).toBeTruthy()
+  fireEvent.change(screen.getAllByLabelText('На странице: Общие данные')[0]!, {
+    target: { value: '50' },
+  })
+  expect(cards()).toHaveLength(16)
+  view.unmount()
+  view = mount(workspace, true)
+  expect(cards()).toHaveLength(16)
+  expect(screen.getAllByText('Страница 52 из 52')).toHaveLength(2)
+  fireEvent.change(
+    screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
+    { target: { value: 'Материал 1000' } },
+  )
+  expect(cards()).toHaveLength(1)
+  expect(screen.getByText('Материал 1000')).toBeTruthy()
+  expect(screen.getByText('1–1 из 1')).toBeTruthy()
+  expect(workspace).toEqual(before)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('paginates request and receipt groups independently and searches beyond the current page', () => {
+  const workspace = base()
+  workspace.lines = Array.from({ length: 32 }, (_, i) => ({
+    ...workspace.lines[0]!,
+    id: `line-${i}`,
+    materialId: `PAGE-${i}`,
+    projectMaterialName: `Материал ${String(i).padStart(2, '0')}`,
+  }))
+  workspace.materialRequests = workspace.lines.map((line, i) => ({
+    ...conversionWorkspace().materialRequests[0]!,
+    id: `req-${i}`,
+    number: `ЗАЯВКА-${String(i).padStart(2, '0')}`,
+    projectLineId: line.id!,
+    projectMaterialName: line.projectMaterialName!,
+    materialId: line.materialId!,
+    quantity: 2,
+  }))
+  const receipt = documentInspectionFixture().materialReceipts[0]!
+  workspace.materialReceipts = workspace.lines.map((line, i) => ({
+    ...receipt,
+    id: `receipt-${i}`,
+    requestId: `req-${i}`,
+    projectLineId: line.id!,
+    actualName: line.projectMaterialName!,
+    quantity: 2,
+    projectUnit: 'м',
+  }))
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(document.querySelectorAll('[id^="operation-requests-"]')).toHaveLength(
+    25,
+  )
+  fireEvent.change(screen.getAllByLabelText('На странице: Заявки')[0]!, {
+    target: { value: '10' },
+  })
+  fireEvent.click(
+    screen.getAllByRole('button', { name: 'Последняя страница' })[0]!,
+  )
+  expect(document.querySelectorAll('[id^="operation-requests-"]')).toHaveLength(
+    2,
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+  expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
+    25,
+  )
+  fireEvent.change(
+    screen.getByPlaceholderText(
+      'Поиск по дате, заявке, АПП, М-15, материалу или замене',
+    ),
+    { target: { value: 'Материал 31' } },
+  )
+  expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
+    1,
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(screen.getAllByText('Страница 4 из 4')).toHaveLength(2)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})

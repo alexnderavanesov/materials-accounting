@@ -5,6 +5,14 @@ const key = 'materials.workspaceView.v1:database.agGrid.v1'
 const ids = z.array(z.string())
 const stateSchema = z.object({
   version: z.string().optional(),
+  pagination: z
+    .object({
+      page: z.number().int().nonnegative().optional(),
+      pageSize: z
+        .union([z.literal(10), z.literal(25), z.literal(50), z.literal(100)])
+        .optional(),
+    })
+    .optional(),
   columnVisibility: z.object({ hiddenColIds: ids }).optional(),
   columnOrder: z.object({ orderedColIds: ids }).optional(),
   columnSizing: z

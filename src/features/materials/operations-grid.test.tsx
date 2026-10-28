@@ -14,6 +14,8 @@ import { OperationsGrid } from './operations-grid'
 import type { DataColumn } from './operations-grid'
 import { readDataGridState } from './project-grid-state'
 
+vi.setConfig({ testTimeout: 15000 })
+
 const rows = [
   {
     id: 'a',
@@ -203,4 +205,73 @@ it('opens a linked document even when a saved filter hid its row', async () => {
   expect(
     document.querySelector('.operations-grid-focused')?.getAttribute('row-id'),
   ).toBe('b')
+})
+
+it('paginates grids, restores page preferences and filters/exports across all pages', async () => {
+  const many = Array.from({ length: 72 }, (_, i) => ({
+    ...rows[0]!,
+    id: `row-${i}`,
+    name: `Материал ${i}`,
+    quantity: i,
+  }))
+  const props = {
+    id: 'paged',
+    label: 'Проверка страниц',
+    rows: many,
+    rowId: (row: (typeof many)[number]) => row.id,
+    columns,
+    pagination: true,
+  }
+  const view = render(<OperationsGrid {...props} />)
+  const api = await operationGridApi('paged')
+  expect(api.paginationGetPageSize()).toBe(25)
+  expect(api.paginationGetTotalPages()).toBe(3)
+  expect(
+    document.querySelectorAll('.ag-center-cols-container .ag-row'),
+  ).toHaveLength(25)
+  act(() => {
+    api.setGridOption('paginationPageSize', 10)
+    api.paginationGoToPage(6)
+  })
+  view.unmount()
+  expect(readDataGridState('paged').pagination).toEqual({
+    page: 6,
+    pageSize: 10,
+  })
+  const restored = render(<OperationsGrid {...props} />)
+  const next = await operationGridApi('paged')
+  expect(next.paginationGetCurrentPage()).toBe(6)
+  expect(next.paginationGetPageSize()).toBe(10)
+  act(() => {
+    next.applyColumnState({ state: [{ colId: 'quantity', sort: 'desc' }] })
+    next.setFilterModel({
+      quantity: { filterType: 'number', type: 'greaterThan', filter: 40 },
+    })
+  })
+  await waitFor(() => expect(next.getDisplayedRowCount()).toBe(31))
+  const blob = next.getDataAsExcel({ columnKeys: ['name', 'quantity'] })!
+  if (typeof blob === 'string') throw new Error('Expected workbook')
+  const buffer = await new Promise<ArrayBuffer>((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as ArrayBuffer)
+    reader.readAsArrayBuffer(blob)
+  })
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  expect(workbook.worksheets[0]!.rowCount).toBe(32)
+  expect(workbook.worksheets[0]!.getCell('B2').value).toBe(71)
+  restored.rerender(<OperationsGrid {...props} focusRowId="row-2" />)
+  await waitFor(() => expect(next.getFilterModel()).toEqual({}))
+  expect(next.paginationGetCurrentPage()).toBe(6)
+  expect(
+    document.querySelector('.operations-grid-focused')?.getAttribute('row-id'),
+  ).toBe('row-2')
+  restored.rerender(
+    <OperationsGrid
+      {...props}
+      focusRowId="row-2"
+      paginationFilterKey="поиск"
+    />,
+  )
+  await waitFor(() => expect(next.paginationGetCurrentPage()).toBe(0))
 })

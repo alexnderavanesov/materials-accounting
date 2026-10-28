@@ -90,4 +90,12 @@ export const projectGridLocale: Record<string, string> = {
   ariaFilterList: 'Список фильтров',
   ariaRowSelectionDisabled: 'Выделение строк отключено',
   ariaPageSizeSelectorLabel: 'Размер страницы',
+  pageSizeSelectorLabel: 'На странице:',
+  page: 'Страница',
+  to: '–',
+  of: 'из',
+  firstPage: 'Первая страница',
+  previousPage: 'Предыдущая страница',
+  nextPage: 'Следующая страница',
+  lastPage: 'Последняя страница',
 }
