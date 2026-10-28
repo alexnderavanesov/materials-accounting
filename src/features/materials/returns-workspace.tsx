@@ -4,14 +4,20 @@ import { Input } from '#/components/ui/input'
 import { CustomerReturnModal } from './customer-return-modal'
 import { OperationsGrid } from './operations-grid'
 import { getOperationAlternative, getOperationConversion } from './domain'
-import { documentsForReceipt, receiptDocumentLabel } from './receipt-documents'
+import {
+  documentsForReceipt,
+  indexReceiptDocuments,
+  receiptDocumentLabel,
+} from './receipt-documents'
 import { receiptBalances } from './receipt-balances'
 import {
   currentInspection,
   emptyQualityWorkflow,
   findInspectionMaterial,
+  indexInspectionMaterials,
   localToday,
   pendingCustomerReturns,
+  rejectedReturnsByCase,
   recordSurplusReturn,
   surplusReturnSources,
 } from './quality-workflow'
@@ -76,83 +82,98 @@ export function ReturnsWorkspace({
   const [surplusReceiptId, setSurplusReceiptId] = useState<string | null>(null)
   const entry = workflow.cases.find((item) => item.id === returnCaseId)
   const surplusReceipt = receipts.find((item) => item.id === surplusReceiptId)
-  const balances = receiptBalances(receipts, workflow, controls, issues)
-  const available = new Map<string, number>()
-  for (const source of surplusReturnSources(workflow, receipts, issues))
-    available.set(
-      source.receiptId,
-      Number(
-        ((available.get(source.receiptId) ?? 0) + source.quantity).toPrecision(
-          15,
+  const { pending, stock, history, describe, available } = useMemo(() => {
+    const balances = receiptBalances(receipts, workflow, controls, issues)
+    const availableByReceipt = new Map<string, number>()
+    for (const source of surplusReturnSources(workflow, receipts, issues))
+      availableByReceipt.set(
+        source.receiptId,
+        Number(
+          (
+            (availableByReceipt.get(source.receiptId) ?? 0) + source.quantity
+          ).toPrecision(15),
         ),
+      )
+    const receiptById = new Map(
+      receipts.map((receipt) => [receipt.id, receipt]),
+    )
+    const requestById = new Map(
+      requests.map((request) => [request.id, request.number]),
+    )
+    const documentById = indexReceiptDocuments(workflow)
+    const materialById = indexInspectionMaterials(lines)
+    const caseById = new Map(workflow.cases.map((item) => [item.id, item]))
+    const describeReceipt = (receipt?: Receipt) => {
+      const line = receipt ? materialById.get(receipt.projectLineId) : undefined
+      return {
+        name: receipt?.actualName || line?.projectMaterialName || 'Материал',
+        request: receipt
+          ? (requestById.get(receipt.requestId) ?? 'Заявка удалена')
+          : '',
+        cipher: line?.cipher ?? '',
+        documents: receipt
+          ? documentsForReceipt(receipt, workflow, documentById)
+              .map(receiptDocumentLabel)
+              .join('; ')
+          : '',
+      }
+    }
+    const rejectedReturns = rejectedReturnsByCase(workflow)
+    const pendingRows = workflow.cases.flatMap((item) =>
+      pendingCustomerReturns(workflow, item, rejectedReturns).map(
+        ({ row, quantity }) => ({
+          id: `${item.id}:${row.receiptId}`,
+          entry: item,
+          row,
+          quantity,
+          ...describeReceipt(receiptById.get(row.receiptId)),
+          zni: currentInspection(item).zni.number,
+        }),
       ),
     )
-  const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]))
-  const requestById = new Map(
-    requests.map((request) => [request.id, request.number]),
-  )
-  const describe = (receipt?: Receipt) => {
-    const line = receipt
-      ? findInspectionMaterial(lines, receipt.projectLineId)
-      : undefined
+    const stockRows = receipts.map((receipt) => ({
+      receipt,
+      ...describeReceipt(receipt),
+      balance: balances.get(receipt.id)!,
+      available: availableByReceipt.get(receipt.id) ?? 0,
+    }))
+    const historyRows = [...(workflow.customerReturns ?? [])]
+      .reverse()
+      .map((item) => {
+        const receipt = receiptById.get(item.receiptId)
+        const line = receipt
+          ? materialById.get(receipt.projectLineId)
+          : undefined
+        const alternative = getOperationAlternative(
+          item.quantity,
+          getOperationConversion(line, receipt?.projectUnit, receipt),
+          receipt,
+        )
+        const zni = (
+          item.caseId ? caseById.get(item.caseId) : undefined
+        )?.revisions.find((revision) => revision.revision === item.revision)
+          ?.zni.number
+        return {
+          ...describeReceipt(receipt),
+          item,
+          unit: receipt?.projectUnit ?? '',
+          alternative,
+          zni: zni ?? '',
+        }
+      })
     return {
-      name: receipt?.actualName || line?.projectMaterialName || 'Материал',
-      request: receipt
-        ? (requestById.get(receipt.requestId) ?? 'Заявка удалена')
-        : '',
-      cipher: line?.cipher ?? '',
-      documents: receipt
-        ? documentsForReceipt(receipt, workflow)
-            .map(receiptDocumentLabel)
-            .join('; ')
-        : '',
+      pending: pendingRows,
+      stock: stockRows,
+      history: historyRows,
+      describe: describeReceipt,
+      available: availableByReceipt,
     }
-  }
+  }, [workflow, receipts, requests, controls, issues, lines])
   const matches = (values: Array<unknown>) =>
     values
       .join(' ')
       .toLocaleLowerCase('ru')
       .includes(search.trim().toLocaleLowerCase('ru'))
-  const pending = workflow.cases.flatMap((item) =>
-    pendingCustomerReturns(workflow, item).map(({ row, quantity }) => ({
-      id: `${item.id}:${row.receiptId}`,
-      entry: item,
-      row,
-      quantity,
-      ...describe(receiptById.get(row.receiptId)),
-      zni: currentInspection(item).zni.number,
-    })),
-  )
-  const stock = receipts.map((receipt) => ({
-    receipt,
-    ...describe(receipt),
-    balance: balances.get(receipt.id)!,
-    available: available.get(receipt.id) ?? 0,
-  }))
-  const history = [...(workflow.customerReturns ?? [])]
-    .reverse()
-    .map((item) => {
-      const receipt = receiptById.get(item.receiptId)
-      const line = receipt
-        ? findInspectionMaterial(lines, receipt.projectLineId)
-        : undefined
-      const alternative = getOperationAlternative(
-        item.quantity,
-        getOperationConversion(line, receipt?.projectUnit, receipt),
-        receipt,
-      )
-      const zni = workflow.cases
-        .find((candidate) => candidate.id === item.caseId)
-        ?.revisions.find((revision) => revision.revision === item.revision)
-        ?.zni.number
-      return {
-        ...describe(receipt),
-        item,
-        unit: receipt?.projectUnit ?? '',
-        alternative,
-        zni: zni ?? '',
-      }
-    })
   const visiblePending = pending.filter((row) =>
     matches([row.name, row.request, row.cipher, row.documents, row.zni]),
   )

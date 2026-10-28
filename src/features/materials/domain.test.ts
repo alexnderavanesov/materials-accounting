@@ -171,7 +171,7 @@ describe('materials domain', () => {
       expect(getAlternativeConversionError('кг', factor)).not.toBe('')
     expect(getAlternativeConversionError('', 2)).not.toBe('')
   })
-  it('imports conversion factors without merging different conversions or requiring them in older files', () => {
+  it('requires a conversion factor with an alternative unit in every new import', () => {
     const base = {
       cipher: 'ТК1',
       projectMaterialName: 'Труба',
@@ -187,11 +187,14 @@ describe('materials domain', () => {
       { ...base, alternativeUnitFactor: 'abc' },
       { ...base, alternativeUnit: '', alternativeUnitFactor: 2 },
     ])
-    expect(result.summary.validRows).toBe(3)
-    expect(result.summary.errorRows).toBe(3)
+    expect(result.summary.validRows).toBe(2)
+    expect(result.summary.errorRows).toBe(4)
     expect(result.summary.duplicateRows).toBe(0)
     expect(result.rows[0]?.alternativeUnitFactor).toBe(2.5)
     expect(result.rows[2]?.alternativeUnitFactor).toBeNull()
+    expect(result.rows[2]?.errors).toContain(
+      'Укажите количество альтернативных единиц на одну основную — число больше нуля.',
+    )
   })
 
   it('validates Excel import rows and keeps equal materials separate by cipher', () => {

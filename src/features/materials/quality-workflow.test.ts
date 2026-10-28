@@ -24,6 +24,24 @@ const receipts = (workspace: ReturnType<typeof inspectionFixture>) =>
   workspace.materialReceipts as unknown as Parameters<typeof newInspection>[2]
 const lines = (workspace: ReturnType<typeof inspectionFixture>) =>
   workspace.lines as unknown as Parameters<typeof newInspection>[3]
+
+it('rejects duplicate request and issue IDs before they can corrupt document links', () => {
+  const duplicateRequests = acceptFixture()
+  duplicateRequests.materialRequests = [
+    { id: 'request', quantity: 10 },
+    { id: 'request', quantity: 10 },
+  ]
+  expect(() => validateQualityWorkspace(duplicateRequests)).toThrow(
+    'ID позиций заявок',
+  )
+  const duplicateIssues = acceptFixture()
+  duplicateIssues.materialIssues = [
+    { id: 'issue', receiptId: 'receipt', quantity: 1 },
+    { id: 'issue', receiptId: 'receipt', quantity: 1 },
+  ]
+  expect(() => validateQualityWorkspace(duplicateIssues)).toThrow('ID выдач')
+})
+
 function sign(
   entry: Parameters<typeof createAcceptedInspectionAct>[0],
   accepted: number,

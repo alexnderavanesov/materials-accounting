@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   documentsForReceipt,
+  indexReceiptDocuments,
   receiptDocuments,
   receiptDocumentSchema,
   receiptDocumentKey,
@@ -265,25 +266,32 @@ type Line = {
 export function findInspectionMaterial<T extends Line>(
   lines: Array<T>,
   projectLineId: string,
+  index?: ReadonlyMap<string, T>,
 ) {
-  return lines.find((line) => {
-    const identity =
-      line.id ??
-      [
-        line.projectMaterialName ?? '',
-        line.materialType ?? line.category,
-        line.materialId ?? '',
-        line.normativeDocument ?? '',
-        line.unit,
-        line.material,
-        line.unitWeight ?? '',
-        line.alternativeUnit ?? '',
-        line.alternativeUnitFactor ?? '',
-      ]
-        .join('|')
-        .toLocaleLowerCase('ru')
-    return identity === projectLineId
-  })
+  return index
+    ? index.get(projectLineId)
+    : lines.find((line) => inspectionMaterialId(line) === projectLineId)
+}
+function inspectionMaterialId(line: Line) {
+  return (
+    line.id ??
+    [
+      line.projectMaterialName ?? '',
+      line.materialType ?? line.category,
+      line.materialId ?? '',
+      line.normativeDocument ?? '',
+      line.unit,
+      line.material,
+      line.unitWeight ?? '',
+      line.alternativeUnit ?? '',
+      line.alternativeUnitFactor ?? '',
+    ]
+      .join('|')
+      .toLocaleLowerCase('ru')
+  )
+}
+export function indexInspectionMaterials<T extends Line>(lines: Array<T>) {
+  return new Map(lines.map((line) => [inspectionMaterialId(line), line]))
 }
 export type InspectionSelection = { receiptId: string; quantity: number }
 
@@ -333,23 +341,27 @@ export function newInspection(
     'позиции ЗНИ',
   )
   const available = inspectionAvailableQuantities(workflow, receipts)
+  const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]))
+  const requestById = new Map(requests.map((request) => [request.id, request]))
+  const materialById = indexInspectionMaterials(lines)
   const used = new Set(
     workflow.cases.map((item) => currentInspection(item).zni.number),
   )
   let number = 1
   while (used.has(String(number))) number++
   const rows = selection.map(({ receiptId, quantity: presented }) => {
-    const receipt = receipts.find((item) => item.id === receiptId)
+    const receipt = receiptById.get(receiptId)
     if (!receipt) fail('Получение материала не найдено.')
     if (
-      !documentsForReceipt(receipt, workflow).some((doc) => doc.id === basis.id)
+      receipt.appDocumentId !== basis.id &&
+      receipt.m15DocumentId !== basis.id
     )
       fail('Все позиции ЗНИ должны относиться к выбранному АПП или М-15.')
     if (!Number.isFinite(presented) || presented <= 0)
       fail('Укажите положительное количество для инспекции.')
     if (presented > (available.get(receiptId) ?? 0))
       fail('Количество для инспекции превышает доступный остаток поступления.')
-    const line = findInspectionMaterial(lines, receipt.projectLineId)
+    const line = materialById.get(receipt.projectLineId)
     return {
       receiptId,
       projectLineId: receipt.projectLineId,
@@ -367,8 +379,7 @@ export function newInspection(
       altUnit: receipt.altUnit,
       altUnitFactor: receipt.altUnitFactor ?? null,
       requestNumber:
-        requests.find((request) => request.id === receipt.requestId)?.number ??
-        'Заявка удалена',
+        requestById.get(receipt.requestId)?.number ?? 'Заявка удалена',
       appNumber: basis.kind === 'app' ? basis.number : '',
       appDate: basis.kind === 'app' ? basis.date : '',
     }
@@ -404,9 +415,8 @@ function inspectionSourceDocuments(
   receipts: Array<Receipt>,
 ): Array<QualityDocument> {
   const documents: Array<QualityDocument> = []
-  for (const receipt of receipts.filter((item) =>
-    receiptIds.includes(item.id),
-  )) {
+  const selectedIds = new Set(receiptIds)
+  for (const receipt of receipts.filter((item) => selectedIds.has(item.id))) {
     for (const name of [receipt.certificate, receipt.qualityDocument]) {
       if (name?.trim())
         documents.push({
@@ -511,9 +521,23 @@ export function customerReturnTotals(
   }
   return totals
 }
+export function rejectedReturnsByCase(workflow: QualityWorkflow) {
+  const result = new Map<string, Map<string, number>>()
+  for (const item of workflow.customerReturns ?? []) {
+    if (item.kind === 'surplus' || !item.caseId) continue
+    const receipts = result.get(item.caseId) ?? new Map<string, number>()
+    receipts.set(
+      item.receiptId,
+      precise((receipts.get(item.receiptId) ?? 0) + item.quantity),
+    )
+    result.set(item.caseId, receipts)
+  }
+  return result
+}
 export function pendingCustomerReturns(
   workflow: QualityWorkflow,
   entry: InspectionCase,
+  returned = rejectedReturnsByCase(workflow),
 ) {
   const revision = currentInspection(entry)
   if (!revision.zni.signedOn) return []
@@ -524,14 +548,7 @@ export function pendingCustomerReturns(
         (
           row.presented -
           (row.accepted ?? 0) -
-          (workflow.customerReturns ?? [])
-            .filter(
-              (item) =>
-                item.kind !== 'surplus' &&
-                item.caseId === entry.id &&
-                item.receiptId === row.receiptId,
-            )
-            .reduce((sum, item) => sum + item.quantity, 0)
+          (returned.get(entry.id)?.get(row.receiptId) ?? 0)
         ).toPrecision(15),
       ),
     }))
@@ -603,9 +620,10 @@ export const surplusReturnSourceKey = (
 /** Returns from accepted stock only reduce their own approval, never rejected stock. */
 export function approvedCustomerReturnTotals(workflow?: QualityWorkflow) {
   const result = new Map<string, number>()
+  const cases = new Map(workflow?.cases.map((entry) => [entry.id, entry]))
   for (const item of workflow?.customerReturns ?? []) {
     if (item.kind !== 'surplus' || item.source !== 'accepted') continue
-    const entry = workflow?.cases.find((value) => value.id === item.caseId)
+    const entry = item.caseId ? cases.get(item.caseId) : undefined
     if (entry && activeInspection(entry)?.revision === item.revision)
       result.set(
         item.receiptId,
@@ -654,14 +672,15 @@ export function surplusReturnSources(
         })
     }
   }
-  for (const receipt of receipts)
-    sources.unshift({
+  const uninspected = [...receipts].reverse().map(
+    (receipt): SurplusReturnSource => ({
       receiptId: receipt.id,
       source: 'uninspected',
       quantity: Math.max(0, free.get(receipt.id) ?? 0),
       approved: false,
       availableOn: receipt.date ?? '',
-    })
+    }),
+  )
   const returned = new Map<string, number>()
   for (const item of workflow.customerReturns ?? []) {
     if (item.kind !== 'surplus') continue
@@ -681,7 +700,7 @@ export function surplusReturnSources(
       issue.receiptId,
       precise((approved.get(issue.receiptId) ?? 0) - issue.quantity),
     )
-  return sources
+  return [...uninspected, ...sources]
     .map((source) => {
       let amount = Math.max(
         0,
@@ -844,6 +863,19 @@ export function validateQualityWorkspace(
   previous?: WorkspaceLike | null,
 ) {
   const workflow = next.qualityWorkflow
+  const documents = receiptDocuments(workflow)
+  const documentById = indexReceiptDocuments(workflow)
+  const previousReceipts = new Map(
+    previous?.materialReceipts.map((receipt) => [receipt.id, receipt]),
+  )
+  unique(
+    (next.materialRequests ?? []).map((request) => String(request.id)),
+    'ID позиций заявок',
+  )
+  unique(
+    next.materialIssues.map((issue) => String(issue.id)),
+    'ID выдач',
+  )
   unique(
     next.materialReceipts.map((receipt) => String(receipt.id)),
     'ID поступлений',
@@ -860,6 +892,7 @@ export function validateQualityWorkspace(
             m15DocumentId: receipt.m15DocumentId as string | undefined,
           },
           workflow,
+          documentById,
         ).length
       )
         fail('Укажите АПП или М-15 для получения.')
@@ -895,7 +928,14 @@ export function validateQualityWorkspace(
   const receipts = new Map(
     next.materialReceipts.map((receipt) => [receipt.id, receipt]),
   )
-  const documents = receiptDocuments(workflow)
+  const caseById = new Map(workflow.cases.map((entry) => [entry.id, entry]))
+  const linkedDocuments = new Set([
+    ...next.materialReceipts.flatMap((receipt) => [
+      receipt.appDocumentId,
+      receipt.m15DocumentId,
+    ]),
+    ...workflow.cases.map((entry) => entry.basis.id),
+  ])
   unique(
     documents.map((doc) => doc.id),
     'ID документов получения',
@@ -911,18 +951,14 @@ export function validateQualityWorkspace(
     ] as const) {
       if (
         receipt[field] &&
-        !documents.some((doc) => doc.id === receipt[field] && doc.kind === kind)
+        documentById.get(String(receipt[field]))?.kind !== kind
       )
         fail('Документ поступления не найден или имеет неверный тип.')
     }
   }
   for (const old of previous?.qualityWorkflow?.receiptDocuments ?? []) {
-    const current = documents.find((doc) => doc.id === old.id)
-    const linked =
-      next.materialReceipts.some(
-        (receipt) =>
-          receipt.appDocumentId === old.id || receipt.m15DocumentId === old.id,
-      ) || workflow.cases.some((entry) => entry.basis.id === old.id)
+    const current = documentById.get(old.id)
+    const linked = linkedDocuments.has(old.id)
     if (linked && !same(old, current))
       fail(
         'Реквизиты связанного документа защищены: выберите или создайте другой документ.',
@@ -943,9 +979,13 @@ export function validateQualityWorkspace(
   const reservedByReceipt = new Map<string, number>()
   const acceptedByReceipt = new Map<string, number>()
   for (const entry of workflow.cases) {
-    if (!documents.some((doc) => same(doc, entry.basis)))
+    if (!same(documentById.get(entry.basis.id), entry.basis))
       fail('Проверьте основание ЗНИ: выберите АПП или М-15.')
     const firstRows = entry.revisions[0]!.zni.rows
+    const firstAllocation = firstRows
+      .map((row) => [row.receiptId, row.presented])
+      .sort()
+    const numberedAct = entry.revisions.find((item) => item.avk?.signedOn)?.avk
     for (const [index, revision] of entry.revisions.entries()) {
       if (revision.revision !== index + 1)
         fail('Нарушена последовательность ревизий ЗНИ.')
@@ -962,9 +1002,6 @@ export function validateQualityWorkspace(
       validateRevision(revision)
       if (revision.zni.number !== entry.revisions[0]!.zni.number)
         fail('Повторная проверка сохраняет номер ЗНИ.')
-      const numberedAct = entry.revisions.find(
-        (item) => item.avk?.signedOn,
-      )?.avk
       if (
         numberedAct &&
         revision.avk &&
@@ -975,7 +1012,7 @@ export function validateQualityWorkspace(
       if (
         !same(
           revision.zni.rows.map((row) => [row.receiptId, row.presented]).sort(),
-          firstRows.map((row) => [row.receiptId, row.presented]).sort(),
+          firstAllocation,
         )
       )
         fail(
@@ -992,6 +1029,7 @@ export function validateQualityWorkspace(
               m15DocumentId: receipt.m15DocumentId as string | undefined,
             },
             workflow,
+            documentById,
           ).some((doc) => doc.id === entry.basis.id)
         )
           fail('Поступление не относится к документу-основанию ЗНИ.')
@@ -1046,7 +1084,7 @@ export function validateQualityWorkspace(
       )
   }
   for (const old of previous?.qualityWorkflow?.cases ?? []) {
-    const current = workflow.cases.find((entry) => entry.id === old.id)
+    const current = caseById.get(old.id)
     const signed = old.revisions.some((revision) => revision.zni.signedOn)
     if (signed && !current)
       fail('Подписанные документы удалять нельзя. Используйте новую ревизию.')
@@ -1099,7 +1137,7 @@ export function validateQualityWorkspace(
       continue
     }
     if (item.source) fail('Непринятый материал возвращается только по ЗНИ.')
-    const entry = workflow.cases.find((value) => value.id === item.caseId)
+    const entry = item.caseId ? caseById.get(item.caseId) : undefined
     const revision = entry?.revisions.find(
       (value) => value.revision === item.revision,
     )
@@ -1134,17 +1172,13 @@ export function validateQualityWorkspace(
     )
       fail('Возврат превышает остаток на складе с учётом выданного материала.')
   }
+  const returnById = new Map(
+    workflow.customerReturns?.map((item) => [item.id, item]),
+  )
   for (const old of previous?.qualityWorkflow?.customerReturns ?? []) {
-    if (
-      !same(
-        old,
-        workflow.customerReturns?.find((item) => item.id === old.id),
-      )
-    )
+    if (!same(old, returnById.get(old.id)))
       fail('Сохранённый фактический возврат нельзя удалить или переписать.')
-    const oldReceipt = previous!.materialReceipts.find(
-      (receipt) => receipt.id === old.receiptId,
-    )
+    const oldReceipt = previousReceipts.get(old.receiptId)
     const currentReceipt = receipts.get(old.receiptId)
     for (const key of [
       'actualName',
@@ -1163,6 +1197,17 @@ export function validateQualityWorkspace(
     }
   }
   if (next.materialRequests && previous) {
+    const previousRequests = new Map(
+      previous.materialRequests?.map((request) => [request.id, request]),
+    )
+    const requestIds = new Set(
+      next.materialRequests.map((request) => request.id),
+    )
+    const changedRequests = new Set(
+      next.materialReceipts
+        .filter((receipt) => !same(receipt, previousReceipts.get(receipt.id)))
+        .map((receipt) => receipt.requestId),
+    )
     const totals = receivedByRequest(
       next.materialReceipts.map((receipt) => ({
         id: String(receipt.id),
@@ -1172,19 +1217,10 @@ export function validateQualityWorkspace(
       workflow,
     )
     for (const request of next.materialRequests) {
-      const oldRequest = previous.materialRequests?.find(
-        (item) => item.id === request.id,
-      )
+      const oldRequest = previousRequests.get(request.id)
       const changed =
         (oldRequest && oldRequest.quantity !== request.quantity) ||
-        next.materialReceipts.some(
-          (receipt) =>
-            receipt.requestId === request.id &&
-            !same(
-              receipt,
-              previous.materialReceipts.find((old) => old.id === receipt.id),
-            ),
-        )
+        changedRequests.has(request.id)
       if (
         changed &&
         (totals.get(String(request.id)) ?? 0) > Number(request.quantity)
@@ -1194,12 +1230,8 @@ export function validateQualityWorkspace(
     for (const item of workflow.customerReturns ?? []) {
       const receipt = receipts.get(item.receiptId)!
       if (
-        previous.materialRequests?.some(
-          (request) => request.id === receipt.requestId,
-        ) &&
-        !next.materialRequests.some(
-          (request) => request.id === receipt.requestId,
-        )
+        previousRequests.has(receipt.requestId) &&
+        !requestIds.has(receipt.requestId)
       )
         fail(
           'Нельзя удалить заявку с возвратом заказчику: она связана с историей возврата.',
@@ -1208,11 +1240,9 @@ export function validateQualityWorkspace(
   }
   // Keep the source batch stable after inspection starts, even while its ZNI is a draft.
   for (const oldCase of previous?.qualityWorkflow?.cases ?? []) {
-    if (!workflow.cases.some((entry) => entry.id === oldCase.id)) continue
+    if (!caseById.has(oldCase.id)) continue
     for (const row of currentInspection(oldCase).zni.rows) {
-      const oldReceipt = previous!.materialReceipts.find(
-        (receipt) => receipt.id === row.receiptId,
-      )
+      const oldReceipt = previousReceipts.get(row.receiptId)
       const newReceipt = receipts.get(row.receiptId)
       for (const key of [
         'actualName',

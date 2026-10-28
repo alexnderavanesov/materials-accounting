@@ -3703,9 +3703,9 @@ it('does not mark replacement delivery after a rejected return as excess', async
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 })
 
-it('paginates 2566 overview materials without mounting off-page cards or saving workspace data', async () => {
+it('paginates 10000 overview materials without mounting off-page cards or saving workspace data', async () => {
   const workspace = base()
-  workspace.lines = Array.from({ length: 2566 }, (_, i) => ({
+  workspace.lines = Array.from({ length: 10000 }, (_, i) => ({
     ...workspace.lines[0]!,
     id: `page-line-${i}`,
     materialId: `PAGE-${i}`,
@@ -3716,20 +3716,20 @@ it('paginates 2566 overview materials without mounting off-page cards or saving 
   fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
   const cards = () => document.querySelectorAll('[id^="operation-overview-"]')
   expect(cards()).toHaveLength(25)
-  expect(screen.getByText('Найдено 2566 из 2566 позиций')).toBeTruthy()
+  expect(screen.getByText('Найдено 10000 из 10000 позиций')).toBeTruthy()
   fireEvent.click(
     screen.getAllByRole('button', { name: 'Последняя страница' })[0]!,
   )
-  expect(cards()).toHaveLength(16)
-  expect(screen.getByText('Материал 2565')).toBeTruthy()
+  expect(cards()).toHaveLength(25)
+  expect(screen.getByText('Материал 9999')).toBeTruthy()
   fireEvent.change(screen.getAllByLabelText('На странице: Общие данные')[0]!, {
     target: { value: '50' },
   })
-  expect(cards()).toHaveLength(16)
+  expect(cards()).toHaveLength(50)
   view.unmount()
   view = mount(workspace, true)
-  expect(cards()).toHaveLength(16)
-  expect(screen.getAllByText('Страница 52 из 52')).toHaveLength(2)
+  expect(cards()).toHaveLength(50)
+  expect(screen.getAllByText('Страница 200 из 200')).toHaveLength(2)
   fireEvent.change(
     screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
     { target: { value: 'Материал 1000' } },

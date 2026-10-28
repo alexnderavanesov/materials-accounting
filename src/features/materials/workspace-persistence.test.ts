@@ -187,6 +187,38 @@ describe('workspace file safety', () => {
 })
 
 describe('browser recovery', () => {
+  it('never restores an old payload after a partial cache write or quota failure', () => {
+    for (const failAt of [1, 2, 3]) {
+      const storage = memoryStorage()
+      writeWorkspaceCache(storage, fixture(1), 'one', false, 'tab')
+      const setItem = storage.setItem
+      let writes = 0
+      storage.setItem = (key, value) => {
+        if (++writes === failAt) throw Error('QuotaExceededError')
+        setItem(key, value)
+      }
+      expect(() =>
+        writeWorkspaceCache(storage, fixture(3), 'two', false, 'tab'),
+      ).toThrow()
+      storage.setItem = setItem
+      const restored = readWorkspaceCache(
+        { workspace: fixture(3), revision: 'two' },
+        storage,
+      )
+      expect(restored.workspace).toEqual(fixture(3))
+      expect(restored.pending).toBe(false)
+    }
+  })
+  it('does not duplicate the same recovery copy on every page reload', () => {
+    const storage = memoryStorage()
+    storage.setItem(workspaceStorageKey, JSON.stringify(fixture(1)))
+    for (let reload = 0; reload < 10; reload++)
+      readWorkspaceCache({ workspace: fixture(2), revision: 'two' }, storage)
+    expect(storage.length).toBe(2)
+    expect(storage.getItem(workspaceStorageKey)).toBe(
+      JSON.stringify(fixture(1)),
+    )
+  })
   it('uses the server and preserves a different legacy browser copy', () => {
     const storage = memoryStorage()
     storage.setItem(workspaceStorageKey, JSON.stringify(fixture(1)))

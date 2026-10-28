@@ -1,10 +1,6 @@
 import { CustomerReturnModal } from './customer-return-modal'
 import { customerReturnAlternative } from './receipt-balances'
-import {
-  documentsForReceipt,
-  receiptDocuments,
-  receiptDocumentLabel,
-} from './receipt-documents'
+import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
 import {
   OperationPagination,
@@ -20,6 +16,7 @@ import {
   emptyQualityDefaults,
   emptyQualityWorkflow,
   findInspectionMaterial,
+  indexInspectionMaterials,
   inspectionChecks,
   inspectionMatches,
   inspectionAvailableQuantities,
@@ -310,23 +307,33 @@ function InspectionMaterialPicker({
   const [basisId, setBasisId] = useState('')
   const [error, setError] = useState('')
   const available = inspectionAvailableQuantities(workflow, receipts)
+  const materialById = indexInspectionMaterials(lines)
+  const requestById = new Map(requests.map((request) => [request.id, request]))
+  const basis = receiptDocuments(workflow).find(
+    (document) => document.id === basisId,
+  )
   const allEligible = receipts.filter(
     (receipt) => (available.get(receipt.id) ?? 0) > 0,
   )
-  const eligible = allEligible.filter((receipt) =>
-    documentsForReceipt(receipt, workflow).some((doc) => doc.id === basisId),
+  const eligible = allEligible.filter(
+    (receipt) =>
+      receipt.appDocumentId === basisId || receipt.m15DocumentId === basisId,
+  )
+  const eligibleDocumentIds = new Set(
+    allEligible.flatMap((receipt) => [
+      receipt.appDocumentId,
+      receipt.m15DocumentId,
+    ]),
   )
   const availableDocuments = receiptDocuments(workflow).filter((doc) =>
-    allEligible.some((receipt) =>
-      documentsForReceipt(receipt, workflow).some((item) => item.id === doc.id),
-    ),
+    eligibleDocumentIds.has(doc.id),
   )
   const query = search.trim().toLocaleLowerCase('ru')
   const visible = eligible.filter((receipt) => {
-    const line = findInspectionMaterial(lines, receipt.projectLineId)
+    const line = materialById.get(receipt.projectLineId)
     return [
       receipt.actualName,
-      requests.find((request) => request.id === receipt.requestId)?.number,
+      requestById.get(receipt.requestId)?.number,
       line?.cipher,
       line?.normativeDocument,
       receipt.factoryNumber,
@@ -334,6 +341,11 @@ function InspectionMaterialPicker({
       displayDate(receipt.date),
     ].some((value) => value?.toLocaleLowerCase('ru').includes(query))
   })
+  const pagination = useOperationPagination(
+    'inspection-selection',
+    visible,
+    JSON.stringify([basisId, query]),
+  )
   return (
     <QualityModal title="Материалы для ЗНИ" onClose={onClose}>
       <div className="grid gap-4">
@@ -389,9 +401,12 @@ function InspectionMaterialPicker({
           Выбрано поступлений: {Object.keys(selected).length}. Доступно:{' '}
           {eligible.length}.
         </p>
-        <div className="grid max-h-[45vh] gap-2 overflow-auto">
-          {visible.map((receipt) => {
-            const line = findInspectionMaterial(lines, receipt.projectLineId)
+        <div
+          ref={pagination.containerRef}
+          className="grid max-h-[45vh] gap-2 overflow-auto"
+        >
+          {pagination.items.map((receipt) => {
+            const line = materialById.get(receipt.projectLineId)
             const checked = selected[receipt.id] !== undefined
             return (
               <div
@@ -421,9 +436,8 @@ function InspectionMaterialPicker({
                     <span className="block text-sm text-slate-500">
                       {line?.cipher || 'Без шифра'} ·{' '}
                       {displayDate(receipt.date)} ·{' '}
-                      {requests.find(
-                        (request) => request.id === receipt.requestId,
-                      )?.number || 'Заявка удалена'}{' '}
+                      {requestById.get(receipt.requestId)?.number ||
+                        'Заявка удалена'}{' '}
                       · Партия {receipt.heatBatch || '—'} · Зав. №{' '}
                       {receipt.factoryNumber || '—'}
                     </span>
@@ -436,7 +450,7 @@ function InspectionMaterialPicker({
                 </label>
                 {checked && (
                   <Field
-                    label={`Количество для ЗНИ: ${receipt.actualName} (${receiptDocumentLabel(receiptDocuments(workflow).find((doc) => doc.id === basisId)!)}), ${receipt.projectUnit}`}
+                    label={`Количество для ЗНИ: ${receipt.actualName} (${basis ? receiptDocumentLabel(basis) : ''}), ${receipt.projectUnit}`}
                     value={selected[receipt.id]!}
                     onChange={(amount) => {
                       setSelected({ ...selected, [receipt.id]: amount })
@@ -454,6 +468,10 @@ function InspectionMaterialPicker({
             </p>
           )}
         </div>
+        <OperationPagination
+          pagination={pagination}
+          label="Материалы для ЗНИ"
+        />
         {error && (
           <p role="alert" className="text-red-700">
             {error}

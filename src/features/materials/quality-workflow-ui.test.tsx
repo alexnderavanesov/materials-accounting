@@ -41,6 +41,55 @@ const receiptsOf = (value: ReturnType<typeof inspectionFixture>) =>
   >[0]['receipts']
 const linesOf = (value: ReturnType<typeof inspectionFixture>) =>
   value.lines as unknown as Array<SubobjectMaterialMetric>
+it('paginates 1001 inspection candidates while preserving selection across pages and search', () => {
+  const fixture = inspectionFixture()
+  fixture.qualityWorkflow.cases = []
+  fixture.materialReceipts = Array.from({ length: 1001 }, (_, index) => ({
+    ...fixture.materialReceipts[0],
+    id: `receipt-${index}`,
+    actualName: `Материал ${index}`,
+    factoryNumber: String(index),
+  }))
+  const onChange = vi.fn()
+  render(
+    <InspectionWorkspace
+      value={fixture.qualityWorkflow}
+      receipts={receiptsOf(fixture)}
+      lines={linesOf(fixture)}
+      onChange={onChange}
+      prepare={async () => 'revision'}
+    />,
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
+  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+    target: { value: 'app' },
+  })
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).getAllByRole('checkbox')).toHaveLength(25)
+  fireEvent.click(within(dialog).getAllByRole('checkbox')[0]!)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Последняя страница' }),
+  )
+  expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1)
+  fireEvent.click(within(dialog).getByRole('checkbox'))
+  fireEvent.change(within(dialog).getByLabelText('Поиск материалов для ЗНИ'), {
+    target: { value: 'Материал 500' },
+  })
+  expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1)
+  expect(within(dialog).getByText(/Выбрано поступлений: 2/)).toBeTruthy()
+  fireEvent.click(
+    within(dialog).getByRole('button', {
+      name: 'Продолжить с выбранными материалами',
+    }),
+  )
+  expect(onChange).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить документы' }))
+  const workflow = onChange.mock.calls[0]![0]
+  expect(
+    currentInspection(workflow.cases[0]).zni.rows.map((item) => item.receiptId),
+  ).toEqual(['receipt-0', 'receipt-1000'])
+  validateQualityWorkspace({ ...fixture, qualityWorkflow: workflow })
+})
 it('shows the effective signed revision during reinspection and keeps history read-only', async () => {
   const fixture = acceptFixture(),
     onChange = vi.fn()

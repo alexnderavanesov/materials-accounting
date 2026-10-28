@@ -58,12 +58,25 @@ export function receiptDocuments(
 export function documentsForReceipt(
   receipt: DocumentReceipt,
   workflow?: DocumentWorkspace,
+  index?: ReadonlyMap<string, ReceiptDocument>,
 ): Array<ReceiptDocument> {
   const documents = receiptDocuments(workflow)
-  return [
-    documents.find((doc) => doc.id === receipt.appDocumentId),
-    documents.find((doc) => doc.id === receipt.m15DocumentId),
-  ].filter((doc): doc is ReceiptDocument => !!doc)
+  const find = (id?: string) =>
+    id
+      ? index
+        ? index.get(id)
+        : documents.find((doc) => doc.id === id)
+      : undefined
+  return [find(receipt.appDocumentId), find(receipt.m15DocumentId)].filter(
+    (doc): doc is ReceiptDocument => !!doc,
+  )
+}
+
+/** Build once for a calculation/render; never cache a mutable catalog globally. */
+export function indexReceiptDocuments(workflow?: DocumentWorkspace) {
+  return new Map(
+    receiptDocuments(workflow).map((document) => [document.id, document]),
+  )
 }
 export function receiptDocumentFields(
   receipt: DocumentReceipt,

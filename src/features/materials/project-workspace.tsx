@@ -1,3 +1,9 @@
+import {
+  applyMaterialImportRows,
+  buildIdentityLineFromImport,
+  getMaterialIdentityKey,
+  withStableId,
+} from './project-material-data'
 import { materialProgressStatus } from './material-progress'
 import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
@@ -5,6 +11,7 @@ import { ReceiptDocumentInputs } from './receipt-document-inputs'
 import {
   bindReceiptDocuments,
   documentsForReceipt,
+  indexReceiptDocuments,
   emptyReceiptDocumentFields,
   receiptDocumentError,
   receiptDocumentFields,
@@ -9262,6 +9269,7 @@ function buildOperationOverviewRows({
   workflow?: QualityWorkflow
   summaryByLine: Map<string, OperationLineSummary>
 }): Array<OperationOverviewRow> {
+  const documentById = indexReceiptDocuments(workflow)
   const requestById = new Map(
     materialRequests.map((request) => [request.id, request]),
   )
@@ -9278,7 +9286,7 @@ function buildOperationOverviewRows({
     (entry) => entry.projectLineId,
     (entry) => entry.id,
     (entry) =>
-      documentsForReceipt(entry, workflow)
+      documentsForReceipt(entry, workflow, documentById)
         .map(receiptDocumentLabel)
         .join('; ') || formatDate(entry.date),
     (entry) => entry.date,
@@ -9958,6 +9966,7 @@ function buildOperationSearchMeta<T extends MaterialIssueEntry>(
   workflow?: QualityWorkflow,
 ) {
   const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]))
+  const documentById = indexReceiptDocuments(workflow)
   const requestById = new Map(requests.map((request) => [request.id, request]))
 
   return entries.map((entry) => {
@@ -9975,7 +9984,9 @@ function buildOperationSearchMeta<T extends MaterialIssueEntry>(
           formatDate(entry.date),
           receipt?.actualName,
           ...(receipt
-            ? documentsForReceipt(receipt, workflow).map(receiptDocumentLabel)
+            ? documentsForReceipt(receipt, workflow, documentById).map(
+                receiptDocumentLabel,
+              )
             : []),
           request?.number,
           request?.projectMaterialName,
@@ -10010,6 +10021,7 @@ function buildReceiptGroupMeta(
   lineById: Map<string, SubobjectMaterialMetric>,
   workflow?: QualityWorkflow,
 ): Array<ReceiptGroupMeta> {
+  const documentById = indexReceiptDocuments(workflow)
   const requestById = new Map(requests.map((request) => [request.id, request]))
   return groups.map((group) => {
     return {
@@ -10024,7 +10036,9 @@ function buildReceiptGroupMeta(
               entry.date,
               formatDate(entry.date),
               entry.actualName,
-              ...documentsForReceipt(entry, workflow).map(receiptDocumentLabel),
+              ...documentsForReceipt(entry, workflow, documentById).map(
+                receiptDocumentLabel,
+              ),
               isReceiptReplacement(entry, request) ? 'замена' : '',
               request?.number,
               request ? '' : 'Заявка удалена',
@@ -12499,103 +12513,6 @@ function getMaterialImportReferenceErrors(
   return errors
 }
 
-function applyMaterialImportRows(
-  current: Array<SubobjectMaterialMetric>,
-  importRows: Array<NormalizedImportRow>,
-) {
-  const next = [...current]
-
-  for (const row of importRows) {
-    const importedLine = buildIdentityLineFromImport(row)
-    const importedKey = getMaterialIdentityKey(importedLine)
-    const existingIndex = next.findIndex(
-      (line) =>
-        getMaterialIdentityKey(line) === importedKey &&
-        line.cipher === row.cipher,
-    )
-
-    const existingLine = next[existingIndex]
-    if (existingLine) {
-      next[existingIndex] = withStableId({
-        ...existingLine,
-        category: importedLine.category,
-        materialId: importedLine.materialId,
-        projectMaterialName: importedLine.projectMaterialName,
-        changeNumber: importedLine.changeNumber,
-        materialType: importedLine.materialType,
-        normativeDocument: importedLine.normativeDocument,
-        material: importedLine.material,
-        unit: importedLine.unit,
-        unitWeight: importedLine.unitWeight,
-        alternativeUnit: importedLine.alternativeUnit,
-        alternativeUnitFactor: importedLine.alternativeUnitFactor,
-        plannedQuantity: row.quantity,
-      })
-    } else {
-      next.unshift(
-        withStableId({
-          ...importedLine,
-          id: createLocalId(),
-        }),
-      )
-    }
-  }
-
-  return next
-}
-
-function buildIdentityLineFromImport(
-  row: NormalizedImportRow,
-): SubobjectMaterialMetric {
-  return {
-    id: 'identity-preview',
-    project: row.project || 'Проектная база',
-    cipher: row.cipher,
-    category: row.materialType || row.category || 'Материалы',
-    materialId: row.materialId,
-    projectMaterialName: row.projectMaterialName,
-    changeNumber: row.changeNumber,
-    materialType: row.materialType,
-    normativeDocument: row.normativeDocument,
-    material: row.material,
-    plannedQuantity: row.quantity,
-    unit: row.unit,
-    unitWeight: row.unitWeight,
-    alternativeUnit: row.alternativeUnit,
-    alternativeUnitFactor: row.alternativeUnitFactor,
-    requested: 0,
-    received: 0,
-    qcPending: 0,
-    accepted: 0,
-    issued: 0,
-    returned: 0,
-    writtenOff: 0,
-  }
-}
-
-function withStableId(line: SubobjectMaterialMetric): SubobjectMaterialMetric {
-  return {
-    ...line,
-    id:
-      line.id ??
-      [
-        line.project,
-        line.cipher,
-        line.materialType ?? line.category,
-        line.materialId ?? '',
-        line.projectMaterialName ?? '',
-        line.normativeDocument ?? '',
-        line.material,
-        line.unit,
-        line.unitWeight ?? '',
-        line.alternativeUnit ?? '',
-      ]
-        .join('-')
-        .toLocaleLowerCase('ru')
-        .replace(/\s+/g, '-'),
-  }
-}
-
 function unique(values: Array<string>) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) =>
     a.localeCompare(b, 'ru'),
@@ -12836,22 +12753,6 @@ function createLocalId() {
 
 function buildEmptyAllocations(ciphers: Array<string>) {
   return Object.fromEntries(ciphers.map((cipher) => [cipher, '']))
-}
-
-function getMaterialIdentityKey(line: SubobjectMaterialMetric) {
-  return [
-    line.projectMaterialName ?? '',
-    line.materialType ?? line.category,
-    line.materialId ?? '',
-    line.normativeDocument ?? '',
-    line.unit,
-    line.material,
-    line.unitWeight ?? '',
-    line.alternativeUnit ?? '',
-    line.alternativeUnitFactor ?? '',
-  ]
-    .join('|')
-    .toLocaleLowerCase('ru')
 }
 
 function buildIdentityLineFromForm(

@@ -38,6 +38,15 @@ export const saveWorkspaceInputSchema = z.object({
 export const workspaceStorageKey = 'materials.projectWorkspace.v1'
 const syncKey = `${workspaceStorageKey}.sync`
 
+function preserveRecovery(storage: Storage, raw: string) {
+  const prefix = `${workspaceStorageKey}.recovery.`
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index)
+    if (key?.startsWith(prefix) && storage.getItem(key) === raw) return
+  }
+  storage.setItem(`${prefix}${crypto.randomUUID()}`, raw)
+}
+
 export function readWorkspaceCache(server: LoadedWorkspace, storage: Storage) {
   let raw: string | null = null
   try {
@@ -64,8 +73,9 @@ export function readWorkspaceCache(server: LoadedWorkspace, storage: Storage) {
     const meta = JSON.parse(storage.getItem(syncKey) ?? 'null') as {
       pending?: boolean
       revision?: string | null
+      writing?: boolean
     } | null
-    if (meta?.pending && meta.revision === server.revision) {
+    if (meta?.pending && !meta.writing && meta.revision === server.revision) {
       return {
         workspace: local,
         recovery: null,
@@ -74,10 +84,7 @@ export function readWorkspaceCache(server: LoadedWorkspace, storage: Storage) {
       }
     }
     // A legacy/stale browser must not overwrite a newer server snapshot.
-    storage.setItem(
-      `${workspaceStorageKey}.recovery.${crypto.randomUUID()}`,
-      raw,
-    )
+    preserveRecovery(storage, raw)
     return {
       workspace: server.workspace,
       recovery: raw,
@@ -102,6 +109,7 @@ export function writeWorkspaceCache(
   pending: boolean,
   writerId = 'legacy',
 ) {
+  const serialized = JSON.stringify(workspace)
   const previousRaw = storage.getItem(workspaceStorageKey)
   const previousMeta = JSON.parse(storage.getItem(syncKey) ?? 'null') as {
     pending?: boolean
@@ -109,27 +117,21 @@ export function writeWorkspaceCache(
   } | null
   if (
     previousRaw &&
-    previousRaw !== JSON.stringify(workspace) &&
+    previousRaw !== serialized &&
     previousMeta?.pending &&
     previousMeta.writerId !== writerId
   ) {
     // Another tab may have unsaved edits even while our own request succeeds.
-    storage.setItem(
-      `${workspaceStorageKey}.recovery.${crypto.randomUUID()}`,
-      previousRaw,
-    )
+    preserveRecovery(storage, previousRaw)
   }
-  // Mark pending BEFORE changing the payload. Never label newer data as saved.
+  // A two-key write can fail between metadata and payload (quota, interruption).
+  // Only a completed write may restore offline edits against this revision.
   storage.setItem(
     syncKey,
-    JSON.stringify({ revision, pending: true, writerId }),
+    JSON.stringify({ revision, pending: true, writerId, writing: true }),
   )
-  storage.setItem(workspaceStorageKey, JSON.stringify(workspace))
-  if (!pending)
-    storage.setItem(
-      syncKey,
-      JSON.stringify({ revision, pending: false, writerId }),
-    )
+  storage.setItem(workspaceStorageKey, serialized)
+  storage.setItem(syncKey, JSON.stringify({ revision, pending, writerId }))
 }
 
 export function toWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {

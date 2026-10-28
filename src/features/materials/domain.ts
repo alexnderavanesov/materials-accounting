@@ -263,14 +263,11 @@ export function normalizeImportRow(
     errors.push('Количество по шифру должно быть больше 0')
   }
 
-  // Older imports may contain an alternative unit without a conversion factor.
-  if (normalized.alternativeUnitFactor !== null) {
-    const conversionError = getAlternativeConversionError(
-      normalized.alternativeUnit ?? '',
-      normalized.alternativeUnitFactor,
-    )
-    if (conversionError) errors.push(conversionError)
-  }
+  const conversionError = getAlternativeConversionError(
+    normalized.alternativeUnit ?? '',
+    normalized.alternativeUnitFactor,
+  )
+  if (conversionError) errors.push(conversionError)
 
   return {
     rowNumber,
