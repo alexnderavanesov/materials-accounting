@@ -400,6 +400,61 @@ afterEach(() => {
   cleanup()
 })
 
+it('explains an empty material import and accepts a corrected file with cipher quantities', async () => {
+  mount()
+  fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+  fireEvent.click(screen.getAllByRole('button', { name: /^Excel/ })[0]!)
+  fireEvent.click(screen.getByRole('button', { name: 'Импорт проектной базы' }))
+  const dialog = screen.getByRole('dialog')
+  const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
+    name: 'Применить',
+  })
+  function upload(quantities: Record<string, string | number>) {
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet([
+        {
+          'Наименование по проекту': 'Гамма',
+          'Ед. изм.': 'м',
+          ...quantities,
+        },
+      ]),
+      'Проектная база',
+    )
+    const buffer = XLSX.write(workbook, {
+      type: 'array',
+      bookType: 'xlsx',
+    }) as ArrayBuffer
+    const file = new File([buffer], 'materials.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [file] },
+    })
+  }
+  upload({})
+  expect((await within(dialog).findByRole('alert')).textContent).toContain(
+    'Нет позиций с количеством',
+  )
+  expect(apply.disabled).toBe(true)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+
+  upload({ Шифр: 'ТЕСТ', Количество: 2.5 })
+  await waitFor(() => expect(apply.disabled).toBe(false))
+  expect(within(dialog).queryByRole('alert')).toBeNull()
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(apply)
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(
+    lastSaved().lines.find((line) => line.projectMaterialName === 'Гамма'),
+  ).toMatchObject({
+    cipher: 'ТЕСТ',
+    plannedQuantity: 2.5,
+  })
+})
+
 describe('cipher reference removal', () => {
   function settings() {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))

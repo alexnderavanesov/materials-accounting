@@ -6,6 +6,7 @@ import {
   createMaterialRequestTemplateWorkbook,
   createMaterialReceiptTemplateWorkbook,
   createProjectMaterialsExportWorkbook,
+  createProjectMaterialsTemplateWorkbook,
   parseMaterialReceiptWorkbook,
   parseProjectMaterialsWorkbook,
 } from './excel'
@@ -28,6 +29,73 @@ function workbookFromRows(rows: Array<Record<string, string | number>>) {
 }
 
 describe('materials Excel import', () => {
+  it('imports a filled template with explicit cipher and quantity when no ciphers are configured', async () => {
+    const buffer = await createProjectMaterialsTemplateWorkbook(
+      [],
+      [{ name: 'Трубы' }],
+    )
+    expect(parseProjectMaterialsWorkbook(buffer)).toEqual([])
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(buffer)
+    const sheet = workbook.getWorksheet('Проектная база')!
+    const headers = sheet.getRow(1).values as Array<string>
+    expect(headers).not.toContain('ID материала')
+    const values = {
+      'Тип материала': 'Трубы',
+      'Наименование по проекту': 'Труба 23х7',
+      'Ед. изм.': 'м',
+      Шифр: 'ТКМ-5',
+      Количество: 2.5,
+    }
+    for (const [header, value] of Object.entries(values)) {
+      expect(headers).toContain(header)
+      sheet.getRow(2).getCell(headers.indexOf(header)).value = value
+    }
+    const draft = validateImportDraft(
+      parseProjectMaterialsWorkbook(await workbook.xlsx.writeBuffer()),
+    )
+    expect(draft.summary.errorRows).toBe(0)
+    expect(draft.rows).toHaveLength(1)
+    expect(draft.rows[0]).toMatchObject({
+      cipher: 'ТКМ-5',
+      projectMaterialName: 'Труба 23х7',
+      quantity: 2.5,
+      unit: 'м',
+    })
+  })
+
+  it('keeps separate quantity columns for configured ciphers', async () => {
+    const buffer = await createProjectMaterialsTemplateWorkbook(
+      ['ТК1', 'ТК2'],
+      [],
+    )
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(buffer)
+    const sheet = workbook.getWorksheet('Проектная база')!
+    const headers = sheet.getRow(1).values as Array<string>
+    expect(headers).not.toContain('Шифр')
+    const values = {
+      'Наименование по проекту': 'Отвод 23х7',
+      'Ед. изм.': 'шт',
+      ТК1: 2,
+      ТК2: 3,
+    }
+    for (const [header, value] of Object.entries(values)) {
+      expect(headers).toContain(header)
+      sheet.getRow(2).getCell(headers.indexOf(header)).value = value
+    }
+    const draft = validateImportDraft(
+      parseProjectMaterialsWorkbook(await workbook.xlsx.writeBuffer()),
+    )
+    expect(draft.summary.errorRows).toBe(0)
+    expect(
+      draft.rows.map(({ cipher, quantity }) => ({ cipher, quantity })),
+    ).toEqual([
+      { cipher: 'ТК1', quantity: 2 },
+      { cipher: 'ТК2', quantity: 3 },
+    ])
+  })
+
   it('round-trips alternative units and factors separately for otherwise equal materials', async () => {
     const lines = [2.5, 4].map((alternativeUnitFactor) => ({
       project: 'Проект',

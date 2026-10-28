@@ -11,7 +11,6 @@ import {
   ColumnMenuModule,
   ContextMenuModule,
   ExcelExportModule,
-  FiltersToolPanelModule,
   LicenseManager,
 } from 'ag-grid-enterprise'
 import { AgGridReact } from 'ag-grid-react'
@@ -25,7 +24,6 @@ ModuleRegistry.registerModules([
   ColumnMenuModule,
   ContextMenuModule,
   ExcelExportModule,
-  FiltersToolPanelModule,
 ])
 // A browser licence is intentionally included in the client bundle; keep it out of Git.
 const licence = import.meta.env.VITE_AG_GRID_LICENSE_KEY
@@ -44,31 +42,6 @@ export const materialsGridTheme = themeQuartz.withParams({
   rowHoverColor: '#f8fafc',
   wrapperBorderRadius: 0,
 })
-export const materialsGridSideBar = {
-  toolPanels: [
-    {
-      id: 'columns',
-      labelDefault: 'Столбцы',
-      labelKey: 'columns',
-      iconKey: 'columns',
-      toolPanel: 'agColumnsToolPanel',
-      toolPanelParams: {
-        suppressRowGroups: true,
-        suppressValues: true,
-        suppressPivots: true,
-        suppressPivotMode: true,
-      },
-    },
-    {
-      id: 'filters',
-      labelDefault: 'Фильтры',
-      labelKey: 'filters',
-      iconKey: 'filter',
-      toolPanel: 'agFiltersToolPanel',
-    },
-  ],
-}
-
 export function MaterialsGridView<T>(
   props: AgGridReactProps<T> & { 'data-tsd-source'?: string },
 ) {

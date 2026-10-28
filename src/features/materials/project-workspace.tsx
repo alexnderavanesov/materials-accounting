@@ -1246,7 +1246,10 @@ export function ProjectWorkspace({
     })
 
     setMaterialImportDraft(draft)
-    const message = `Черновик материала: ${draft.summary.validRows} можно импортировать, ${draft.summary.errorRows} требуют правки.`
+    const message =
+      draft.summary.totalRows === 0
+        ? 'В файле не найдены позиции с количеством. Укажите шифры и проектные количества на первом листе Excel.'
+        : `Черновик материала: ${draft.summary.validRows} можно импортировать, ${draft.summary.errorRows} требуют правки.`
     setNotice(message)
     setLastAction(message)
   }
@@ -1277,6 +1280,13 @@ export function ProjectWorkspace({
   }
 
   function applyMaterialImportDraft() {
+    if (materialImportDraft?.summary.totalRows === 0) {
+      setNotice(
+        'Нет позиций для импорта. Заполните шифры и количества в Excel.',
+      )
+      return
+    }
+
     if (!materialImportDraft || materialImportDraft.summary.errorRows > 0) {
       setNotice(
         'Импорт нельзя применить: сначала исправьте позиции с ошибками или справочники.',
@@ -10607,7 +10617,9 @@ function MaterialImportModal({
   onImportFile: (file: File) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const canApply = draft !== null && draft.summary.errorRows === 0
+  const isEmptyDraft = draft !== null && draft.summary.totalRows === 0
+  const canApply =
+    draft !== null && !isEmptyDraft && draft.summary.errorRows === 0
 
   return (
     <Modal
@@ -10623,15 +10635,15 @@ function MaterialImportModal({
               Массовая загрузка комбинаций
             </div>
             <div className="mt-2 text-sm leading-6 text-slate-600">
-              Загрузите шаблон Excel. Каждая позиция станет паспортом материала,
-              а столбцы шифров заполнят количества в таблице.
+              Заполните «Шифр» и «Количество» для каждой позиции. Если шифры уже
+              настроены, шаблон содержит отдельный столбец количества для
+              каждого шифра.
             </div>
           </div>
 
           <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-3 text-sm leading-6 text-blue-900">
-            Новые наименования по проекту можно импортировать. Шифры, единицы,
-            нормативные документы и составы должны быть заранее добавлены в
-            настройках.
+            Новые шифры, единицы, нормативные документы и составы можно добавить
+            в настройки при проверке файла.
           </div>
 
           <Button
@@ -10697,7 +10709,16 @@ function MaterialImportModal({
             </Button>
           </div>
 
-          {!canApply && draft ? (
+          {isEmptyDraft ? (
+            <div
+              role="alert"
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800"
+            >
+              Нет позиций с количеством. На первом листе Excel заполните колонки
+              «Шифр» и «Количество» либо количества под заголовками шифров.
+              Затем загрузите файл снова.
+            </div>
+          ) : !canApply && draft ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
               Применение станет доступно, когда в черновике не останется ошибок.
             </div>

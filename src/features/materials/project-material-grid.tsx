@@ -1,8 +1,4 @@
-import {
-  MaterialsGridView,
-  materialsGridTheme,
-  materialsGridSideBar,
-} from './materials-grid'
+import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   ColDef,
@@ -279,7 +275,6 @@ export function ProjectMaterialGrid({
           initialState={initialState}
           maintainColumnOrder
           getRowId={({ data }) => data.key}
-          sideBar={materialsGridSideBar}
           rowHeight={58}
           headerHeight={58}
           readOnlyEdit

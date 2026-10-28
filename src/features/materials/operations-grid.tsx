@@ -8,11 +8,7 @@ import type {
 } from 'ag-grid-community'
 import { Download } from 'lucide-react'
 import { Button } from '#/components/ui/button'
-import {
-  MaterialsGridView,
-  materialsGridSideBar,
-  materialsGridTheme,
-} from './materials-grid'
+import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { projectGridLocale } from './project-grid-locale'
 import { readDataGridState, saveDataGridState } from './project-grid-state'
 import './operations-grid.css'
@@ -218,7 +214,6 @@ export function OperationsGrid<T>({
           columnDefs={definitions}
           defaultColDef={defaults}
           initialState={initialState}
-          sideBar={materialsGridSideBar}
           cellSelection
           readOnlyEdit={!hasEditableColumns}
           invalidEditValueMode="block"

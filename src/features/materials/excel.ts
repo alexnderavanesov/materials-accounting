@@ -83,7 +83,6 @@ type WorksheetWithRangeValidations = ExcelJS.Worksheet & {
 
 const fixedExportHeaders = [
   'Тип материала',
-  'ID материала',
   'Наименование по проекту',
   'Нормативный документ',
   'Ед. изм.',
@@ -217,6 +216,12 @@ export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
   })
 
   return rows.flatMap((row) => {
+    if (
+      Object.values(row).every((value) => String(value ?? '').trim() === '')
+    ) {
+      return []
+    }
+
     const parsed: ImportRowInput = {}
     const cipherEntries: Array<[string, number]> = []
 
@@ -270,10 +275,15 @@ export async function createProjectMaterialsTemplateWorkbook(
   ciphers: Array<string>,
   materialTypes: Array<WorkbookMaterialType>,
 ) {
+  const quantityHeaders = ciphers.length > 0 ? ciphers : ['Шифр', 'Количество']
+
   return createWorkbook(
     [
       Object.fromEntries(
-        [...fixedExportHeaders, ...ciphers].map((header) => [header, '']),
+        [...fixedExportHeaders, ...quantityHeaders].map((header) => [
+          header,
+          '',
+        ]),
       ),
     ],
     materialTypes,
@@ -871,7 +881,6 @@ function buildExportRows(
       groups.get(key) ??
       ({
         'Тип материала': line.materialType ?? line.category,
-        'ID материала': line.materialId ?? '',
         'Наименование по проекту': line.projectMaterialName ?? '',
         'Нормативный документ': line.normativeDocument ?? '',
         'Ед. изм.': line.unit,
