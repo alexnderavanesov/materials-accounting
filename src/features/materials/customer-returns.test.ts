@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -57,7 +57,13 @@ function balance(workspace: ReturnType<typeof fixture>) {
   ).get('receipt')!
 }
 const folders: Array<string> = []
+beforeEach(() => {
+  // Fixture receipts/signatures and explicit return dates share one timeline.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(`${date}T12:00:00Z`))
+})
 afterEach(async () => {
+  vi.useRealTimers()
   for (const folder of folders.splice(0))
     await rm(folder, { recursive: true, force: true })
 })

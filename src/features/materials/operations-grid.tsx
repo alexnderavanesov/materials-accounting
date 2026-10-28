@@ -25,6 +25,7 @@ export type DataColumn<T> = {
   render?: (row: T) => ReactNode
   width?: number
   numeric?: boolean
+  centered?: boolean
   actions?: boolean
   onEdit?: (row: T, value: string) => void
   validateEdit?: (value: string) => string | null
@@ -152,6 +153,7 @@ export function OperationsGrid<T>({
           : undefined,
         cellClass: [
           ...(column.numeric ? ['operations-grid-number'] : []),
+          ...(column.centered ? ['operations-grid-centered'] : []),
           ...(hasEditableColumns && !column.onEdit
             ? ['operations-grid-readonly']
             : []),

@@ -9,6 +9,14 @@ import { getOperationAlternative, getOperationConversion } from './domain'
 type Receipt = { id: string; requestId: string; quantity: number }
 const precise = (value: number) => Number(value.toPrecision(15))
 export { receivedByRequest } from './quality-workflow'
+
+/** Quantities credited to a request already exclude actual rejected returns. */
+export function requestReceiptProgress(quantity: number, received: number) {
+  const credited = precise(received)
+  const remaining = Math.max(0, precise(precise(quantity) - credited))
+  return { received: credited, remaining, complete: remaining === 0 }
+}
+
 export function receiptBalances(
   receipts: Array<Receipt>,
   workflow: QualityWorkflow | undefined,

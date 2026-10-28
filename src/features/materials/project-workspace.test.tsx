@@ -116,6 +116,123 @@ function conversionWorkspace() {
   return workspace
 }
 
+function requestMetricValue(number: string, label: string) {
+  const card = screen
+    .getByText(number, { exact: true })
+    .closest('[id^="operation-requests-"]') as HTMLElement
+  return within(card).getByText(label, { exact: true }).nextElementSibling
+    ?.textContent
+}
+
+it('shows receipt completion per request position and remaining quantities by unit without offsetting missing materials', async () => {
+  const workspace = conversionWorkspace()
+  const request = workspace.materialRequests[0]!
+  workspace.lines = base().lines
+  workspace.lines[0]!.unit = 'шт'
+  workspace.materialRequests = [
+    { ...request, number: 'MIXED', quantity: 4, projectUnit: 'шт' },
+    {
+      ...request,
+      id: 'beta',
+      number: 'MIXED',
+      projectLineId: 'line-1',
+      projectMaterialName: 'Бета',
+      quantity: 8.5,
+    },
+    {
+      ...request,
+      id: 'gamma',
+      number: 'MIXED',
+      projectLineId: 'deleted-line',
+      projectMaterialName: 'Гамма',
+      quantity: 2,
+      projectUnit: 'шт',
+    },
+    {
+      ...request,
+      id: 'delta',
+      number: 'MIXED',
+      projectLineId: 'delta-line',
+      projectMaterialName: 'Дельта',
+      quantity: 0.8,
+    },
+    {
+      ...request,
+      id: 'other-request',
+      number: 'OTHER',
+      projectLineId: 'deleted-line',
+      projectMaterialName: 'Гамма',
+      quantity: 2,
+      projectUnit: 'шт',
+    },
+  ]
+  workspace.materialReceipts = [
+    { ...legacyReceipt(), quantity: 5, projectUnit: 'шт' },
+    ...['beta', 'delta'].flatMap((requestId) =>
+      [0.1, 0.7].map((quantity, index) => ({
+        ...legacyReceipt(),
+        id: `${requestId}-${index}`,
+        requestId,
+        quantity,
+        projectLineId: requestId === 'beta' ? 'line-1' : 'delta-line',
+        actualName: requestId === 'beta' ? 'Бета' : 'Дельта',
+      })),
+    ),
+    {
+      ...legacyReceipt(),
+      id: 'other-receipt',
+      requestId: 'other-request',
+      projectLineId: 'deleted-line',
+      actualName: 'Гамма',
+      quantity: 2,
+      projectUnit: 'шт',
+    },
+  ]
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('MIXED', 'Получено позиций')).toBe('2 из 4')
+  expect(requestMetricValue('MIXED', 'Заявлено')).toBe('6 шт · 9,3 м')
+  expect(requestMetricValue('MIXED', 'Осталось получить')).toBe('2 шт · 7,7 м')
+  expect(requestMetricValue('OTHER', 'Получено позиций')).toBe('1 из 1')
+  expect(requestMetricValue('OTHER', 'Осталось получить')).toBe('0 шт')
+  const mixedCard = screen
+    .getByText('MIXED', { exact: true })
+    .closest('[id^="operation-requests-"]') as HTMLElement
+  const completedCard = screen
+    .getByText('OTHER', { exact: true })
+    .closest('[id^="operation-requests-"]') as HTMLElement
+  expect(within(mixedCard).queryByText(/Получена полностью/)).toBeNull()
+  expect(within(completedCard).getByText(/Получена полностью/)).toBeTruthy()
+  expect(completedCard.classList.contains('border-emerald-200')).toBe(true)
+  fireEvent.click(within(completedCard).getByRole('button', { name: /^OTHER/ }))
+  expect(completedCard.classList.contains('border-emerald-200')).toBe(true)
+  expect(completedCard.classList.contains('ring-emerald-200')).toBe(true)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+    target: { value: 'Альфа' },
+  })
+  expect(requestMetricValue('MIXED', 'Получено позиций')).toBe('2 из 4')
+  fireEvent.click(screen.getByRole('button', { name: /^MIXED/ }))
+  const grid = await operationGridApi('request:MIXED')
+  const quantities = ['quantity', 'received', 'remaining']
+  expect(
+    quantities.map((colKey) => grid.getColumnDef(colKey)?.headerName),
+  ).toEqual(['Заявлено', 'Получено', 'Осталось получить'])
+  expect(
+    Array.from({ length: grid.getDisplayedRowCount() }, (_, index) => {
+      const row = grid.getDisplayedRowAtIndex(index)!
+      return ['name', 'unit', ...quantities].map((colKey) =>
+        grid.getCellValue({ rowNode: row, colKey }),
+      )
+    }),
+  ).toEqual([
+    ['Альфа', 'шт', 4, 5, 0],
+    ['Бета', 'м', 8.5, 0.8, 7.7],
+    ['Гамма', 'шт', 2, 0, 2],
+    ['Дельта', 'м', 0.8, 0.8, 0],
+  ])
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+
 it('saves and reopens a mixed request with its common note and protects populated type selections', async () => {
   const workspace = base()
   workspace.lines[1]!.materialType = 'Арматура'
@@ -314,6 +431,245 @@ function openIssue() {
   )
   return screen.getByRole('dialog')
 }
+async function editIssue(
+  receiptId: string,
+  field: string,
+  value: string,
+  key: 'Enter' | 'Escape' | null = 'Enter',
+) {
+  const api = await operationGridApi('issue-selection')
+  const node = api.getRowNode(receiptId)!
+  act(() => api.startEditingCell({ rowIndex: node.rowIndex!, colKey: field }))
+  let input: HTMLInputElement | null = null
+  await waitFor(() => {
+    input = document.querySelector<HTMLInputElement>(
+      `[grid-id="issue-selection"] [row-id="${receiptId}"] [col-id="${field}"] input`,
+    )
+    expect(input).toBeTruthy()
+  })
+  fireEvent.input(input!, { target: { value } })
+  if (key)
+    fireEvent.keyDown(input!, {
+      key,
+      code: key,
+      keyCode: key === 'Escape' ? 27 : 13,
+    })
+  return input!
+}
+
+describe('compact issue selection', () => {
+  it('selects across 1001 receipts, pages and searches, then saves one document with exact source receipts', async () => {
+    const workspace = conversionWorkspace()
+    workspace.lines[0]!.plannedQuantity = 2002
+    workspace.materialRequests[0]!.quantity = 2002
+    workspace.materialReceipts = Array.from({ length: 1001 }, (_, index) => ({
+      ...legacyReceipt(),
+      id: `lot-${index}`,
+      invoiceNumber: `АПП-партия-${index}`,
+      heatBatch: `Плавка ${String(index).padStart(4, '0')}`,
+    }))
+    approveReceipts(workspace)
+    mount(workspace)
+    const dialog = openIssue()
+    // Flush AG Grid's asynchronous ready event after mounting the large fixture.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const api = await operationGridApi('issue-selection')
+    expect(api.getDisplayedRowCount()).toBe(1001)
+    expect(api.paginationGetPageSize()).toBe(25)
+    const mountedRows = () =>
+      dialog.querySelectorAll(
+        '[grid-id="issue-selection"] .ag-center-cols-container .ag-row',
+      ).length
+    expect(mountedRows()).toBeLessThanOrEqual(25)
+    expect(within(dialog).getAllByLabelText('Документ передачи')).toHaveLength(
+      1,
+    )
+    fireEvent.change(within(dialog).getByLabelText('Документ передачи'), {
+      target: { value: 'ПМ-общая' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+      target: { value: 'Бригада 2' },
+    })
+    await editIssue('lot-0', 'quantity', '0,4')
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    act(() => api.paginationGoToLastPage())
+    await editIssue('lot-1000', 'note', 'Для линии 2')
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Весь остаток: Альфа' }),
+    )
+    fireEvent.change(
+      within(dialog).getByLabelText('Поиск материалов для выдачи'),
+      { target: { value: 'АПП-партия-0500' } },
+    )
+    expect(api.getDisplayedRowCount()).toBe(1)
+    expect(api.getDisplayedRowAtIndex(0)!.id).toBe('lot-500')
+    fireEvent.change(
+      within(dialog).getByLabelText('Поиск материалов для выдачи'),
+      { target: { value: 'Плавка 0500' } },
+    )
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+    expect(api.getDisplayedRowAtIndex(0)!.id).toBe('lot-500')
+    expect(api.paginationGetCurrentPage()).toBe(0)
+    fireEvent.change(within(dialog).getByPlaceholderText('Шифр для выдачи'), {
+      target: { value: 'ДРУГОЙ' },
+    })
+    expect(api.getDisplayedRowCount()).toBe(0)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Только выбранные (2)' }),
+    )
+    expect(api.getDisplayedRowCount()).toBe(2)
+    expect(
+      within(dialog).getByRole('status', { name: 'Итог выдачи' }).textContent,
+    ).toContain('2,4 м')
+    const save = within(dialog).getByRole('button', {
+      name: 'Сохранить выдачу',
+    })
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().materialIssues).toEqual([
+      expect.objectContaining({
+        receiptId: 'lot-0',
+        quantity: 0.4,
+        altQuantity: 1,
+        document: 'ПМ-общая',
+        receiver: 'Бригада 2',
+        date: localDateInputValue(),
+      }),
+      expect.objectContaining({
+        receiptId: 'lot-1000',
+        quantity: 2,
+        altQuantity: 5,
+        document: 'ПМ-общая',
+        receiver: 'Бригада 2',
+        note: 'Для линии 2',
+        date: localDateInputValue(),
+      }),
+    ])
+    expect(lastSaved().materialReceipts).toHaveLength(1001)
+    validateQualityWorkspace(lastSaved(), workspace)
+  })
+
+  it('commits the active issue editor before saving, blocks invalid quantities hidden by search and clears a cancelled draft', async () => {
+    mount(qualityWorkspace())
+    let dialog = openIssue()
+    let api = await operationGridApi('issue-selection')
+    await editIssue('receipt-legacy', 'quantity', '3', null)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('3')
+    expect(
+      within(dialog).getByText(/К выдаче доступно только 2 м/),
+    ).toBeTruthy()
+    fireEvent.change(
+      within(dialog).getByLabelText('Поиск материалов для выдачи'),
+      { target: { value: 'Нет совпадений' } },
+    )
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Только выбранные (1)' }),
+    )
+    for (const invalid of ['0', '-1', 'ошибка']) {
+      await editIssue('receipt-legacy', 'quantity', invalid)
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      )
+      expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    }
+    await editIssue('receipt-legacy', 'quantity', '0,5')
+    await editIssue('receipt-legacy', 'quantity', '8', 'Escape')
+    expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('0,5')
+    fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+      target: { value: '' },
+    })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    )
+    expect(within(dialog).getByText(/корректную дату выдачи/)).toBeTruthy()
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Убрать из выдачи: Альфа' }),
+    )
+    expect(api.getDisplayedRowCount()).toBe(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    dialog = openIssue()
+    api = await operationGridApi('issue-selection')
+    expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('')
+    expect(
+      within(dialog).getByLabelText<HTMLInputElement>('Дата выдачи').value,
+    ).toBe(localDateInputValue())
+    await editIssue('receipt-legacy', 'quantity', '1,2', null)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    )
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().materialIssues[0]).toMatchObject({
+      quantity: 1.2,
+      altQuantity: 3,
+      receiptId: 'receipt-legacy',
+    })
+  })
+
+  it('offers only the approved balance after rejected returns and previous issues, keeping unsigned receipts out', async () => {
+    const workspace = returnScenarioWorkspace()
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow,
+      workspace.qualityWorkflow.cases[0]!.id,
+      [{ receiptId: 'receipt', quantity: 1 }],
+      localToday(),
+    )
+    workspace.materialIssues = [
+      {
+        ...savedIssue('receipt'),
+        projectLineId: 'line',
+        projectUnit: 'шт',
+        date: localToday(),
+      },
+    ]
+    workspace.materialReceipts.push({
+      ...workspace.materialReceipts[0]!,
+      id: 'unsigned',
+      quantity: 1,
+    })
+    mount(workspace)
+    const dialog = openIssue()
+    const api = await operationGridApi('issue-selection')
+    expect(api.getDisplayedRowCount()).toBe(1)
+    expect(api.getRowNode('unsigned')).toBeUndefined()
+    expect(
+      api.getCellValue({
+        rowNode: api.getRowNode('receipt')!,
+        colKey: 'available',
+      }),
+    ).toBe(2)
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Весь остаток: Отвод 23х7' }),
+    )
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    )
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().materialIssues[0]).toMatchObject({
+      receiptId: 'receipt',
+      quantity: 2,
+    })
+    validateQualityWorkspace(lastSaved(), workspace)
+  })
+})
+
 function savedIssue(receiptId = 'receipt-legacy') {
   return {
     id: `issue-${receiptId}`,
@@ -1824,16 +2180,14 @@ describe('workspace user workflows', () => {
       expect(
         within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
       ).toBeNull()
-      fireEvent.change(
-        within(dialog)
-          .getByText('Количество выдано')
-          .parentElement!.querySelector('input')!,
-        { target: { value: '0,4' } },
-      )
+      const issueGrid = await operationGridApi('issue-selection')
+      const receiptId = String(lastSaved().materialReceipts[0]!.id)
+      await editIssue(receiptId, 'quantity', '0,4')
       expect(
-        within(dialog).getByRole('status', {
-          name: 'Выдано в альтернативной единице',
-        }).textContent,
+        issueGrid.getCellValue({
+          rowNode: issueGrid.getRowNode(receiptId)!,
+          colKey: 'alternative',
+        }),
       ).toBe('1 кг')
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
@@ -2283,22 +2637,29 @@ describe('workspace user workflows', () => {
       return await screen.findByRole('row', { name: /Альфа/ })
     }
     let row = await changePlan('8', 2)
-    let cells = within(row).getAllByRole('gridcell')
-    expect(within(cells[1]!).getByText('28 м')).toBeTruthy()
-    expect(within(cells[1]!).getByText('При создании: 30 м')).toBeTruthy()
-    expect(within(cells[2]!).getByText('8 м')).toBeTruthy()
-    expect(within(cells[2]!).getByText('При создании: 10 м')).toBeTruthy()
-    expect(cells[3]!.textContent).toBe('6')
-    expect(cells[7]!.textContent).toBe('1 м')
+    const cell = (id: string) =>
+      row.querySelector(`[col-id="${id}"]`) as HTMLElement
+    expect(within(cell('projectQuantity')).getByText('28 м')).toBeTruthy()
+    expect(
+      within(cell('projectQuantity')).getByText('При создании: 30 м'),
+    ).toBeTruthy()
+    expect(within(cell('cipherQuantity')).getByText('8 м')).toBeTruthy()
+    expect(
+      within(cell('cipherQuantity')).getByText('При создании: 10 м'),
+    ).toBeTruthy()
+    expect(cell('quantity').textContent).toBe('6')
+    expect(cell('balance').textContent).toBe('1 м')
+    expect(cell('received').textContent).toBe('0')
+    expect(cell('remaining').textContent).toBe('6')
     expect(screen.queryByText(/Заявлено сверх проекта:/)).toBeNull()
 
     row = await changePlan('4', 3)
-    cells = within(row).getAllByRole('gridcell')
-    expect(within(cells[1]!).getByText('24 м')).toBeTruthy()
-    expect(within(cells[2]!).getByText('4 м')).toBeTruthy()
-    expect(cells[3]!.textContent).toBe('6')
+    expect(within(cell('projectQuantity')).getByText('24 м')).toBeTruthy()
+    expect(within(cell('cipherQuantity')).getByText('4 м')).toBeTruthy()
+    expect(cell('quantity').textContent).toBe('6')
+    expect(cell('remaining').textContent).toBe('6')
     expect(
-      within(cells[7]!).getByText(/Заявлено сверх проекта: 3 м/),
+      within(cell('balance')).getByText(/Заявлено сверх проекта: 3 м/),
     ).toBeTruthy()
     expect(
       screen.getAllByText(/Позиций с превышением проекта: 1/),
@@ -3196,6 +3557,14 @@ it('returns the rejected fourth elbow from the new tab, reopens one request unit
   expect(tabs.findIndex((text) => text.startsWith('Возврат'))).toBe(
     tabs.findIndex((text) => text.startsWith('Выдача')) + 1,
   )
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
+    '1 из 1',
+  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '0 шт',
+  )
+  expect(screen.getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
   await operationGridApi('returns-pending')
   fireEvent.click(screen.getByRole('button', { name: 'Оформить возврат' }))
@@ -3216,8 +3585,24 @@ it('returns the rejected fourth elbow from the new tab, reopens one request unit
   expect(lastSaved().materialReceipts[0]!.quantity).toBe(4)
   validateQualityWorkspace(lastSaved(), workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
+    '0 из 1',
+  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '1 шт',
+  )
+  expect(screen.queryByText(/Получена полностью/)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
   expect(screen.getByText(/Осталось получить: 1 шт/)).toBeTruthy()
+  const requestsGrid = await operationGridApi('request:ЗП-42-Материалы')
+  expect(
+    ['quantity', 'received', 'remaining'].map((colKey) =>
+      requestsGrid.getCellValue({
+        rowNode: requestsGrid.getDisplayedRowAtIndex(0)!,
+        colKey,
+      }),
+    ),
+  ).toEqual([4, 3, 1])
   const saved = lastSaved()
   cleanup()
   mount(saved)
@@ -3278,6 +3663,13 @@ it('returns excess from the stock tab, validates the remaining quantity and leav
   })
   validateQualityWorkspace(lastSaved(), workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
+    '1 из 1',
+  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '0 шт',
+  )
+  expect(screen.getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
   expect(screen.getByText(/Осталось получить: 0 шт/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))

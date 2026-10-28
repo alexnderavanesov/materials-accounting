@@ -15,7 +15,11 @@ import type {
   ReceiptDocument,
   ReceiptDocumentFields,
 } from './receipt-documents'
-import { receivedByRequest, receiptBalances } from './receipt-balances'
+import {
+  receivedByRequest,
+  receiptBalances,
+  requestReceiptProgress,
+} from './receipt-balances'
 import { createPortal } from 'react-dom'
 import { OperationsGrid } from './operations-grid'
 import {
@@ -2666,6 +2670,7 @@ function OperationsSection({
       <IssueModal
         workflow={qualityWorkflow}
         existingCount={materialIssues.length}
+        requests={materialRequests}
         lineById={lineById}
         issues={materialIssues}
         open={modal === 'issues'}
@@ -3530,25 +3535,57 @@ function RequestsTable({
             lineById.has(lineId) &&
             (summaryByLine.get(lineId)?.requestBalance ?? 0) < 0,
         ).length
-        const requestBalance = lineIds.reduce(
-          (total, lineId) =>
-            total + Math.max(0, summaryByLine.get(lineId)?.requestBalance ?? 0),
-          0,
+        const receiptProgress = group.entries.map((entry) => ({
+          entry,
+          ...requestReceiptProgress(
+            entry.quantity,
+            netReceived.get(entry.id) ?? 0,
+          ),
+        }))
+        const completedPositions = receiptProgress.filter(
+          (item) => item.complete,
+        ).length
+        const isFullyReceived =
+          group.entries.length > 0 &&
+          completedPositions === group.entries.length
+        const requestedTotals = formatUnitTotals(
+          group.entries.map((entry) => ({
+            quantity: entry.quantity,
+            unit: entry.projectUnit,
+          })),
+        )
+        const remainingTotals = formatUnitTotals(
+          receiptProgress.map(({ entry, remaining }) => ({
+            quantity: remaining,
+            unit: entry.projectUnit,
+          })),
         )
 
         return (
           <div
             key={group.number}
             id={operationAnchorId('requests', group.number)}
-            className={`overflow-hidden rounded-lg border bg-white shadow-sm transition-colors ${
+            className={`overflow-hidden rounded-lg border shadow-sm transition-colors ${
+              isFullyReceived
+                ? 'border-emerald-200 bg-emerald-50/45 shadow-emerald-100/60'
+                : isExpanded
+                  ? 'border-blue-200 bg-white shadow-blue-100/60'
+                  : 'border-stone-200 bg-white shadow-stone-200/60'
+            } ${
               isExpanded
-                ? 'border-blue-200 shadow-blue-100/60 ring-1 ring-blue-100'
-                : 'border-stone-200 shadow-stone-200/60'
+                ? isFullyReceived
+                  ? 'ring-1 ring-emerald-200'
+                  : 'ring-1 ring-blue-100'
+                : ''
             }`}
           >
             <div
               className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3.5 2xl:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.65fr)_auto] ${
-                isExpanded ? 'bg-blue-50/25' : ''
+                isFullyReceived
+                  ? 'bg-emerald-50/45'
+                  : isExpanded
+                    ? 'bg-blue-50/25'
+                    : ''
               }`}
             >
               <button
@@ -3583,11 +3620,16 @@ function RequestsTable({
                   <span className="mt-1 block text-[13px] leading-5 text-stone-500">
                     {formatDate(group.date)} ·{' '}
                     {group.requester || 'без заявителя'}
+                    {isFullyReceived ? (
+                      <span className="font-medium text-emerald-700">
+                        {' · '}Получена полностью
+                      </span>
+                    ) : null}
                   </span>
                 </span>
               </button>
 
-              <span className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-[0.85fr_1.35fr_0.7fr_0.85fr_0.85fr_0.85fr]">
+              <span className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-[0.85fr_1.2fr_0.95fr_0.85fr_1fr_0.85fr]">
                 <RequestGroupMetric
                   label="Шифр"
                   value={group.cipher}
@@ -3598,16 +3640,19 @@ function RequestsTable({
                   value={requestMaterialType}
                 />
                 <RequestGroupMetric
-                  label="Позиций"
-                  value={formatQuantity(group.entries.length)}
+                  label="Получено позиций"
+                  value={`${completedPositions} из ${group.entries.length}`}
+                  wrap
                 />
                 <RequestGroupMetric
-                  label="Заявленное количество"
-                  value={formatQuantity(group.quantity)}
+                  label="Заявлено"
+                  value={requestedTotals}
+                  wrap
                 />
                 <RequestGroupMetric
-                  label="Остаток к заявке"
-                  value={formatQuantity(requestBalance)}
+                  label="Осталось получить"
+                  value={remainingTotals}
+                  wrap
                 />
                 <RequestGroupMetric
                   label="Примечание"
@@ -3686,16 +3731,7 @@ function RequestsTable({
                     </div>
                   ))}
                 <p className="text-sm text-slate-600">
-                  Осталось получить:{' '}
-                  {formatUnitTotals(
-                    group.entries.map((request) => ({
-                      unit: request.projectUnit,
-                      quantity: Math.max(
-                        0,
-                        request.quantity - (netReceived.get(request.id) ?? 0),
-                      ),
-                    })),
-                  )}
+                  Осталось получить: {remainingTotals}
                 </p>
               </div>
             )}
@@ -3709,21 +3745,24 @@ function RequestsTable({
                     id={`request:${group.number}`}
                     label={`Заявка ${group.number}`}
                     rows={[
-                      ...group.entries.map((entry) => {
-                        const line = lineById.get(entry.projectLineId)
-                        const isDeletedProjectMaterial = !line
-                        const summary = summaryByLine.get(entry.projectLineId)
-                        const referenceQuantity = referenceQuantityByLineId.get(
-                          entry.projectLineId,
-                        )
-                        return {
-                          entry,
-                          line,
-                          isDeletedProjectMaterial,
-                          summary,
-                          referenceQuantity,
-                        }
-                      }),
+                      ...receiptProgress.map(
+                        ({ entry, received, remaining }) => {
+                          const line = lineById.get(entry.projectLineId)
+                          const isDeletedProjectMaterial = !line
+                          const summary = summaryByLine.get(entry.projectLineId)
+                          const referenceQuantity =
+                            referenceQuantityByLineId.get(entry.projectLineId)
+                          return {
+                            entry,
+                            line,
+                            isDeletedProjectMaterial,
+                            summary,
+                            referenceQuantity,
+                            received,
+                            remaining,
+                          }
+                        },
+                      ),
                     ]}
                     rowId={({ entry }) => entry.id}
                     columns={[
@@ -3755,11 +3794,40 @@ function RequestsTable({
                         ),
                       },
                       {
+                        id: 'unit',
+                        title: 'Единица измерения',
+                        value: ({ entry }) => entry.projectUnit,
+                        width: 120,
+                        centered: true,
+                      },
+                      {
+                        id: 'quantity',
+                        title: 'Заявлено',
+                        value: ({ entry }) => entry.quantity,
+                        numeric: true,
+                        centered: true,
+                      },
+                      {
+                        id: 'received',
+                        title: 'Получено',
+                        value: ({ received }) => received,
+                        numeric: true,
+                        centered: true,
+                      },
+                      {
+                        id: 'remaining',
+                        title: 'Осталось получить',
+                        value: ({ remaining }) => remaining,
+                        numeric: true,
+                        centered: true,
+                      },
+                      {
                         id: 'projectQuantity',
                         title: 'По проекту сейчас',
                         value: ({ referenceQuantity }) =>
                           referenceQuantity?.projectQuantity,
                         numeric: true,
+                        centered: true,
                         render: ({ entry, referenceQuantity }) => (
                           <>
                             <RequestProjectQuantity
@@ -3776,6 +3844,7 @@ function RequestsTable({
                         value: ({ referenceQuantity }) =>
                           referenceQuantity?.cipherQuantity,
                         numeric: true,
+                        centered: true,
                         render: ({ entry, referenceQuantity }) => (
                           <>
                             <RequestProjectQuantity
@@ -3787,25 +3856,11 @@ function RequestsTable({
                         ),
                       },
                       {
-                        id: 'quantity',
-                        title: 'Количество по заявке',
-                        value: ({ entry }) => entry.quantity,
-                        numeric: true,
-                        render: ({ entry }) => (
-                          <>{formatQuantity(entry.quantity)}</>
-                        ),
-                      },
-                      {
-                        id: 'unit',
-                        title: 'Единица измерения проекта',
-                        value: ({ entry }) => entry.projectUnit,
-                        render: ({ entry }) => <>{entry.projectUnit}</>,
-                      },
-                      {
                         id: 'altQuantity',
                         title: 'Количество в альтернативной единице',
                         value: ({ entry }) => entry.altQuantity,
                         numeric: true,
+                        centered: true,
                         render: ({ entry }) => (
                           <>{formatOptionalQuantity(entry.altQuantity)}</>
                         ),
@@ -3814,14 +3869,16 @@ function RequestsTable({
                         id: 'altUnit',
                         title: 'Альтернативная единица измерения',
                         value: ({ entry }) => entry.altUnit,
+                        centered: true,
                         render: ({ entry }) => <>{entry.altUnit || '-'}</>,
                       },
                       {
                         id: 'balance',
-                        title: 'Остаток к заявке',
+                        title: 'Ещё не заявлено по шифру',
                         value: ({ summary }) =>
                           Math.max(0, summary?.requestBalance ?? 0),
                         numeric: true,
+                        centered: true,
                         render: ({
                           entry,
                           line,
@@ -3933,20 +3990,26 @@ function RequestGroupMetric({
   label,
   value,
   title,
+  wrap = false,
 }: {
   label: string
   value: string
   title?: string
+  wrap?: boolean
 }) {
   return (
     <HoverTooltip
       text={title}
       className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm shadow-slate-200/40"
     >
-      <span className="block truncate text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-400">
+      <span
+        className={`block text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-400 ${wrap ? 'whitespace-normal' : 'truncate'}`}
+      >
         {label}
       </span>
-      <span className="mt-0.5 block truncate text-sm leading-5 text-slate-900">
+      <span
+        className={`mt-0.5 block text-sm leading-5 text-slate-900 ${wrap ? 'whitespace-normal break-words' : 'truncate'}`}
+      >
         {value}
       </span>
     </HoverTooltip>
@@ -6552,8 +6615,10 @@ function ReceiptModal({
         requestGroups.filter((group) =>
           group.entries.some(
             (entry) =>
-              Number(entry.quantity.toPrecision(15)) >
-                Number((receiptByRequest.get(entry.id) ?? 0).toPrecision(15)) ||
+              !requestReceiptProgress(
+                entry.quantity,
+                receiptByRequest.get(entry.id) ?? 0,
+              ).complete ||
               editingReceipt?.entries.some(
                 (receipt) => receipt.requestId === entry.id,
               ),
@@ -8383,6 +8448,7 @@ function IssueModal({
   open,
   qualityControls,
   receipts,
+  requests,
   onClose,
   onSubmit,
 }: {
@@ -8393,243 +8459,608 @@ function IssueModal({
   open: boolean
   qualityControls: Array<InspectionApproval>
   receipts: Array<MaterialReceiptEntry>
+  requests: Array<MaterialRequestEntry>
   onClose: () => void
   onSubmit: (entries: Array<MaterialIssueEntry>) => void
 }) {
   const [drafts, setDrafts] = useState<Record<string, IssueDraft>>({})
+  const draftsRef = useRef(drafts)
+  const gridRef = useRef<GridApi<IssueTableRow> | null>(null)
+  const submitting = useRef(false)
+  const initialized = useRef(false)
+  const [documentNumber, setDocumentNumber] = useState('')
+  const [date, setDate] = useState('')
+  const [receiver, setReceiver] = useState('')
+  const [search, setSearch] = useState('')
+  const [cipher, setCipher] = useState('')
+  const [materialType, setMaterialType] = useState('')
+  const [onlySelected, setOnlySelected] = useState(false)
+  const [submitError, setSubmitError] = useState('')
 
   useEffect(() => {
-    if (open) {
-      setDrafts({})
+    if (!open) {
+      initialized.current = false
+      return
     }
-  }, [open])
+    if (initialized.current) return
+    initialized.current = true
+    draftsRef.current = {}
+    setDrafts({})
+    setDocumentNumber(makeOperationNumber('ПМ', existingCount))
+    setDate(localDateInputValue())
+    setReceiver('')
+    setSearch('')
+    setCipher('')
+    setMaterialType('')
+    setOnlySelected(false)
+    setSubmitError('')
+    submitting.current = false
+  }, [open, existingCount])
 
-  const signedByReceipt = getSignedQuantityByReceipt(qualityControls)
-  const balances = receiptBalances(receipts, workflow, qualityControls, issues)
-  function getAvailableQuantity(receipt: MaterialReceiptEntry) {
-    return balances.get(receipt.id)?.availableToIssue ?? 0
-  }
-  const availableReceipts = receipts.filter(
-    (receipt) => getAvailableQuantity(receipt) > 0,
-  )
-  function getQuantityError(receipt: MaterialReceiptEntry) {
-    const value = drafts[receipt.id]?.quantity ?? ''
-    if (!value.trim()) return ''
-    const quantity = parseNullableNumber(value)
-    if (quantity === null || quantity <= 0)
-      return 'Введите положительное количество.'
-    const available = getAvailableQuantity(receipt)
-    return quantity > available
-      ? `К выдаче доступно только ${formatQuantity(available)} ${receipt.projectUnit}.`
-      : ''
-  }
-  const hasQuantityError = availableReceipts.some((receipt) =>
-    Boolean(getQuantityError(receipt)),
-  )
-  const hasRows = Object.values(drafts).some(
-    (draft) => parsePositiveNumber(draft.quantity) > 0,
-  )
-
-  function getIssueConversion(receipt: MaterialReceiptEntry) {
-    return getOperationConversion(
-      lineById.get(receipt.projectLineId),
-      receipt.projectUnit,
-      receipt,
+  const candidates = useMemo(() => {
+    if (!open) return []
+    const balances = receiptBalances(
+      receipts,
+      workflow,
+      qualityControls,
+      issues,
     )
+    const requestById = new Map(
+      requests.map((request) => [request.id, request]),
+    )
+    const documentById = new Map(
+      receiptDocuments(workflow).map((item) => [item.id, item]),
+    )
+    const approvals = new Map<string, Array<InspectionApproval>>()
+    for (const approval of qualityControls) {
+      const rows = approvals.get(approval.receiptId) ?? []
+      rows.push(approval)
+      approvals.set(approval.receiptId, rows)
+    }
+    return receipts.map((receipt) => {
+      const line = lineById.get(receipt.projectLineId)
+      const request = requestById.get(receipt.requestId)
+      const controls = approvals.get(receipt.id) ?? []
+      const documents = [receipt.appDocumentId, receipt.m15DocumentId]
+        .flatMap((id) => {
+          const item = id ? documentById.get(id) : undefined
+          return item ? [receiptDocumentLabel(item)] : []
+        })
+        .join('; ')
+      const name = receipt.actualName || line?.projectMaterialName || '—'
+      const cipherValue = request?.cipher || line?.cipher || ''
+      const type = request?.materialType || line?.materialType || ''
+      const avk = unique(controls.map((item) => item.arvkNumber)).join('; ')
+      const zni = unique(controls.map((item) => item.zniNumber)).join('; ')
+      return {
+        receipt,
+        name,
+        cipher: cipherValue,
+        materialType: type,
+        documents,
+        avk,
+        zni,
+        requestNumber: request?.number || '',
+        available: balances.get(receipt.id)?.availableToIssue ?? 0,
+        conversion: getOperationConversion(line, receipt.projectUnit, receipt),
+        searchText: normalizeSearchValue(
+          [
+            name,
+            cipherValue,
+            type,
+            documents,
+            avk,
+            zni,
+            request?.number,
+            receipt.factoryNumber,
+            receipt.heatBatch,
+            receipt.certificate,
+            receipt.manufacturer,
+            receipt.qualityDocument,
+            line?.normativeDocument,
+          ].join(' '),
+        ),
+      }
+    })
+  }, [open, receipts, workflow, qualityControls, issues, requests, lineById])
+
+  function buildRows(values: Record<string, IssueDraft>): Array<IssueTableRow> {
+    return candidates
+      .map((candidate) => {
+        const draft = values[candidate.receipt.id]
+        const quantity = draft?.quantity ?? ''
+        const parsed = parseNullableNumber(quantity)
+        const selected = Boolean(quantity.trim())
+        const alternative = getOperationAlternative(
+          selected && parsed !== null && parsed > 0 ? parsed : null,
+          candidate.conversion,
+        )
+        const error = !selected
+          ? ''
+          : parsed === null || parsed <= 0
+            ? 'Введите положительное количество.'
+            : parsed > candidate.available
+              ? `К выдаче доступно только ${formatQuantity(candidate.available)} ${candidate.receipt.projectUnit}.`
+              : alternative.error || ''
+        return {
+          ...candidate,
+          quantity,
+          note: draft?.note ?? '',
+          selected,
+          error,
+          alternative:
+            alternative.altQuantity === null
+              ? '—'
+              : `${formatQuantity(alternative.altQuantity)} ${alternative.altUnit}`,
+        }
+      })
+      .filter((row) => row.available > 0 || row.selected)
   }
-  const hasAlternativeError = availableReceipts.some((receipt) => {
-    const quantity = parsePositiveNumber(drafts[receipt.id]?.quantity ?? '')
-    return (
-      quantity > 0 &&
-      Boolean(
-        getOperationAlternative(quantity, getIssueConversion(receipt)).error,
+  const rows = buildRows(drafts)
+  const selectedRows = rows.filter((row) => row.selected)
+  const tokens = normalizeSearchValue(search).split(/\s+/).filter(Boolean)
+  const visibleRows = onlySelected
+    ? selectedRows
+    : rows.filter(
+        (row) =>
+          tokens.every((token) => row.searchText.includes(token)) &&
+          normalizeSearchValue(row.cipher).includes(
+            normalizeSearchValue(cipher),
+          ) &&
+          normalizeSearchValue(row.materialType).includes(
+            normalizeSearchValue(materialType),
+          ),
       )
-    )
-  })
+  const selectedTotals = formatUnitTotals(
+    selectedRows.map((row) => ({
+      quantity: parsePositiveNumber(row.quantity),
+      unit: row.receipt.projectUnit,
+    })),
+  )
+  const errorCount = selectedRows.filter((row) => row.error).length
+
   function updateDraft(
     receiptId: string,
     key: keyof IssueDraft,
     value: string,
   ) {
-    setDrafts((current) => ({
+    const current = draftsRef.current
+    const next = {
       ...current,
       [receiptId]: {
-        date: current[receiptId]?.date ?? todayInputValue(),
-        document:
-          current[receiptId]?.document ??
-          makeOperationNumber('ПМ', existingCount),
-        note: current[receiptId]?.note ?? '',
-        quantity: current[receiptId]?.quantity ?? '',
-        receiver: current[receiptId]?.receiver ?? '',
+        quantity: '',
+        note: '',
+        ...current[receiptId],
         [key]: value,
       },
-    }))
+    }
+    draftsRef.current = next
+    setDrafts(next)
+    setSubmitError('')
+  }
+
+  function stopEditing() {
+    const grid = gridRef.current
+    if (grid && !grid.isDestroyed()) {
+      grid.stopEditing()
+      return grid.getEditingCells().length === 0
+    }
+    return true
   }
 
   function submit() {
-    if (hasAlternativeError || hasQuantityError) return
-    const entries = availableReceipts
-      .map((receipt): MaterialIssueEntry | null => {
-        const draft = drafts[receipt.id]
-        const quantity = parsePositiveNumber(draft?.quantity ?? '')
-
-        if (quantity <= 0) {
-          return null
-        }
-
-        const alternative = getOperationAlternative(
-          quantity,
-          getIssueConversion(receipt),
-        )
-        return {
-          altQuantity: alternative.altQuantity,
-          altUnit: alternative.altUnit,
-          altUnitFactor: alternative.altUnitFactor,
-          projectUnit: receipt.projectUnit,
-          date: draft?.date ?? todayInputValue(),
-          document:
-            draft?.document.trim() || makeOperationNumber('ПМ', existingCount),
-          id: createClientId('issue'),
-          note: draft?.note.trim() ?? '',
-          projectLineId: receipt.projectLineId,
-          quantity,
-          receiptId: receipt.id,
-          receiver: draft?.receiver.trim() ?? '',
-        } satisfies MaterialIssueEntry
+    if (submitting.current || !stopEditing()) return
+    const selected = buildRows(draftsRef.current).filter((row) => row.selected)
+    if (!selected.length) {
+      setSubmitError('Укажите количество хотя бы у одного материала.')
+      return
+    }
+    if (
+      selected.some((row) => row.error) ||
+      Object.entries(draftsRef.current).some(
+        ([id, draft]) =>
+          draft.quantity.trim() &&
+          !candidates.some((row) => row.receipt.id === id),
+      )
+    ) {
+      setSubmitError(
+        'Проверьте выбранные позиции: количество должно быть положительным и не превышать доступный остаток.',
+      )
+      return
+    }
+    if (
+      !documentNumber.trim() ||
+      !date ||
+      normalizeCalendarDate(date) !== date
+    ) {
+      setSubmitError(
+        'Укажите номер документа передачи и корректную дату выдачи.',
+      )
+      return
+    }
+    const entries = selected.map(({ receipt, quantity, conversion, note }) => {
+      const amount = parsePositiveNumber(quantity)
+      const alternative = getOperationAlternative(amount, conversion)
+      return {
+        altQuantity: alternative.altQuantity,
+        altUnit: alternative.altUnit,
+        altUnitFactor: alternative.altUnitFactor,
+        projectUnit: receipt.projectUnit,
+        date,
+        document: documentNumber.trim(),
+        id: createClientId('issue'),
+        note: note.trim(),
+        projectLineId: receipt.projectLineId,
+        quantity: amount,
+        receiptId: receipt.id,
+        receiver: receiver.trim(),
+      } satisfies MaterialIssueEntry
+    })
+    try {
+      validateQualityWorkspace({
+        qualityWorkflow: workflow,
+        materialReceipts: receipts,
+        materialRequests: requests,
+        materialIssues: [...entries, ...issues],
       })
-      .filter((entry): entry is MaterialIssueEntry => Boolean(entry))
-
-    if (entries.length > 0) {
+      submitting.current = true
       onSubmit(entries)
+    } catch (error) {
+      submitting.current = false
+      setSubmitError(
+        error instanceof Error ? error.message : 'Не удалось оформить выдачу.',
+      )
     }
   }
 
   return (
-    <Modal open={open} size="lg" title="Выдача в монтаж" onClose={onClose}>
-      <OperationModalLayout
-        hint="Выдавайте только материал с подписанным входным контролем. Количество уменьшит остаток к выдаче."
-        primaryDisabled={!hasRows || hasAlternativeError || hasQuantityError}
-        primaryLabel="Сохранить выдачу"
-        onCancel={onClose}
-        onSubmit={submit}
-      >
-        {availableReceipts.length === 0 ? (
-          <OperationFormEmpty text="Нет материала с подписанным ВК и остатком к выдаче." />
-        ) : (
-          <div className="grid gap-4">
-            {availableReceipts.map((receipt) => {
-              const line = lineById.get(receipt.projectLineId)
-              const rest = getAvailableQuantity(receipt)
-              const quantityError = getQuantityError(receipt)
-              const draft = drafts[receipt.id]
-
-              return (
-                <div
-                  key={receipt.id}
-                  className="rounded-lg border border-stone-200 bg-white p-4"
-                >
-                  <div className="text-sm font-medium text-stone-950">
-                    {receipt.actualName || line?.projectMaterialName || '-'}
-                  </div>
-                  <div className="mt-1 text-xs text-stone-500">
-                    ВК подписан{' '}
-                    {formatQuantity(signedByReceipt.get(receipt.id) ?? 0)} · к
-                    выдаче {formatQuantity(rest)}
-                  </div>
-                  <AutomaticAlternative
-                    label="Выдано в альтернативной единице"
-                    baseUnit={receipt.projectUnit}
-                    conversion={getIssueConversion(receipt)}
-                    value={getOperationAlternative(
-                      quantityError
-                        ? null
-                        : parseNullableNumber(draft?.quantity ?? ''),
-                      getIssueConversion(receipt),
-                    )}
-                  />
-                  <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                    <Field label="Документ передачи">
-                      <Input
-                        value={
-                          draft?.document ??
-                          makeOperationNumber('ПМ', existingCount)
-                        }
-                        onChange={(event) =>
-                          updateDraft(
-                            receipt.id,
-                            'document',
-                            event.target.value,
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="Количество выдано">
-                      <Input
-                        inputMode="decimal"
-                        aria-label={`Количество выдано: ${receipt.actualName}`}
-                        aria-invalid={Boolean(quantityError)}
-                        aria-describedby={
-                          quantityError
-                            ? `issue-quantity-error-${receipt.id}`
-                            : undefined
-                        }
-                        value={draft?.quantity ?? ''}
-                        onChange={(event) =>
-                          updateDraft(
-                            receipt.id,
-                            'quantity',
-                            event.target.value,
-                          )
-                        }
-                      />
-                      {quantityError ? (
-                        <p
-                          id={`issue-quantity-error-${receipt.id}`}
-                          role="alert"
-                          className="text-sm text-rose-700"
-                        >
-                          {quantityError}
-                        </p>
-                      ) : null}
-                    </Field>
-                    <Field label="Дата выдачи">
-                      <Input
-                        type="date"
-                        value={draft?.date ?? todayInputValue()}
-                        onChange={(event) =>
-                          updateDraft(receipt.id, 'date', event.target.value)
-                        }
-                      />
-                    </Field>
-                    <Field label="Получатель">
-                      <Input
-                        value={draft?.receiver ?? ''}
-                        onChange={(event) =>
-                          updateDraft(
-                            receipt.id,
-                            'receiver',
-                            event.target.value,
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="Примечание">
-                      <Input
-                        value={draft?.note ?? ''}
-                        onChange={(event) =>
-                          updateDraft(receipt.id, 'note', event.target.value)
-                        }
-                      />
-                    </Field>
-                  </div>
-                </div>
-              )
-            })}
+    <Modal
+      open={open}
+      size="xl"
+      title="Выдача в монтаж"
+      onClose={onClose}
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-slate-50/60 px-5 py-4">
+          <div
+            className="text-sm text-slate-700"
+            role="status"
+            aria-label="Итог выдачи"
+          >
+            К выдаче: {selectedRows.length} позиций
+            {selectedRows.length > 0 ? ` · ${selectedTotals}` : ''}
+            {errorCount > 0 ? ` · С ошибками: ${errorCount}` : ''}
           </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button disabled={rows.length === 0} onClick={submit}>
+              Сохранить выдачу
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <div
+        className="grid gap-4"
+        onKeyDownCapture={(event) => {
+          const grid = gridRef.current
+          if (
+            event.key === 'Escape' &&
+            grid &&
+            !grid.isDestroyed() &&
+            grid.getEditingCells().length > 0
+          ) {
+            grid.stopEditing(true)
+            event.preventDefault()
+            event.stopPropagation()
+          }
+        }}
+      >
+        <p className="text-sm text-slate-500">
+          Доступен материал с подписанным АВК. Каждая строка — отдельное
+          поступление. Введите количество в столбце «Выдать» двойным нажатием.
+          Enter или Tab подтверждает ячейку.
+        </p>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="Документ передачи">
+            <Input
+              aria-label="Документ передачи"
+              value={documentNumber}
+              onChange={(event) => setDocumentNumber(event.target.value)}
+            />
+          </Field>
+          <Field label="Дата выдачи">
+            <Input
+              aria-label="Дата выдачи"
+              type="date"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+            />
+          </Field>
+          <Field label="Получатель">
+            <Input
+              aria-label="Получатель"
+              value={receiver}
+              onChange={(event) => setReceiver(event.target.value)}
+            />
+          </Field>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex gap-2">
+            <Button
+              variant={onlySelected ? 'outline' : 'secondary'}
+              aria-pressed={!onlySelected}
+              onClick={() => {
+                if (!stopEditing()) return
+                setOnlySelected(false)
+              }}
+            >
+              Доступные материалы
+            </Button>
+            <Button
+              variant={onlySelected ? 'secondary' : 'outline'}
+              aria-pressed={onlySelected}
+              onClick={() => {
+                if (!stopEditing()) return
+                const grid = gridRef.current
+                if (grid && !grid.isDestroyed()) grid.setFilterModel(null)
+                setOnlySelected(true)
+              }}
+            >
+              Только выбранные ({selectedRows.length})
+            </Button>
+          </div>
+          <span className="text-xs text-slate-500">
+            {onlySelected
+              ? `Выбрано ${selectedRows.length} позиций`
+              : `Найдено ${visibleRows.length} из ${rows.length} поступлений`}
+          </span>
+        </div>
+        {!onlySelected ? (
+          <div className="grid gap-3 lg:grid-cols-[2fr_1fr_1fr]">
+            <div className="relative">
+              <Search
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                size={16}
+              />
+              <Input
+                className="h-11 pl-9"
+                aria-label="Поиск материалов для выдачи"
+                placeholder="Материал, шифр, АПП/М-15, АВК, ЗНИ или партия"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <FilterAutocompleteInput
+              placeholder="Шифр для выдачи"
+              options={rows.map((row) => row.cipher)}
+              value={cipher}
+              onChange={setCipher}
+            />
+            <FilterAutocompleteInput
+              placeholder="Тип материала для выдачи"
+              options={rows.map((row) => row.materialType)}
+              value={materialType}
+              onChange={setMaterialType}
+            />
+          </div>
+        ) : null}
+        {submitError ? (
+          <p role="alert" className="text-sm text-rose-700">
+            {submitError}
+          </p>
+        ) : null}
+        {errorCount > 0 ? (
+          <p role="alert" className="text-sm text-rose-700">
+            Исправьте количество в выбранных позициях с ошибками: {errorCount}.
+            Они сохраняются в списке «Только выбранные», даже если скрыты
+            поиском.
+          </p>
+        ) : null}
+        {rows.length === 0 ? (
+          <OperationFormEmpty text="Нет материала с подписанным АВК и остатком к выдаче." />
+        ) : (
+          <OperationsGrid<IssueTableRow>
+            id="issue-selection"
+            label="Материалы для выдачи"
+            rows={visibleRows}
+            rowId={(row) => row.receipt.id}
+            pagination
+            paginationFilterKey={JSON.stringify([
+              onlySelected,
+              search,
+              cipher,
+              materialType,
+            ])}
+            onReady={(api) => {
+              gridRef.current = api
+              api.setFilterModel(null)
+              api.paginationGoToFirstPage()
+            }}
+            columns={[
+              {
+                id: 'name',
+                title: 'Материал',
+                width: 360,
+                value: (row) => row.name,
+                render: (row) => (
+                  <div>
+                    {row.name}
+                    <p className="mt-1 text-xs text-slate-500">
+                      {[
+                        row.documents,
+                        row.avk ? `АВК ${row.avk}` : '',
+                        row.receipt.heatBatch
+                          ? `Партия ${row.receipt.heatBatch}`
+                          : '',
+                        row.receipt.factoryNumber
+                          ? `Зав. № ${row.receipt.factoryNumber}`
+                          : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                    {row.error ? (
+                      <p className="mt-1 text-xs text-rose-700">{row.error}</p>
+                    ) : null}
+                  </div>
+                ),
+              },
+              {
+                id: 'cipher',
+                title: 'Шифр',
+                width: 170,
+                value: (row) => row.cipher,
+              },
+              {
+                id: 'available',
+                title: 'Доступно',
+                width: 120,
+                numeric: true,
+                centered: true,
+                value: (row) => row.available,
+              },
+              {
+                id: 'quantity',
+                title: 'Выдать',
+                width: 120,
+                numeric: true,
+                centered: true,
+                value: (row) =>
+                  parseNullableNumber(row.quantity) ?? row.quantity,
+                onEdit: (row, value) =>
+                  updateDraft(row.receipt.id, 'quantity', value),
+              },
+              {
+                id: 'unit',
+                title: 'Ед.',
+                width: 100,
+                centered: true,
+                value: (row) => row.receipt.projectUnit,
+              },
+              {
+                id: 'alternative',
+                title: 'Альтернативно',
+                width: 150,
+                centered: true,
+                value: (row) => row.alternative,
+              },
+              {
+                id: 'documents',
+                title: 'Документы поступления',
+                width: 280,
+                value: (row) => row.documents,
+              },
+              { id: 'avk', title: 'АВК', width: 150, value: (row) => row.avk },
+              { id: 'zni', title: 'ЗНИ', width: 120, value: (row) => row.zni },
+              {
+                id: 'receiptDate',
+                title: 'Дата поступления',
+                value: (row) => formatDate(row.receipt.date),
+              },
+              {
+                id: 'batch',
+                title: 'Партия / заводской номер',
+                value: (row) =>
+                  [row.receipt.heatBatch, row.receipt.factoryNumber]
+                    .filter(Boolean)
+                    .join(' / '),
+              },
+              {
+                id: 'certificate',
+                title: 'Паспорт / сертификат',
+                value: (row) => row.receipt.certificate,
+              },
+              {
+                id: 'request',
+                title: 'Заявка',
+                value: (row) => row.requestNumber,
+              },
+              {
+                id: 'type',
+                title: 'Тип материала',
+                value: (row) => row.materialType,
+              },
+              {
+                id: 'note',
+                title: 'Примечание',
+                value: (row) => row.note,
+                onEdit: (row, value) =>
+                  updateDraft(row.receipt.id, 'note', value),
+              },
+              {
+                id: 'actions',
+                title: 'Выбор',
+                actions: true,
+                width: 190,
+                value: () => '',
+                render: (row) => (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={row.available <= 0}
+                      aria-label={`Весь остаток: ${row.name}`}
+                      onClick={() => {
+                        if (stopEditing())
+                          updateDraft(
+                            row.receipt.id,
+                            'quantity',
+                            String(row.available),
+                          )
+                      }}
+                    >
+                      Весь остаток
+                    </Button>
+                    {row.selected ? (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={`Убрать из выдачи: ${row.name}`}
+                        onClick={() => {
+                          if (stopEditing())
+                            updateDraft(row.receipt.id, 'quantity', '')
+                        }}
+                      >
+                        <X size={15} />
+                      </Button>
+                    ) : null}
+                  </div>
+                ),
+              },
+            ]}
+          />
         )}
-      </OperationModalLayout>
+        {rows.length > 0 && visibleRows.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            {onlySelected
+              ? 'Выберите материалы, указав количество к выдаче.'
+              : 'Материалы по этому запросу не найдены. Измените поиск или фильтры.'}
+          </p>
+        ) : null}
+      </div>
     </Modal>
   )
+}
+
+type IssueTableRow = {
+  receipt: MaterialReceiptEntry
+  name: string
+  cipher: string
+  materialType: string
+  documents: string
+  avk: string
+  zni: string
+  requestNumber: string
+  available: number
+  conversion: ReturnType<typeof getOperationConversion>
+  searchText: string
+  quantity: string
+  note: string
+  selected: boolean
+  error: string
+  alternative: string
 }
 
 function OperationModalLayout({
@@ -8756,11 +9187,8 @@ type ReceiptDraft = ReceiptDocumentFields & {
   technicalDecision: string
 }
 type IssueDraft = {
-  date: string
-  document: string
   note: string
   quantity: string
-  receiver: string
 }
 type RequestDraft = {
   note: string
@@ -9664,7 +10092,7 @@ function getReceiptRequestRest(
 ) {
   const received =
     (receiptByRequest.get(request.id) ?? 0) - (editingReceipt?.quantity ?? 0)
-  return Math.max(0, request.quantity - received)
+  return requestReceiptProgress(request.quantity, received).remaining
 }
 
 function receiptWorkItemMatchesSearch(
@@ -10108,10 +10536,6 @@ function overviewAnchorId(targetId: string) {
   return `operation-overview-${encodeURIComponent(targetId)}`
 }
 
-function getSignedQuantityByReceipt(controls: Array<InspectionApproval>) {
-  return sumByKey(controls, 'receiptId', 'quantity')
-}
-
 function getOperationDeletionError(
   target: OperationDeletion,
   receipts: Array<MaterialReceiptEntry>,
@@ -10143,22 +10567,6 @@ function getOperationDeletionError(
     return ''
   }
   return issues.some((entry) => entry.id === target.id) ? '' : missing
-}
-
-function sumByKey<T extends Record<string, unknown>>(
-  entries: Array<T>,
-  key: keyof T,
-  valueKey: keyof T,
-) {
-  const sums = new Map<string, number>()
-
-  for (const entry of entries) {
-    const id = String(entry[key] ?? '')
-    const value = Number(entry[valueKey] ?? 0)
-    sums.set(id, (sums.get(id) ?? 0) + (Number.isFinite(value) ? value : 0))
-  }
-
-  return sums
 }
 
 function createClientId(prefix: string) {
@@ -11549,12 +11957,14 @@ function ReferenceSettingsSection({
 
 function Modal({
   children,
+  footer,
   open,
   size = 'md',
   title,
   onClose,
 }: {
   children: React.ReactNode
+  footer?: React.ReactNode
   open: boolean
   size?: 'md' | 'lg' | 'xl'
   title: string
@@ -11589,6 +11999,7 @@ function Modal({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto px-5 py-5">{children}</div>
+        {footer}
       </div>
     </div>
   )

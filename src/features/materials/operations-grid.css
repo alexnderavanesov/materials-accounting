@@ -14,6 +14,12 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.operations-grid .operations-grid-centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
 .operations-grid .operations-grid-deleted {
   background-color: #fffbeb;
 }
