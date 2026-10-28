@@ -56,6 +56,7 @@ import {
   CardTitle,
 } from '#/components/ui/card'
 import { Input } from '#/components/ui/input'
+import { HoverTooltip } from '#/components/ui/hover-tooltip'
 import {
   getAlternativeConversionError,
   getMaterialRequestConversion,
@@ -3587,7 +3588,11 @@ function RequestsTable({
               </button>
 
               <span className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[0.85fr_1.35fr_0.7fr_0.85fr_0.85fr]">
-                <RequestGroupMetric label="Шифр" value={group.cipher} />
+                <RequestGroupMetric
+                  label="Шифр"
+                  value={group.cipher}
+                  title={group.cipher}
+                />
                 <RequestGroupMetric
                   label="Тип материала"
                   value={requestMaterialType}
@@ -3925,19 +3930,24 @@ function RequestExcessWarning({
 function RequestGroupMetric({
   label,
   value,
+  title,
 }: {
   label: string
   value: string
+  title?: string
 }) {
   return (
-    <span className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm shadow-slate-200/40">
+    <HoverTooltip
+      text={title}
+      className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm shadow-slate-200/40"
+    >
       <span className="block truncate text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-400">
         {label}
       </span>
       <span className="mt-0.5 block truncate text-sm leading-5 text-slate-900">
         {value}
       </span>
-    </span>
+    </HoverTooltip>
   )
 }
 
