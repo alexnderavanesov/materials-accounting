@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Download, Printer, Upload, X } from 'lucide-react'
+import { Download, LoaderCircle, Printer, Upload, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import {
@@ -175,10 +175,12 @@ export function RequestPrintButton({
   entryId,
   number,
   prepare,
+  iconOnly = false,
 }: {
   entryId: string
   number: string
   prepare: () => Promise<string>
+  iconOnly?: boolean
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
@@ -204,9 +206,23 @@ export function RequestPrintButton({
   }
   return (
     <div className="grid gap-2">
-      <Button variant="outline" disabled={busy} onClick={() => void print()}>
-        <Printer size={15} />
-        {busy ? 'Формирование…' : 'Печать'}
+      <Button
+        variant="outline"
+        size={iconOnly ? 'icon' : 'default'}
+        aria-label={busy ? 'Формирование…' : 'Печать'}
+        title={
+          iconOnly ? (busy ? 'Формирование…' : 'Печать заявки') : undefined
+        }
+        aria-busy={busy}
+        disabled={busy}
+        onClick={() => void print()}
+      >
+        {busy && iconOnly ? (
+          <LoaderCircle size={15} className="animate-spin" />
+        ) : (
+          <Printer size={15} />
+        )}
+        {!iconOnly && (busy ? 'Формирование…' : 'Печать')}
       </Button>
       {error ? (
         <p role="alert" className="max-w-xs text-sm text-red-700">

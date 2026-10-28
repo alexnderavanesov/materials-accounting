@@ -3547,12 +3547,12 @@ function RequestsTable({
             }`}
           >
             <div
-              className={`grid min-w-0 gap-4 px-4 py-3.5 2xl:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.65fr)_auto] 2xl:items-center ${
+              className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3.5 2xl:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.65fr)_auto] ${
                 isExpanded ? 'bg-blue-50/25' : ''
               }`}
             >
               <button
-                className="flex min-w-0 items-center gap-3 rounded-md text-left outline-none transition-colors hover:text-blue-900 focus-visible:ring-2 focus-visible:ring-stone-300"
+                className="col-span-2 flex min-w-0 items-center gap-3 rounded-md text-left outline-none transition-colors hover:text-blue-900 focus-visible:ring-2 focus-visible:ring-stone-300 2xl:col-span-1"
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() =>
@@ -3587,7 +3587,7 @@ function RequestsTable({
                 </span>
               </button>
 
-              <span className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[0.85fr_1.35fr_0.7fr_0.85fr_0.85fr]">
+              <span className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-[0.85fr_1.35fr_0.7fr_0.85fr_0.85fr_0.85fr]">
                 <RequestGroupMetric
                   label="Шифр"
                   value={group.cipher}
@@ -3609,26 +3609,28 @@ function RequestsTable({
                   label="Остаток к заявке"
                   value={formatQuantity(requestBalance)}
                 />
+                <RequestGroupMetric
+                  label="Примечание"
+                  value={group.entries[0]?.requestNote || '—'}
+                  title={group.entries[0]?.requestNote}
+                />
               </span>
 
-              <div className="flex max-w-xl flex-wrap items-start gap-2">
-                {group.entries[0]?.requestNote && (
-                  <p className="w-full whitespace-pre-wrap break-words text-sm text-slate-600">
-                    {group.entries[0].requestNote}
-                  </p>
-                )}
+              <div className="flex flex-col items-center justify-center gap-1.5">
                 <RequestPrintButton
                   entryId={group.entries[0]!.id}
                   number={group.number}
                   prepare={prepareRequestPrint}
+                  iconOnly
                 />
                 <Button
-                  className="h-10 self-center justify-center whitespace-nowrap px-3"
                   variant="outline"
+                  size="icon"
+                  aria-label="Редактировать"
+                  title="Редактировать заявку"
                   onClick={() => onEditRequest(group)}
                 >
                   <Pencil size={15} />
-                  Редактировать
                 </Button>
               </div>
             </div>
