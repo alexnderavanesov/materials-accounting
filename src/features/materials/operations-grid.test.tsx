@@ -94,6 +94,30 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+it('prioritizes badge matches while preserving column sorting and resets without losing rows', async () => {
+  const props = {
+    id: 'priority-grid',
+    label: 'Priority',
+    rows,
+    columns,
+    rowId: (row: (typeof rows)[number]) => row.id,
+  }
+  const view = render(<OperationsGrid {...props} />)
+  const api = await operationGridApi('priority-grid')
+  const order = () => [0, 1, 2].map((i) => api.getDisplayedRowAtIndex(i)?.id)
+  act(() =>
+    api.applyColumnState({ state: [{ colId: 'quantity', sort: 'asc' }] }),
+  )
+  expect(order()).toEqual(['c', 'a', 'b'])
+  view.rerender(
+    <OperationsGrid {...props} priorityRow={(row) => row.unit === 'м'} />,
+  )
+  await waitFor(() => expect(order()).toEqual(['b', 'c', 'a']))
+  view.rerender(<OperationsGrid {...props} />)
+  await waitFor(() => expect(order()).toEqual(['c', 'a', 'b']))
+  expect(rows.map((row) => row.id)).toEqual(['a', 'b', 'c'])
+})
+
 it('filters from a header popup and only offers reset while a filter is active', async () => {
   render(<Harness />)
   const api = await operationGridApi('test-requests')

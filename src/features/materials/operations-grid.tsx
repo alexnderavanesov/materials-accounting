@@ -1,10 +1,18 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { ReactNode } from 'react'
 import type {
   ColDef,
   GridApi,
   ICellRendererParams,
   ICellEditorParams,
+  PostSortRowsParams,
 } from 'ag-grid-community'
 import { Download } from 'lucide-react'
 import { Button } from '#/components/ui/button'
@@ -69,6 +77,7 @@ export function OperationsGrid<T>({
   focusRowId,
   pagination = false,
   paginationFilterKey = '',
+  priorityRow,
   onReady,
 }: {
   id: string
@@ -81,12 +90,22 @@ export function OperationsGrid<T>({
   focusRowId?: string
   pagination?: boolean
   paginationFilterKey?: string
+  priorityRow?: (row: T) => boolean
   onReady?: (api: GridApi<T>) => void
 }) {
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   const [filtered, setFiltered] = useState(false)
+  const postSortRows = useCallback(
+    ({ nodes }: PostSortRowsParams<T>) => {
+      if (!priorityRow) return
+      const first = nodes.filter((node) => node.data && priorityRow(node.data))
+      const rest = nodes.filter((node) => !node.data || !priorityRow(node.data))
+      nodes.splice(0, nodes.length, ...first, ...rest)
+    },
+    [priorityRow],
+  )
   const hasEditableColumns = columns.some((column) => column.onEdit)
   const [savedFilterKey, setSavedFilterKey] = useWorkspaceViewState(
     `${id}.paginationFilter`,
@@ -257,6 +276,7 @@ export function OperationsGrid<T>({
           theme={materialsGridTheme}
           localeText={projectGridLocale}
           rowData={rows}
+          postSortRows={postSortRows}
           pinnedBottomRowData={totals}
           getRowId={({ data }) => rowId(data)}
           columnDefs={definitions}

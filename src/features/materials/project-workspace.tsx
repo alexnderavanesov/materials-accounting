@@ -27,8 +27,28 @@ import {
   overviewIndicatorLabels,
   prioritizeOverviewRows,
   receiptIndicatorKeys,
+  receiptIndicatorLabels,
   receiptIndicatorsByLine,
 } from './operation-overview-indicators'
+import {
+  FilterAutocompleteInput,
+  OperationIndicatorBadge,
+  OperationSearchControls,
+} from './operation-list-controls'
+import {
+  emptyOperationListView,
+  isOperationListViews,
+  matchesOperationMaterial,
+  normalizeOperationSearch as normalizeSearchValue,
+  operationMaterial,
+  prioritizeReceiptRows,
+  receiptPriority,
+} from './operation-list-view'
+import type {
+  OperationListView,
+  OperationMaterial,
+  ReceiptPriority,
+} from './operation-list-view'
 import type {
   OverviewIndicators,
   OverviewSort,
@@ -69,7 +89,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GridApi } from 'ag-grid-community'
 import {
-  ArrowUpWideNarrow,
   BarChart3,
   ClipboardCheck,
   Database,
@@ -221,6 +240,7 @@ type RequestGroupMeta = {
   group: RequestDocumentGroup
   materialType: string
   searchText: string
+  materials: Array<OperationMaterial>
 }
 type MaterialRequestImportDraftRow = {
   draft: RequestDraft
@@ -274,6 +294,7 @@ type ReceiptDocumentGroup = {
 type ReceiptGroupMeta = {
   group: ReceiptDocumentGroup
   searchText: string
+  materials: Array<OperationMaterial>
 }
 type MaterialReceiptImportDraftRow = {
   draft: ReceiptDraft
@@ -2307,6 +2328,37 @@ function OperationsSection({
     '',
     isViewString,
   )
+  const [returnSearch, setReturnSearch] = useWorkspaceViewState(
+    'returns.search',
+    '',
+    isViewString,
+  )
+  const [listViews, setListViews] = useWorkspaceViewState<
+    Record<string, OperationListView>
+  >('operations.listViews', {}, isOperationListViews)
+  const listView = listViews[activeTab] ?? emptyOperationListView
+  const updateListView = (next: OperationListView) =>
+    setListViews((current) => ({ ...current, [activeTab]: next }))
+  const cipherOptions = useMemo(
+    () =>
+      unique(
+        [
+          ...lines.map((line) => line.cipher),
+          ...materialRequests.map((request) => request.cipher),
+        ].filter(Boolean),
+      ),
+    [lines, materialRequests],
+  )
+  const typeOptions = useMemo(
+    () =>
+      unique(
+        [
+          ...lines.map((line) => line.materialType || line.category),
+          ...materialRequests.map((request) => request.materialType || ''),
+        ].filter(Boolean),
+      ),
+    [lines, materialRequests],
+  )
   const [focusTarget, setFocusTarget] = useState<{
     tab: OperationActionTab
     targetId: string
@@ -2330,6 +2382,10 @@ function OperationsSection({
         materialIssues,
       ),
     [materialReceipts, qualityWorkflow, qualityControls, materialIssues],
+  )
+  const priority = useMemo(
+    () => receiptPriority(listView.sort, balancesByReceipt),
+    [listView.sort, balancesByReceipt],
   )
   const operationSummary = useMemo(
     () =>
@@ -2360,16 +2416,10 @@ function OperationsSection({
     [lineById, requestDocumentGroups],
   )
   const filteredRequestCount = useMemo(() => {
-    const normalizedSearch = normalizeSearchValue(requestSearch)
-
-    if (normalizedSearch.length === 0) {
-      return requestGroupMeta.length
-    }
-
     return requestGroupMeta.filter((item) =>
-      item.searchText.includes(normalizedSearch),
+      operationMetaMatches(item, requestSearch, listView),
     ).length
-  }, [requestGroupMeta, requestSearch])
+  }, [requestGroupMeta, requestSearch, listView])
   const receiptDocumentGroups = useMemo(
     () => groupReceiptDocuments(materialReceipts, materialRequests, lineById),
     [materialReceipts, materialRequests, lineById],
@@ -2385,16 +2435,10 @@ function OperationsSection({
     [lineById, materialRequests, receiptDocumentGroups, qualityWorkflow],
   )
   const filteredReceiptCount = useMemo(() => {
-    const normalizedSearch = normalizeSearchValue(receiptSearch)
-
-    if (normalizedSearch.length === 0) {
-      return receiptGroupMeta.length
-    }
-
     return receiptGroupMeta.filter((item) =>
-      item.searchText.includes(normalizedSearch),
+      operationMetaMatches(item, receiptSearch, listView),
     ).length
-  }, [receiptGroupMeta, receiptSearch])
+  }, [receiptGroupMeta, receiptSearch, listView])
   const issueSearchMeta = useMemo(
     () =>
       buildOperationSearchMeta(
@@ -2413,45 +2457,45 @@ function OperationsSection({
     ],
   )
   const visibleIssues = useMemo(
-    () => filterOperationEntries(issueSearchMeta, issueSearch),
-    [issueSearchMeta, issueSearch],
+    () =>
+      issueSearchMeta
+        .filter((item) => operationMetaMatches(item, issueSearch, listView))
+        .map((item) => item.entry),
+    [issueSearchMeta, issueSearch, listView],
   )
   const searches = {
     requests: {
       value: requestSearch,
       onChange: setRequestSearch,
-      placeholder:
-        'Поиск по номеру заявки, шифру, типу, заявителю или материалу',
       label: 'Поиск заявок',
       summary: `Найдено ${filteredRequestCount} из ${requestDocumentGroups.length} заявок`,
     },
     receipts: {
       value: receiptSearch,
       onChange: setReceiptSearch,
-      placeholder: 'Поиск по дате, заявке, АПП, М-15, материалу или замене',
       label: 'Поиск получений',
       summary: `Найдено ${filteredReceiptCount} из ${receiptDocumentGroups.length} материалов`,
     },
     quality: {
       value: qualitySearch,
       onChange: setQualitySearch,
-      placeholder:
-        'Поиск по ЗНИ, АВК, АПП, М-15, материалу, партии, шифру или составителю',
       label: 'Поиск входного контроля',
       summary: `ЗНИ: ${qualityWorkflow?.cases.length ?? 0}`,
     },
     issues: {
       value: issueSearch,
       onChange: setIssueSearch,
-      placeholder: 'Поиск по документу, материалу, шифру, дате или получателю',
       label: 'Поиск выдач',
       summary: `Найдено ${visibleIssues.length} из ${materialIssues.length} выдач`,
     },
+    returns: {
+      value: returnSearch,
+      onChange: setReturnSearch,
+      label: 'Поиск возвратов',
+      summary: '',
+    },
   }
-  const search =
-    activeTab === 'overview' || activeTab === 'returns'
-      ? null
-      : searches[activeTab]
+  const search = activeTab === 'overview' ? null : searches[activeTab]
   const overviewRows = useMemo(
     () =>
       buildOperationOverviewRows({
@@ -2516,43 +2560,19 @@ function OperationsSection({
       />
 
       <Card className="min-w-0">
-        {activeTab !== 'overview' && activeTab !== 'returns' && search ? (
-          <CardHeader className="gap-3 border-b border-stone-200 px-4 py-3">
-            <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
-              <div className="min-w-0">
-                <CardTitle>{tabMeta.label}</CardTitle>
-              </div>
-              <div className="grid w-full min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center 2xl:max-w-[1180px]">
-                <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                  <div className="relative min-w-0">
-                    <Search
-                      className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      size={17}
-                    />
-                    <Input
-                      className="h-10 bg-white pl-9 text-sm"
-                      aria-label={search.label}
-                      placeholder={search.label}
-                      title={search.placeholder}
-                      value={search.value}
-                      onChange={(event) => search.onChange(event.target.value)}
-                    />
-                  </div>
-                  <span className="whitespace-nowrap px-2 text-sm text-slate-500">
-                    {search.summary}
-                  </span>
-                </div>
-                {activeTab !== 'quality' && (
+        {activeTab !== 'overview' && search ? (
+          <CardHeader className="grid gap-3 border-b border-stone-200 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <CardTitle>{tabMeta.label}</CardTitle>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm text-slate-500">{search.summary}</span>
+                {activeTab !== 'quality' && activeTab !== 'returns' && (
                   <Button
                     className="h-10 shrink-0"
                     disabled={lines.length === 0}
                     onClick={() => {
-                      if (activeTab === 'requests') {
-                        setEditingRequest(null)
-                      }
-                      if (activeTab === 'receipts') {
-                        setEditingReceipt(null)
-                      }
+                      if (activeTab === 'requests') setEditingRequest(null)
+                      if (activeTab === 'receipts') setEditingReceipt(null)
                       setModal(activeTab)
                     }}
                   >
@@ -2562,39 +2582,50 @@ function OperationsSection({
                 )}
               </div>
             </div>
+            <OperationSearchControls
+              search={search.value}
+              label={search.label}
+              view={listView}
+              ciphers={cipherOptions}
+              materialTypes={typeOptions}
+              onSearch={search.onChange}
+              onView={updateListView}
+            />
           </CardHeader>
         ) : null}
         <CardContent className="p-0">
-          {['receipts', 'quality', 'issues'].includes(activeTab) && (
-            <div className="grid gap-2 border-b p-4 sm:grid-cols-3 xl:grid-cols-6">
-              {(
-                [
-                  ['received', 'Получено'],
-                  ['returned', 'Возвращено'],
-                  ['awaitingInspection', 'Ожидает инспекции'],
-                  ['awaitingAct', 'Ожидает АВК'],
-                  ['toReturn', 'К возврату'],
-                  ['availableToIssue', 'Доступно к выдаче'],
-                ] as const
-              ).map(([key, label]) => {
-                const balances = balancesByReceipt
-                return (
-                  <RequestGroupMetric
-                    key={key}
-                    label={label}
-                    value={formatUnitTotals(
-                      materialReceipts.map((receipt) => ({
-                        unit: receipt.projectUnit,
-                        quantity: balances.get(receipt.id)?.[key] ?? 0,
-                      })),
-                    )}
-                  />
-                )
-              })}
+          {activeTab !== 'overview' && (
+            <div
+              className="grid grid-cols-2 gap-2 border-b p-4 lg:grid-cols-3 xl:grid-cols-6"
+              role="group"
+              aria-label={`Сортировка: ${tabMeta.label}`}
+            >
+              {receiptIndicatorKeys.map((key) => (
+                <OperationIndicatorBadge
+                  key={key}
+                  label={receiptIndicatorLabels[key]}
+                  active={listView.sort === key}
+                  onClick={() =>
+                    updateListView({
+                      ...listView,
+                      sort: listView.sort === key ? '' : key,
+                    })
+                  }
+                  value={formatUnitTotals(
+                    materialReceipts.map((receipt) => ({
+                      unit: receipt.projectUnit,
+                      quantity: balancesByReceipt.get(receipt.id)?.[key] ?? 0,
+                    })),
+                  )}
+                />
+              ))}
             </div>
           )}
           {activeTab === 'returns' && (
             <ReturnsWorkspace
+              search={returnSearch}
+              listView={listView}
+              priority={priority}
               value={qualityWorkflow}
               receipts={materialReceipts}
               requests={materialRequests}
@@ -2606,6 +2637,8 @@ function OperationsSection({
           )}
           {activeTab === 'quality' && (
             <InspectionWorkspace
+              listView={listView}
+              priority={priority}
               requests={materialRequests}
               value={qualityWorkflow}
               receipts={materialReceipts}
@@ -2627,6 +2660,14 @@ function OperationsSection({
               rows={overviewRows}
               onOpenDocument={(tab, targetId) => {
                 setFocusTarget({ tab, targetId })
+                setListViews((current) => ({
+                  ...current,
+                  [tab]: {
+                    ...(current[tab] ?? emptyOperationListView),
+                    cipher: '',
+                    materialType: '',
+                  },
+                }))
                 if (tab === 'requests') {
                   setRequestSearch('')
                 }
@@ -2649,6 +2690,8 @@ function OperationsSection({
           ) : null}
           {activeTab === 'requests' ? (
             <RequestsTable
+              listView={listView}
+              priority={priority}
               receipts={materialReceipts}
               workflow={qualityWorkflow}
               onEditDelivery={setEditingDelivery}
@@ -2676,6 +2719,8 @@ function OperationsSection({
           ) : null}
           {activeTab === 'receipts' ? (
             <ReceiptsTable
+              listView={listView}
+              priority={priority}
               workflow={qualityWorkflow}
               entries={materialReceipts}
               focusEntryId={
@@ -2709,6 +2754,8 @@ function OperationsSection({
 
           {activeTab === 'issues' ? (
             <IssuesTable
+              listView={listView}
+              priority={priority}
               search={issueSearch}
               entries={visibleIssues}
               focusEntryId={
@@ -3064,32 +3111,13 @@ function OperationOverview({
         aria-label="Сортировка материалов"
       >
         {overviewIndicatorKeys.map((key) => (
-          <button
+          <OperationIndicatorBadge
             key={key}
-            type="button"
-            aria-pressed={sort === key}
-            title={
-              sort === key
-                ? 'Вернуть обычный порядок'
-                : `Сначала материалы: ${overviewIndicatorLabels[key].toLocaleLowerCase('ru')}`
-            }
+            label={overviewIndicatorLabels[key]}
+            active={sort === key}
+            value={indicatorValues[key]}
             onClick={() => setSort((current) => (current === key ? '' : key))}
-            className={`min-w-0 rounded-lg border px-3 py-2 text-left shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 ${sort === key ? 'border-slate-500 bg-slate-100' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
-          >
-            <span className="flex items-center justify-between gap-1 text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-500">
-              {overviewIndicatorLabels[key]}
-              {sort === key && (
-                <ArrowUpWideNarrow
-                  size={14}
-                  className="shrink-0 text-slate-700"
-                  aria-hidden="true"
-                />
-              )}
-            </span>
-            <span className="mt-0.5 block break-words text-sm leading-5 text-slate-900">
-              {indicatorValues[key]}
-            </span>
-          </button>
+          />
         ))}
       </div>
       <div className="border-b border-stone-200 bg-white px-4 py-3">
@@ -3707,6 +3735,8 @@ function OperationTabs({
 }
 
 function RequestsTable({
+  listView,
+  priority,
   receipts,
   workflow,
   onEditDelivery,
@@ -3720,6 +3750,8 @@ function RequestsTable({
   onOpenOverviewLine,
   summaryByLine,
 }: {
+  listView: OperationListView
+  priority: ReceiptPriority
   receipts: Array<MaterialReceiptEntry>
   workflow?: QualityWorkflow
   onEditDelivery: (delivery: ReceiptDelivery<MaterialReceiptEntry>) => void
@@ -3741,17 +3773,27 @@ function RequestsTable({
     [receipts, workflow],
   )
   const normalizedSearch = normalizeSearchValue(search)
-  const filteredGroupMeta =
-    normalizedSearch.length === 0
-      ? requestGroupMeta
-      : requestGroupMeta.filter((item) =>
-          item.searchText.includes(normalizedSearch),
-        )
+  const priorityRequestIds = useMemo(
+    () =>
+      new Set(
+        receipts
+          .filter((receipt) => priority.ids.has(receipt.id))
+          .map((receipt) => receipt.requestId),
+      ),
+    [receipts, priority],
+  )
+  const filteredGroupMeta = prioritizeReceiptRows(
+    requestGroupMeta.filter((item) =>
+      operationMetaMatches(item, search, listView),
+    ),
+    { key: priority.key, ids: priorityRequestIds },
+    (item) => item.group.entries.map((entry) => entry.id),
+  )
 
   const pagination = useOperationPagination(
     'requests',
     filteredGroupMeta,
-    normalizedSearch,
+    JSON.stringify([normalizedSearch, listView]),
     {
       key: focusDocumentNumber,
       index: filteredGroupMeta.findIndex(
@@ -4494,6 +4536,8 @@ function TransferBadge({
 }
 
 function ReceiptsTable({
+  listView,
+  priority,
   workflow,
   focusEntryId,
   lineById,
@@ -4504,6 +4548,8 @@ function ReceiptsTable({
   onDeleteReceipt,
   onOpenOverviewLine,
 }: {
+  listView: OperationListView
+  priority: ReceiptPriority
   workflow?: QualityWorkflow
   entries: Array<MaterialReceiptEntry>
   focusEntryId?: string
@@ -4569,16 +4615,18 @@ function ReceiptsTable({
 
   const requestById = new Map(requests.map((request) => [request.id, request]))
   const normalizedSearch = normalizeSearchValue(search)
-  const visibleGroups = normalizedSearch
-    ? receiptGroupMeta.filter((item) =>
-        item.searchText.includes(normalizedSearch),
-      )
-    : receiptGroupMeta
+  const visibleGroups = prioritizeReceiptRows(
+    receiptGroupMeta.filter((item) =>
+      operationMetaMatches(item, search, listView),
+    ),
+    priority,
+    (item) => item.group.entries.map((entry) => entry.id),
+  )
 
   const pagination = useOperationPagination(
     'receipts',
     visibleGroups,
-    normalizedSearch,
+    JSON.stringify([normalizedSearch, listView]),
     {
       key: focusEntryId,
       index: visibleGroups.findIndex(
@@ -4981,6 +5029,8 @@ function ReplacementBadge() {
 }
 
 function IssuesTable({
+  listView,
+  priority,
   search,
   entries,
   focusEntryId,
@@ -4988,6 +5038,8 @@ function IssuesTable({
   receipts,
   onDelete,
 }: {
+  listView: OperationListView
+  priority: ReceiptPriority
   search: string
   entries: Array<MaterialIssueEntry>
   focusEntryId?: string
@@ -5016,7 +5068,12 @@ function IssuesTable({
     <OperationsGrid
       id={'issues'}
       pagination
-      paginationFilterKey={search}
+      paginationFilterKey={JSON.stringify([search, listView])}
+      priorityRow={
+        priority.key
+          ? ({ entry }) => priority.ids.has(entry.receiptId)
+          : undefined
+      }
       label={'Выдача'}
       rows={[
         ...entries.map((entry) => {
@@ -10311,6 +10368,9 @@ function buildRequestGroupMeta(
     return {
       group,
       materialType,
+      materials: group.entries.map((entry) =>
+        operationMaterial(lineById.get(entry.projectLineId), entry),
+      ),
       searchText: normalizeSearchValue(
         [
           group.number,
@@ -10323,6 +10383,8 @@ function buildRequestGroupMeta(
             entry.materialId,
             entry.projectMaterialName,
             entry.note,
+            lineById.get(entry.projectLineId)?.normativeDocument,
+            lineById.get(entry.projectLineId)?.material,
           ]),
         ].join(' '),
       ),
@@ -10458,6 +10520,7 @@ function buildOperationSearchMeta<T extends MaterialIssueEntry>(
 
     return {
       entry,
+      materials: [operationMaterial(line, request)],
       searchText: normalizeSearchValue(
         [
           ...details,
@@ -10486,14 +10549,16 @@ function buildOperationSearchMeta<T extends MaterialIssueEntry>(
   })
 }
 
-function filterOperationEntries<T>(
-  meta: Array<{ entry: T; searchText: string }>,
+function operationMetaMatches(
+  meta: { searchText: string; materials: Array<OperationMaterial> },
   search: string,
+  view: OperationListView,
 ) {
   const query = normalizeSearchValue(search)
-  return meta
-    .filter((item) => !query || item.searchText.includes(query))
-    .map((item) => item.entry)
+  return (
+    (!query || meta.searchText.includes(query)) &&
+    meta.materials.some((material) => matchesOperationMaterial(material, view))
+  )
 }
 
 function buildReceiptGroupMeta(
@@ -10507,6 +10572,12 @@ function buildReceiptGroupMeta(
   return groups.map((group) => {
     return {
       group,
+      materials: group.entries.map((entry) =>
+        operationMaterial(
+          lineById.get(entry.projectLineId),
+          requestById.get(entry.requestId),
+        ),
+      ),
       searchText: normalizeSearchValue(
         [
           ...group.requestNumbers,
@@ -12554,87 +12625,6 @@ function AutocompleteInput({
   )
 }
 
-function FilterAutocompleteInput({
-  options,
-  placeholder,
-  value,
-  onChange,
-}: {
-  options: Array<string>
-  placeholder: string
-  value: string
-  onChange: (value: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const values = unique(options.filter(Boolean))
-  const query = normalizeSearchValue(value)
-  const matches = (
-    query
-      ? values.filter((option) => normalizeSearchValue(option).includes(query))
-      : values
-  ).slice(0, 12)
-
-  return (
-    <div className="relative min-w-0">
-      <Search
-        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-        size={16}
-      />
-      <Input
-        className="h-11 bg-white pl-9 pr-8 text-sm"
-        placeholder={placeholder}
-        value={value}
-        onBlur={() => {
-          window.setTimeout(() => setOpen(false), 120)
-        }}
-        onChange={(event) => {
-          onChange(event.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-      />
-      {value ? (
-        <button
-          className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-          type="button"
-          aria-label={`Очистить фильтр ${placeholder.toLocaleLowerCase('ru')}`}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            onChange('')
-            setOpen(false)
-          }}
-        >
-          <X size={14} />
-        </button>
-      ) : null}
-      {open ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg shadow-slate-200/80">
-          {matches.length > 0 ? (
-            matches.map((option) => (
-              <button
-                key={option}
-                className="block w-full rounded px-3 py-2 text-left text-sm leading-5 text-slate-700 hover:bg-blue-50 hover:text-slate-950"
-                type="button"
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  onChange(option)
-                  setOpen(false)
-                }}
-              >
-                {option}
-              </button>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-sm text-slate-400">
-              Значений не найдено
-            </div>
-          )}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function NativeSelect({
   options,
   value,
@@ -13103,18 +13093,6 @@ function materialCombinationMatchesSearch(
   )
 
   return tokens.every((token) => haystack.includes(token))
-}
-
-function normalizeSearchValue(value: string) {
-  return value
-    .trim()
-    .toLocaleLowerCase('ru')
-    .replace(/×/g, 'x')
-    .replace(/х/g, 'x')
-    .replace(/ё/g, 'е')
-    .replace(/[.,;:()[\]{}"']/g, ' ')
-    .replace(/[-_/\\]+/g, ' ')
-    .replace(/\s+/g, ' ')
 }
 
 function tokenizeSearchValue(value: string) {

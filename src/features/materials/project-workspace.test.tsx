@@ -1241,9 +1241,16 @@ describe('cipher reference removal', () => {
       await screen.findByRole('button', { name: 'Редактировать' }),
     )
     const edit = screen.getByRole('dialog')
+    expect(within(edit).getByText('Альфа')).toBeTruthy()
+    fireEvent.click(
+      within(edit).getByRole('button', { name: 'Добавить материалы' }),
+    )
     expect(
       within(edit).getAllByRole<HTMLSelectElement>('combobox')[0]!.value,
     ).toBe('ТЕСТ')
+    fireEvent.click(
+      within(edit).getByRole('button', { name: 'К материалам заявки' }),
+    )
     expect(within(edit).getByText('Альфа')).toBeTruthy()
     expect(workspace).toEqual(before)
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
@@ -2358,6 +2365,132 @@ describe('operation deletion', () => {
 })
 
 describe('workspace user workflows', () => {
+  it('keeps all positions of a mixed request when filtering by one material type', async () => {
+    const workspace = searchableOperationsWorkspace()
+    for (const entry of workspace.materialRequests) {
+      entry.number = 'MIXED'
+      entry.cipher = 'ТЕСТ'
+    }
+    mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+    fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+      target: { value: 'Оборудование' },
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+      target: { value: 'Бета' },
+    })
+    expect(screen.getByText('Найдено 1 из 1 заявок')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^MIXED/ }))
+    const api = await operationGridApi('request:MIXED')
+    expect(api.getDisplayedRowCount()).toBe(2)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Заявки', 'requests', 'Поиск заявок'],
+    ['Получение', 'receipts', 'Поиск получений'],
+    ['Входной контроль', 'quality', 'Поиск входного контроля'],
+    ['Выдача', 'issues', 'Поиск выдач'],
+    ['Возврат', 'returns', 'Поиск возвратов'],
+  ])(
+    'combines badge priority and material filters in %s without changing business data',
+    async (label, tab, searchLabel) => {
+      const workspace = searchableOperationsWorkspace()
+      workspace.materialIssues[0]!.quantity = 2
+      workspace.lines[1]!.normativeDocument = 'ГОСТ-БЕТА'
+      let view = mount(workspace)
+      fireEvent.click(
+        screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+      )
+      if (tab === 'returns')
+        fireEvent.click(
+          screen.getByRole('button', { name: /^Все полученные материалы/ }),
+        )
+      const content = async () => {
+        if (tab === 'issues' || tab === 'returns') {
+          const api = await operationGridApi(
+            tab === 'issues' ? 'issues' : 'returns-stock',
+          )
+          return Array.from(
+            { length: api.getDisplayedRowCount() },
+            (_, i) => api.getDisplayedRowAtIndex(i)!.id!,
+          )
+        }
+        return Array.from(
+          document.querySelectorAll(
+            tab === 'quality'
+              ? '[id^="inspection-case-"]'
+              : `[id^="operation-${tab}-"]`,
+          ),
+        ).map((card) => card.textContent)
+      }
+      const initial = await content()
+      expect(initial).toHaveLength(2)
+      const badge = () =>
+        within(
+          screen.getByRole('group', { name: `Сортировка: ${label}` }),
+        ).getByRole('button', { name: /^Доступно к выдаче/ })
+      fireEvent.click(badge())
+      await waitFor(async () => {
+        const sorted = await content()
+        expect(sorted).toHaveLength(2)
+        expect(sorted[0]).toMatch(/Бета|BETA|beta/)
+      })
+      expect(badge().getAttribute('aria-pressed')).toBe('true')
+      fireEvent.click(badge())
+      await waitFor(async () => expect(await content()).toEqual(initial))
+      fireEvent.click(badge())
+      fireEvent.change(screen.getByPlaceholderText('Шифр'), {
+        target: { value: 'шифр-б' },
+      })
+      fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+        target: { value: 'оборудование' },
+      })
+      fireEvent.change(screen.getByRole('textbox', { name: searchLabel }), {
+        target: { value: 'гост-бета' },
+      })
+      await waitFor(async () => {
+        const found = await content()
+        expect(found).toHaveLength(1)
+        expect(found[0]).toMatch(/Бета|BETA|beta/)
+      })
+      // Switching tabs leaves this tab's criteria intact and doesn't copy them to Overview.
+      fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+      expect(screen.getByPlaceholderText<HTMLInputElement>('Шифр').value).toBe(
+        '',
+      )
+      fireEvent.click(
+        screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+      )
+      expect(screen.getByPlaceholderText<HTMLInputElement>('Шифр').value).toBe(
+        'шифр-б',
+      )
+      view.unmount()
+      view = mount(workspace, true)
+      expect(
+        screen.getByPlaceholderText<HTMLInputElement>('Тип материала').value,
+      ).toBe('оборудование')
+      expect(
+        screen.getByRole<HTMLInputElement>('textbox', { name: searchLabel })
+          .value,
+      ).toBe('гост-бета')
+      expect(badge().getAttribute('aria-pressed')).toBe('true')
+      await waitFor(async () => expect(await content()).toHaveLength(1))
+      fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+        target: { value: 'Трубопровод' },
+      })
+      await waitFor(() => {
+        expect(document.querySelector('[id^="operation-requests-"]')).toBeNull()
+        expect(document.querySelector('[id^="operation-receipts-"]')).toBeNull()
+        expect(document.querySelector('[id^="inspection-case-"]')).toBeNull()
+        expect(document.querySelector('[grid-id="issues"]')).toBeNull()
+        expect(document.querySelector('[grid-id="returns-stock"]')).toBeNull()
+      })
+      expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+      view.unmount()
+    },
+  )
+
   it('searches issues including historical materials and restores independent searches after reload', async () => {
     const workspace = searchableOperationsWorkspace()
     // The historical receipt and request still identify a deleted project material.
@@ -3122,9 +3255,6 @@ describe('workspace user workflows', () => {
         await screen.findByRole('button', { name: 'Редактировать' }),
       )
       const dialog = await screen.findByRole('dialog')
-      fireEvent.click(
-        within(dialog).getByRole('button', { name: /^Заполненные/ }),
-      )
       expect(
         within(dialog).getByText(
           'Проектное количество при создании этой заявки не сохранялось.',
@@ -3468,9 +3598,6 @@ describe('workspace user workflows', () => {
         (await screen.findAllByRole('button', { name: /Редактировать/ }))[0]!,
       )
       const loadedDialog = screen.getByRole('dialog')
-      fireEvent.click(
-        within(loadedDialog).getByRole('button', { name: /^Заполненные/ }),
-      )
       const loadedQuantity = within(loadedDialog).getByRole('status', {
         name: 'Количество в альтернативной единице',
       })
@@ -4055,6 +4182,13 @@ it('lets users collapse and reopen a receipt reached from overview without forci
   const workspace = conversionWorkspace()
   workspace.materialReceipts = [legacyReceipt()]
   mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+  fireEvent.change(screen.getByPlaceholderText('Шифр'), {
+    target: { value: 'ДРУГОЙ' },
+  })
+  fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+    target: { value: 'Оборудование' },
+  })
 
   async function openReceiptFromOverview() {
     fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
@@ -4069,6 +4203,13 @@ it('lets users collapse and reopen a receipt reached from overview without forci
   }
 
   let toggle = await openReceiptFromOverview()
+  expect(
+    screen.getByRole<HTMLInputElement>('textbox', { name: 'Шифр' }).value,
+  ).toBe('')
+  expect(
+    screen.getByRole<HTMLInputElement>('textbox', { name: 'Тип материала' })
+      .value,
+  ).toBe('')
   const card = toggle.closest('[id^="operation-receipts-"]') as HTMLElement
   expect(toggle.getAttribute('aria-expanded')).toBe('true')
   await within(card).findByRole('grid')

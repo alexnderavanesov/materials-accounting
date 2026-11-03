@@ -12,6 +12,13 @@ import {
 } from './receipt-documents'
 import { receiptBalances } from './receipt-balances'
 import {
+  emptyOperationListView,
+  emptyReceiptPriority,
+  matchesOperationMaterial,
+  operationMaterial,
+} from './operation-list-view'
+import type { OperationListView, ReceiptPriority } from './operation-list-view'
+import {
   currentInspection,
   emptyQualityWorkflow,
   findInspectionMaterial,
@@ -28,7 +35,7 @@ import type {
   ReturnIssue,
 } from './quality-workflow'
 import type { SubobjectMaterialMetric } from './types'
-import { isViewString, useWorkspaceViewState } from './workspace-view'
+import { useWorkspaceViewState } from './workspace-view'
 
 type Receipt = {
   id: string
@@ -49,6 +56,9 @@ const fmt = (quantity: number) =>
 const displayDate = (value: string) => value.split('-').reverse().join('.')
 
 export function ReturnsWorkspace({
+  search = '',
+  listView = emptyOperationListView,
+  priority = emptyReceiptPriority,
   value,
   receipts,
   requests,
@@ -57,9 +67,17 @@ export function ReturnsWorkspace({
   lines,
   onChange,
 }: {
+  search?: string
+  listView?: OperationListView
+  priority?: ReceiptPriority
   value?: QualityWorkflow
   receipts: Array<Receipt>
-  requests: Array<{ id: string; number: string }>
+  requests: Array<{
+    id: string
+    number: string
+    cipher?: string
+    materialType?: string
+  }>
   controls: ReturnType<typeof inspectionApprovals>
   issues: Array<ReturnIssue>
   lines: Array<SubobjectMaterialMetric>
@@ -73,11 +91,6 @@ export function ReturnsWorkspace({
     'rejected',
     (item): item is 'rejected' | 'stock' | 'history' =>
       ['rejected', 'stock', 'history'].includes(String(item)),
-  )
-  const [search, setSearch] = useWorkspaceViewState(
-    'returns.search',
-    '',
-    isViewString,
   )
   const [returnCaseId, setReturnCaseId] = useState<string | null>(null)
   const [surplusReceiptId, setSurplusReceiptId] = useState<string | null>(null)
@@ -99,19 +112,20 @@ export function ReturnsWorkspace({
       receipts.map((receipt) => [receipt.id, receipt]),
     )
     const requestById = new Map(
-      requests.map((request) => [request.id, request.number]),
+      requests.map((request) => [request.id, request]),
     )
     const documentById = indexReceiptDocuments(workflow)
     const materialById = indexInspectionMaterials(lines)
     const caseById = new Map(workflow.cases.map((item) => [item.id, item]))
     const describeReceipt = (receipt?: Receipt) => {
       const line = receipt ? materialById.get(receipt.projectLineId) : undefined
+      const request = receipt ? requestById.get(receipt.requestId) : undefined
       return {
         name: receipt?.actualName || line?.projectMaterialName || 'Материал',
-        request: receipt
-          ? (requestById.get(receipt.requestId) ?? 'Заявка удалена')
-          : '',
-        cipher: line?.cipher ?? '',
+        request: receipt ? (request?.number ?? 'Заявка удалена') : '',
+        ...operationMaterial(line, request),
+        normativeDocument: line?.normativeDocument ?? '',
+        alloy: line?.material ?? '',
         documents: receipt
           ? documentsForReceipt(receipt, workflow, documentById)
               .map(receiptDocumentLabel)
@@ -175,36 +189,53 @@ export function ReturnsWorkspace({
       .join(' ')
       .toLocaleLowerCase('ru')
       .includes(search.trim().toLocaleLowerCase('ru'))
-  const visiblePending = pending.filter((row) =>
-    matches([row.name, row.request, row.cipher, row.documents, row.zni]),
+  const visiblePending = pending.filter(
+    (row) =>
+      matches([
+        row.name,
+        row.request,
+        row.cipher,
+        row.documents,
+        row.zni,
+        row.materialType,
+        row.normativeDocument,
+        row.alloy,
+      ]) && matchesOperationMaterial(row, listView),
   )
-  const visibleStock = stock.filter((row) =>
-    matches([
-      row.name,
-      row.request,
-      row.cipher,
-      row.documents,
-      row.receipt.date,
-      displayDate(row.receipt.date),
-    ]),
+  const visibleStock = stock.filter(
+    (row) =>
+      matches([
+        row.name,
+        row.request,
+        row.cipher,
+        row.documents,
+        row.materialType,
+        row.normativeDocument,
+        row.alloy,
+        row.receipt.date,
+        displayDate(row.receipt.date),
+      ]) && matchesOperationMaterial(row, listView),
   )
-  const visibleHistory = history.filter((row) =>
-    matches([
-      row.name,
-      row.request,
-      row.cipher,
-      row.documents,
-      row.zni,
-      row.item.documentNumber,
-      row.item.note,
-      row.item.date,
-      displayDate(row.item.date),
-      row.item.kind === 'surplus' ? 'Лишний материал' : 'Не принято по ЗНИ',
-    ]),
+  const visibleHistory = history.filter(
+    (row) =>
+      matches([
+        row.name,
+        row.request,
+        row.cipher,
+        row.documents,
+        row.materialType,
+        row.normativeDocument,
+        row.alloy,
+        row.zni,
+        row.item.documentNumber,
+        row.item.note,
+        row.item.date,
+        displayDate(row.item.date),
+        row.item.kind === 'surplus' ? 'Лишний материал' : 'Не принято по ЗНИ',
+      ]) && matchesOperationMaterial(row, listView),
   )
   return (
     <section className="min-w-0 p-4" aria-label="Возврат заказчику">
-      <h2 className="text-lg font-semibold">Возврат</h2>
       <p className="mt-1 text-sm text-slate-600">
         Непринятое по ЗНИ восстанавливает остаток к получению по заявке. Возврат
         лишнего уменьшает только складской остаток.
@@ -229,19 +260,17 @@ export function ReturnsWorkspace({
           История возвратов ({history.length})
         </Button>
       </div>
-      <Input
-        aria-label="Поиск возвратов"
-        placeholder="Поиск по материалу, заявке, АПП, М-15, ЗНИ или документу возврата"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        className="mb-4"
-      />
       {mode === 'rejected' &&
         (visiblePending.length ? (
           <OperationsGrid
             id="returns-pending"
             pagination
-            paginationFilterKey={search}
+            paginationFilterKey={JSON.stringify([search, listView])}
+            priorityRow={
+              priority.key
+                ? (row) => priority.ids.has(row.row.receiptId)
+                : undefined
+            }
             label="Непринятые материалы к возврату"
             rows={visiblePending}
             rowId={(row) => row.id}
@@ -292,7 +321,7 @@ export function ReturnsWorkspace({
           />
         ) : (
           <p className="rounded-lg border border-dashed p-8 text-center text-slate-500">
-            {search
+            {search || listView.cipher || listView.materialType
               ? 'Материалы по запросу не найдены.'
               : 'Непринятых материалов к возврату нет. После подписания ЗНИ они появятся здесь автоматически.'}
           </p>
@@ -309,7 +338,12 @@ export function ReturnsWorkspace({
             <OperationsGrid
               id="returns-stock"
               pagination
-              paginationFilterKey={search}
+              paginationFilterKey={JSON.stringify([search, listView])}
+              priorityRow={
+                priority.key
+                  ? (row) => priority.ids.has(row.receipt.id)
+                  : undefined
+              }
               label="Полученные материалы для возврата"
               rows={visibleStock}
               rowId={(row) => row.receipt.id}
@@ -405,7 +439,12 @@ export function ReturnsWorkspace({
           <OperationsGrid
             id="returns-history"
             pagination
-            paginationFilterKey={search}
+            paginationFilterKey={JSON.stringify([search, listView])}
+            priorityRow={
+              priority.key
+                ? (row) => priority.ids.has(row.item.receiptId)
+                : undefined
+            }
             label="История возвратов заказчику"
             rows={visibleHistory}
             rowId={(row) => row.item.id}

@@ -5,6 +5,14 @@ import { customerReturnAlternative } from './receipt-balances'
 import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
 import {
+  emptyOperationListView,
+  emptyReceiptPriority,
+  matchesOperationMaterial,
+  operationMaterial,
+  prioritizeReceiptRows,
+} from './operation-list-view'
+import type { OperationListView, ReceiptPriority } from './operation-list-view'
+import {
   OperationPagination,
   useOperationPagination,
 } from './operation-pagination'
@@ -61,7 +69,12 @@ type Receipt = {
   qualityDocument?: string
 }
 type Props = {
-  requests?: Array<{ id: string; number: string }>
+  requests?: Array<{
+    id: string
+    number: string
+    cipher?: string
+    materialType?: string
+  }>
   value?: QualityWorkflow
   receipts: Array<Receipt>
   lines: Array<SubobjectMaterialMetric>
@@ -513,10 +526,14 @@ export function InspectionWorkspace({
   prepare,
   search = '',
   focusId,
+  listView = emptyOperationListView,
+  priority = emptyReceiptPriority,
 }: Props & {
   prepare: () => Promise<string>
   search?: string
   focusId?: string
+  listView?: OperationListView
+  priority?: ReceiptPriority
 }) {
   const suggestNumber = useDocumentNumber()
   const workflow = value ?? emptyQualityWorkflow()
@@ -524,6 +541,20 @@ export function InspectionWorkspace({
     () => indexInspectionMaterials(lines),
     [lines],
   )
+  const materialByReceipt = useMemo(() => {
+    const requestById = new Map(
+      requests.map((request) => [request.id, request]),
+    )
+    return new Map(
+      receipts.map((receipt) => [
+        receipt.id,
+        operationMaterial(
+          numberMaterials.get(receipt.projectLineId),
+          requestById.get(receipt.requestId),
+        ),
+      ]),
+    )
+  }, [requests, receipts, numberMaterials])
   function numberContext(rev: InspectionRevision, kind: 'zni' | 'avk') {
     const rows =
       kind === 'avk'
@@ -628,15 +659,52 @@ export function InspectionWorkspace({
       })
     }
   }, [focusId, value])
-  const visible = workflow.cases.filter((entry) =>
-    inspectionMatches(entry, search),
+  const visible = prioritizeReceiptRows(
+    workflow.cases.filter((entry) => {
+      const rows = currentInspection(entry).zni.rows
+      const materialMatches = rows.some((row) =>
+        matchesOperationMaterial(
+          {
+            ...(materialByReceipt.get(row.receiptId) ??
+              operationMaterial(numberMaterials.get(row.projectLineId))),
+            cipher: row.cipher,
+          },
+          listView,
+        ),
+      )
+      const materialSearchMatches = rows.some((row) => {
+        const line = numberMaterials.get(row.projectLineId)
+        return [
+          (materialByReceipt.get(row.receiptId) ?? operationMaterial(line))
+            .materialType,
+          line?.projectMaterialName,
+          line?.normativeDocument,
+          line?.material,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLocaleLowerCase('ru')
+          .includes(search.trim().toLocaleLowerCase('ru'))
+      })
+      return (
+        materialMatches &&
+        (inspectionMatches(entry, search) || materialSearchMatches)
+      )
+    }),
+    priority,
+    (entry) => currentInspection(entry).zni.rows.map((row) => row.receiptId),
   )
-  const pagination = useOperationPagination('quality', visible, search, {
-    key: focusId,
-    index: visible.findIndex((entry) =>
-      focusId?.startsWith(`inspection:${entry.id}:`),
-    ),
-  })
+  const pagination = useOperationPagination(
+    'quality',
+    visible,
+    JSON.stringify([search, listView]),
+    {
+      key: focusId,
+      index: visible.findIndex((entry) =>
+        focusId?.startsWith(`inspection:${entry.id}:`),
+      ),
+    },
+  )
 
   return (
     <section className="grid gap-4 p-4">
