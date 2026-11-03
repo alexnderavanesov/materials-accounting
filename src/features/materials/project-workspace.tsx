@@ -7218,7 +7218,25 @@ function ReceiptModal({
   const [submitError, setSubmitError] = useState('')
   const [requestNumber, setRequestNumber] = useState('')
   const [receiptMaterialTypeFilter, setReceiptMaterialTypeFilter] = useState('')
-  const [drafts, setDrafts] = useState<Record<string, ReceiptDraft>>({})
+  const [rowDrafts, setDrafts] = useState<Record<string, ReceiptDraft>>({})
+  const [commonDetails, setCommonDetails] = useState<ReceiptDeliveryDetails>(
+    () => ({ ...emptyReceiptDocumentFields, date: localDateInputValue() }),
+  )
+  const [ownDetailsKeys, setOwnDetailsKeys] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const drafts = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(rowDrafts).map(([key, draft]) => [
+          key,
+          ownDetailsKeys.has(key) ? draft : { ...draft, ...commonDetails },
+        ]),
+      ),
+    [commonDetails, ownDetailsKeys, rowDrafts],
+  )
+  const getDeliveryDetails = (key: string): ReceiptDeliveryDetails =>
+    ownDetailsKeys.has(key) && rowDrafts[key] ? rowDrafts[key] : commonDetails
   const [receiptListMode, setReceiptListMode] = useState<
     'all' | 'filled' | 'missing-document'
   >('all')
@@ -7267,6 +7285,28 @@ function ReceiptModal({
     }
 
     initializationKeyRef.current = initializationKey
+
+    const firstReceipt = editingReceipt?.entries[0]
+    const initialDetails = firstReceipt
+      ? {
+          ...receiptDocumentFields(firstReceipt, workflow),
+          date: firstReceipt.date,
+        }
+      : { ...emptyReceiptDocumentFields, date: localDateInputValue() }
+    setCommonDetails(initialDetails)
+    setOwnDetailsKeys(
+      new Set(
+        (editingReceipt?.entries ?? [])
+          .filter(
+            (entry) =>
+              !sameReceiptDeliveryDetails(
+                { ...receiptDocumentFields(entry, workflow), date: entry.date },
+                initialDetails,
+              ),
+          )
+          .map(getReceiptDraftKey),
+      ),
+    )
 
     if (editingReceipt) {
       const firstRequest = requests.find(
@@ -7390,13 +7430,16 @@ function ReceiptModal({
     const sourceRequests =
       requestNumber || receiptMaterialTypeFilter ? selectedRequests : requests
 
-    return sourceRequests.map((request) => ({
-      key: request.id,
-      request,
-      receipt: null,
-    }))
+    return sourceRequests
+      .filter((request) => getReceiptRequestRest(request, receiptByRequest) > 0)
+      .map((request) => ({
+        key: request.id,
+        request,
+        receipt: null,
+      }))
   }, [
     editingReceipt,
+    receiptByRequest,
     receiptMaterialTypeFilter,
     requestNumber,
     requests,
@@ -7540,11 +7583,17 @@ function ReceiptModal({
   )
   const receiptSaveBlockedReason = !hasRows
     ? 'Укажите поступившее количество хотя бы по одной позиции.'
-    : missingInvoiceRowsCount > 0
-      ? `Заполните АПП или М-15: ${missingInvoiceRowsCount} поз.`
-      : receiptOverRestRowsCount > 0
-        ? `Поступление превышает остаток к получению: ${receiptOverRestRowsCount} поз.`
-        : (alternativeErrors[0] ?? '')
+    : receiptWorkItems.some(
+          ({ key }) =>
+            parsePositiveNumber(drafts[key]?.quantity ?? '') > 0 &&
+            !normalizeCalendarDate(getDeliveryDetails(key).date),
+        )
+      ? 'Укажите корректную дату получения.'
+      : missingInvoiceRowsCount > 0
+        ? `Заполните АПП или М-15: ${missingInvoiceRowsCount} поз.`
+        : receiptOverRestRowsCount > 0
+          ? `Поступление превышает остаток к получению: ${receiptOverRestRowsCount} поз.`
+          : (alternativeErrors[0] ?? '')
   const receiptSaveDisabled = Boolean(receiptSaveBlockedReason)
   const selectedRequestGroup = requestGroups.find(
     (group) => group.number === requestNumber,
@@ -7591,6 +7640,26 @@ function ReceiptModal({
     }))
   }
 
+  function toggleOwnDetails(key: string, request: MaterialRequestEntry) {
+    if (!ownDetailsKeys.has(key)) {
+      setDrafts((current) => ({
+        ...current,
+        [key]: {
+          ...emptyReceiptDraft(),
+          actualName: request.projectMaterialName,
+          ...current[key],
+          ...commonDetails,
+        },
+      }))
+    }
+    setOwnDetailsKeys((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
   async function downloadReceiptTemplate() {
     const { createMaterialReceiptTemplateWorkbook } = await import('./excel')
 
@@ -7599,7 +7668,7 @@ function ReceiptModal({
         lines: receiptTemplateWorkItems.map(({ key, request, receipt }) => ({
           altUnit: getReceiptConversion(request, receipt)?.unit,
           altUnitFactor: getReceiptConversion(request, receipt)?.factor,
-          date: drafts[key]?.date || receipt?.date || localDateInputValue(),
+          ...getDeliveryDetails(key),
           materialId: request.materialId,
           projectLineId: request.projectLineId,
           projectMaterialName: request.projectMaterialName,
@@ -7687,19 +7756,21 @@ function ReceiptModal({
       const errors: Array<string> = []
       const item = requestById.get(row.requestId)
       const quantity = row.quantity ?? 0
-      const date =
-        row.date ||
-        (item && (drafts[item.key]?.date || item.receipt?.date)) ||
-        localDateInputValue()
+      const defaults = item ? getDeliveryDetails(item.key) : commonDetails
+      const date = row.date || defaults.date
+      const documentFields = [
+        row.appNumber,
+        row.appDate,
+        row.m15Number,
+        row.m15Date,
+      ].some((value) => value.trim())
+        ? row
+        : defaults
       const hasEditableData =
         quantity > 0 ||
         (row.actualName.trim().length > 0 &&
           normalizeSearchValue(row.actualName) !==
             normalizeSearchValue(item?.request.projectMaterialName ?? '')) ||
-        row.appNumber.trim().length > 0 ||
-        row.appDate.length > 0 ||
-        row.m15Number.trim().length > 0 ||
-        row.m15Date.length > 0 ||
         row.manufacturer.trim().length > 0 ||
         row.heatBatch.trim().length > 0 ||
         row.certificate.trim().length > 0 ||
@@ -7729,7 +7800,7 @@ function ReceiptModal({
         errors.push('Заполните поступившее количество больше нуля.')
       }
 
-      const documentError = receiptDocumentError(row)
+      const documentError = receiptDocumentError(documentFields)
       if (hasEditableData && documentError) errors.push(documentError)
 
       if (hasEditableData && !normalizeCalendarDate(date)) {
@@ -7781,10 +7852,10 @@ function ReceiptModal({
           date,
           factoryNumber: row.factoryNumber,
           heatBatch: row.heatBatch,
-          appNumber: row.appNumber,
-          appDate: row.appDate,
-          m15Number: row.m15Number,
-          m15Date: row.m15Date,
+          appNumber: documentFields.appNumber,
+          appDate: documentFields.appDate,
+          m15Number: documentFields.m15Number,
+          m15Date: documentFields.m15Date,
           manufacturer: row.manufacturer,
           note: row.note,
           qualityDocument: row.qualityDocument,
@@ -7796,7 +7867,14 @@ function ReceiptModal({
         },
         errors,
         request: item?.request ?? null,
-        row,
+        row: {
+          ...row,
+          date,
+          appNumber: documentFields.appNumber,
+          appDate: documentFields.appDate,
+          m15Number: documentFields.m15Number,
+          m15Date: documentFields.m15Date,
+        },
         status: errors.length > 0 ? 'error' : 'ready',
       }
     })
@@ -7863,6 +7941,20 @@ function ReceiptModal({
         next[workItem.key] = row.draft
       }
 
+      return next
+    })
+    setOwnDetailsKeys((current) => {
+      const next = new Set(current)
+      for (const row of validated.rows) {
+        if (row.status !== 'ready' || !row.request) continue
+        const item = receiptWorkItems.find(
+          (candidate) => candidate.request.id === row.request?.id,
+        )
+        if (!item) continue
+        if (sameReceiptDeliveryDetails(row.draft, commonDetails))
+          next.delete(item.key)
+        else next.add(item.key)
+      }
       return next
     })
     setReceiptImportOpen(false)
@@ -7986,6 +8078,7 @@ function ReceiptModal({
                     onClear={() => {
                       setRequestNumber('')
                       setDrafts({})
+                      setOwnDetailsKeys(new Set())
                       setReceiptSearch('')
                       setReceiptImportDraft(null)
                     }}
@@ -7993,6 +8086,7 @@ function ReceiptModal({
                     onSelect={(value) => {
                       setRequestNumber(value)
                       setDrafts({})
+                      setOwnDetailsKeys(new Set())
                       setReceiptSearch('')
                       setReceiptImportDraft(null)
                     }}
@@ -8004,6 +8098,7 @@ function ReceiptModal({
                     onChange={(value) => {
                       setReceiptMaterialTypeFilter(value)
                       setDrafts({})
+                      setOwnDetailsKeys(new Set())
                       setReceiptImportDraft(null)
                     }}
                     options={buildSelectOptions(
@@ -8067,6 +8162,38 @@ function ReceiptModal({
           </aside>
 
           <section className="min-w-0 rounded-xl border border-slate-200 bg-slate-50/60">
+            <fieldset className="grid gap-3 border-b border-slate-200 bg-white p-4">
+              <legend className="sr-only">Общие реквизиты получения</legend>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-sm font-medium text-slate-950">
+                  Дата и документы получения
+                </h3>
+                <label className="grid gap-1 text-sm text-slate-600">
+                  Дата получения
+                  <Input
+                    aria-label="Дата получения"
+                    type="date"
+                    value={commonDetails.date}
+                    onChange={(event) =>
+                      setCommonDetails((current) => ({
+                        ...current,
+                        date: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-slate-500">
+                Для всех материалов, кроме позиций со своими реквизитами.
+              </p>
+              <ReceiptDocumentInputs
+                fields={commonDetails}
+                documents={receiptDocuments(workflow)}
+                onChange={(fields) =>
+                  setCommonDetails((current) => ({ ...current, ...fields }))
+                }
+              />
+            </fieldset>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
               <div>
                 <h3 className="text-sm font-medium text-slate-950">
@@ -8165,6 +8292,18 @@ function ReceiptModal({
                     const isReplacement =
                       normalizeSearchValue(currentActualName) !==
                       normalizeSearchValue(request.projectMaterialName)
+                    const additionalCount =
+                      [
+                        draft?.factoryNumber,
+                        draft?.manufacturer,
+                        draft?.heatBatch,
+                        draft?.customerArvk,
+                        draft?.qualityDocument,
+                        draft?.certificate,
+                        draft?.technicalDecision,
+                        draft?.note,
+                      ].filter((value) => value?.trim()).length +
+                      Number(isReplacement)
                     const progressTone = getMaterialProgressTone({
                       deleted: !line,
                       summary: summaryByLine.get(request.projectLineId),
@@ -8173,16 +8312,12 @@ function ReceiptModal({
                     return (
                       <div
                         key={key}
-                        className={`overflow-hidden rounded-xl border-2 shadow-md ring-1 transition-colors ${
+                        role="group"
+                        aria-label={`Материал: ${request.projectMaterialName}`}
+                        className={`overflow-hidden rounded-lg border transition-colors ${
                           exceedsReceiptRest
                             ? 'border-rose-300 bg-rose-50/40'
                             : progressTone.card
-                        } ${
-                          exceedsReceiptRest
-                            ? 'ring-rose-200'
-                            : isReplacement
-                              ? 'ring-amber-200'
-                              : progressTone.ring
                         }`}
                       >
                         <div
@@ -8245,22 +8380,7 @@ function ReceiptModal({
                         </div>
 
                         <div className="bg-white px-4 py-4">
-                          <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(150px,1fr)]">
-                            <RequestLineInputField label="Наименование ТМЦ по факту поступления">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Наименование ТМЦ по факту поступления"
-                                value={currentActualName}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'actualName',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
+                          <div className="grid max-w-sm gap-3">
                             <RequestLineInputField
                               label={`Поступило, ${request.projectUnit}`}
                             >
@@ -8313,159 +8433,222 @@ function ReceiptModal({
                             </div>
                           ) : null}
 
-                          <div className="mt-4 grid gap-3 border-t border-slate-200 pt-4 md:grid-cols-2 xl:grid-cols-4">
-                            <RequestLineInputField label="Дата поступления">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                type="date"
-                                value={draft?.date ?? localDateInputValue()}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'date',
-                                    event.target.value,
-                                  )
-                                }
+                          <div className="mt-3 border-t border-slate-200 pt-3">
+                            <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={ownDetailsKeys.has(key)}
+                                onChange={() => toggleOwnDetails(key, request)}
                               />
-                            </RequestLineInputField>
-                            <ReceiptDocumentInputs
-                              fields={draft ?? emptyReceiptDocumentFields}
-                              documents={receiptDocuments(workflow)}
-                              onChange={(fields) => {
-                                setDrafts((current) => ({
-                                  ...current,
-                                  [key]: {
-                                    ...(current[key] ?? emptyReceiptDraft()),
-                                    ...fields,
-                                  },
-                                }))
-                              }}
-                            />
-                            <RequestLineInputField label="Заводской номер">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Заводской номер"
-                                value={draft?.factoryNumber ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'factoryNumber',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Завод-изготовитель">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Завод-изготовитель"
-                                value={draft?.manufacturer ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'manufacturer',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Партия плавки">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Партия плавки"
-                                value={draft?.heatBatch ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'heatBatch',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="АРВК заказчика">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="АРВК заказчика"
-                                value={draft?.customerArvk ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'customerArvk',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Дата и номер документа о качестве">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Дата и номер документа о качестве"
-                                value={draft?.qualityDocument ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'qualityDocument',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Паспорт / сертификат">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Паспорт / сертификат"
-                                value={draft?.certificate ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'certificate',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Техническое решение / согласование">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Техническое решение / согласование"
-                                value={draft?.technicalDecision ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'technicalDecision',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
-                            <RequestLineInputField
-                              className="xl:col-span-4"
-                              label="Примечание"
-                            >
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Примечание"
-                                value={draft?.note ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    key,
-                                    request,
-                                    'note',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </RequestLineInputField>
+                              Свои дата и документы
+                            </label>
+                            {ownDetailsKeys.has(key) ? (
+                              <fieldset className="mt-3 grid gap-3 rounded-lg bg-slate-50 p-3">
+                                <legend className="sr-only">
+                                  Реквизиты материала
+                                </legend>
+                                <label className="grid max-w-xs gap-1 text-sm text-slate-600">
+                                  Дата получения
+                                  <Input
+                                    aria-label="Дата получения"
+                                    type="date"
+                                    value={draft?.date ?? ''}
+                                    onChange={(event) =>
+                                      updateDraft(
+                                        key,
+                                        request,
+                                        'date',
+                                        event.target.value,
+                                      )
+                                    }
+                                  />
+                                </label>
+                                <ReceiptDocumentInputs
+                                  fields={draft ?? emptyReceiptDocumentFields}
+                                  documents={receiptDocuments(workflow)}
+                                  onChange={(fields) =>
+                                    setDrafts((current) => ({
+                                      ...current,
+                                      [key]: {
+                                        ...(current[key] ??
+                                          emptyReceiptDraft()),
+                                        ...fields,
+                                      },
+                                    }))
+                                  }
+                                />
+                                {draftQuantity > 0 &&
+                                receiptDocumentError(
+                                  draft ?? emptyReceiptDocumentFields,
+                                ) ? (
+                                  <p
+                                    role="alert"
+                                    className="text-sm text-red-700"
+                                  >
+                                    {receiptDocumentError(
+                                      draft ?? emptyReceiptDocumentFields,
+                                    )}
+                                  </p>
+                                ) : null}
+                              </fieldset>
+                            ) : null}
                           </div>
+                          <details className="mt-3 border-t border-slate-200 pt-3">
+                            <summary
+                              className="cursor-pointer text-sm text-slate-600"
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter')
+                                  event.stopPropagation()
+                              }}
+                            >
+                              Дополнительные сведения
+                              {additionalCount > 0
+                                ? ` · Заполнено: ${additionalCount}`
+                                : ''}
+                            </summary>
+                            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                              <div className="col-span-full">
+                                <RequestLineInputField label="Наименование ТМЦ по факту поступления">
+                                  <Input
+                                    className="h-10 bg-white text-sm"
+                                    placeholder="Наименование ТМЦ по факту поступления"
+                                    value={currentActualName}
+                                    onChange={(event) =>
+                                      updateDraft(
+                                        key,
+                                        request,
+                                        'actualName',
+                                        event.target.value,
+                                      )
+                                    }
+                                  />
+                                </RequestLineInputField>
+                              </div>
+                              <RequestLineInputField label="Заводской номер">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Заводской номер"
+                                  value={draft?.factoryNumber ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'factoryNumber',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Завод-изготовитель">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Завод-изготовитель"
+                                  value={draft?.manufacturer ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'manufacturer',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Партия плавки">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Партия плавки"
+                                  value={draft?.heatBatch ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'heatBatch',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="АРВК заказчика">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="АРВК заказчика"
+                                  value={draft?.customerArvk ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'customerArvk',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Дата и номер документа о качестве">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Дата и номер документа о качестве"
+                                  value={draft?.qualityDocument ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'qualityDocument',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Паспорт / сертификат">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Паспорт / сертификат"
+                                  value={draft?.certificate ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'certificate',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Техническое решение / согласование">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Техническое решение / согласование"
+                                  value={draft?.technicalDecision ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'technicalDecision',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField
+                                className="xl:col-span-4"
+                                label="Примечание"
+                              >
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Примечание"
+                                  value={draft?.note ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      key,
+                                      request,
+                                      'note',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                            </div>
+                          </details>
                         </div>
                       </div>
                     )
@@ -9900,11 +10083,25 @@ type DeletedOperationLineDescriptor = {
   projectMaterialName: string
   unit: string
 }
-type ReceiptDraft = ReceiptDocumentFields & {
+type ReceiptDeliveryDetails = ReceiptDocumentFields & { date: string }
+
+function sameReceiptDeliveryDetails(
+  left: ReceiptDeliveryDetails,
+  right: ReceiptDeliveryDetails,
+) {
+  return (
+    left.date === right.date &&
+    left.appNumber === right.appNumber &&
+    left.appDate === right.appDate &&
+    left.m15Number === right.m15Number &&
+    left.m15Date === right.m15Date
+  )
+}
+
+type ReceiptDraft = ReceiptDeliveryDetails & {
   actualName: string
   certificate: string
   customerArvk: string
-  date: string
   factoryNumber: string
   heatBatch: string
   manufacturer: string

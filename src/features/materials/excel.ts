@@ -35,6 +35,10 @@ export type MaterialRequestImportRowInput = {
   unit: string
 }
 export type MaterialReceiptTemplateLine = {
+  appNumber?: string
+  appDate?: string
+  m15Number?: string
+  m15Date?: string
   altUnit?: string | null
   altUnitFactor?: number | null
   date?: string
@@ -688,10 +692,10 @@ export async function createMaterialReceiptTemplateWorkbook({
       ),
       factoryNumber: '',
       heatBatch: '',
-      appNumber: '',
-      appDate: '',
-      m15Number: '',
-      m15Date: '',
+      appNumber: line.appNumber ?? '',
+      appDate: line.appDate ?? '',
+      m15Number: line.m15Number ?? '',
+      m15Date: line.m15Date ?? '',
       manufacturer: '',
       materialId: line.materialId ?? '',
       note: '',

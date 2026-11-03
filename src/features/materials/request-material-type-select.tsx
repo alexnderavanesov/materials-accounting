@@ -104,7 +104,10 @@ export function RequestMaterialTypeSelect({
             style={position}
             className="fixed z-[80] flex flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg"
             onBlur={(event) => {
+              // A label click briefly clears focus before activating its checkbox.
+              // Pointer clicks outside are handled separately above.
               if (
+                event.relatedTarget &&
                 !event.currentTarget.contains(event.relatedTarget) &&
                 event.relatedTarget !== trigger.current
               )

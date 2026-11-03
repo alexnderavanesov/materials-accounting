@@ -276,7 +276,17 @@ describe('receipt Excel dates', () => {
     try {
       const buffer = await createMaterialReceiptTemplateWorkbook({
         requestNumber: 'TEST',
-        lines: [line, { ...line, date: '2026-07-13' }],
+        lines: [
+          line,
+          {
+            ...line,
+            date: '2026-07-13',
+            appNumber: 'АПП-1',
+            appDate: '2026-07-12',
+            m15Number: 'М15-1',
+            m15Date: '2026-07-13',
+          },
+        ],
       })
       const workbook = new ExcelJS.Workbook()
       await workbook.xlsx.load(buffer)
@@ -289,6 +299,12 @@ describe('receipt Excel dates', () => {
       expect(
         parseMaterialReceiptWorkbook(buffer).map((row) => row.date),
       ).toEqual(['2026-10-20', '2026-07-13'])
+      expect(parseMaterialReceiptWorkbook(buffer)[1]).toMatchObject({
+        appNumber: 'АПП-1',
+        appDate: '2026-07-12',
+        m15Number: 'М15-1',
+        m15Date: '2026-07-13',
+      })
       expect(
         parseMaterialReceiptWorkbook(buffer).every(
           (row) => row.quantity === null,

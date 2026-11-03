@@ -254,9 +254,17 @@ it('saves and reopens a mixed request with its common note and protects populate
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Типы материала' }),
   )
-  fireEvent.click(
-    screen.getByText('Арматура', { selector: 'label span', exact: true }),
-  )
+  const typeLabelText = screen.getByText('Арматура', {
+    selector: 'label span',
+    exact: true,
+  })
+  // Clicking label text blurs the focused checkbox before the label forwards
+  // its click to the associated input. A click alone misses this browser order.
+  fireEvent.pointerDown(typeLabelText)
+  fireEvent.mouseDown(typeLabelText)
+  fireEvent.blur(document.activeElement!, { relatedTarget: null })
+  fireEvent.mouseUp(typeLabelText)
+  fireEvent.click(typeLabelText)
   expect(
     screen.getByRole('group', { name: 'Выбор типов материала' }),
   ).toBeTruthy()
@@ -1329,6 +1337,141 @@ describe('cipher reference removal', () => {
   })
 })
 
+it('inherits common receipt details, preserves individual overrides and saves collapsed extra fields', async () => {
+  const workspace = conversionWorkspace()
+  workspace.lines.push(base().lines[1]!)
+  workspace.materialRequests.push({
+    ...workspace.materialRequests[0]!,
+    id: 'request-beta',
+    projectLineId: 'line-1',
+    projectMaterialName: 'Бета',
+  })
+  mount(workspace)
+  const dialog = openReceipt()
+  const form = within(dialog)
+  const common = within(
+    form.getByRole('group', { name: 'Общие реквизиты получения' }),
+  )
+  const alphaElement = form.getByRole('group', { name: 'Материал: Альфа' })
+  const betaElement = form.getByRole('group', { name: 'Материал: Бета' })
+  const alpha = within(alphaElement)
+  const beta = within(betaElement)
+  const save = form.getByRole<HTMLButtonElement>('button', {
+    name: 'Сохранить получение',
+  })
+  fireEvent.change(common.getByLabelText('Дата получения'), {
+    target: { value: '2026-11-01' },
+  })
+  fireEvent.change(common.getByLabelText('Номер АПП'), {
+    target: { value: 'АПП-Общий' },
+  })
+  fireEvent.change(common.getByLabelText('Дата АПП'), {
+    target: { value: '2026-11-01' },
+  })
+  fireEvent.change(alpha.getByPlaceholderText('Поступило, м'), {
+    target: { value: '2,4' },
+  })
+  fireEvent.change(beta.getByPlaceholderText('Поступило, м'), {
+    target: { value: '3' },
+  })
+  expect(save.disabled).toBe(false)
+  // Returning to common details restores inheritance before opting out again.
+  fireEvent.click(beta.getByLabelText('Свои дата и документы'))
+  fireEvent.change(beta.getByLabelText('Номер АПП'), {
+    target: { value: 'Не сохранять' },
+  })
+  fireEvent.click(beta.getByLabelText('Свои дата и документы'))
+  expect(beta.queryByLabelText('Номер АПП')).toBeNull()
+  fireEvent.click(beta.getByLabelText('Свои дата и документы'))
+  expect(beta.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
+    'АПП-Общий',
+  )
+  expect(beta.getByLabelText<HTMLInputElement>('Дата получения').value).toBe(
+    '2026-11-01',
+  )
+  fireEvent.change(beta.getByLabelText('Номер АПП'), {
+    target: { value: 'АПП-Отдельный' },
+  })
+  fireEvent.change(beta.getByLabelText('Дата АПП'), { target: { value: '' } })
+  expect(save.disabled).toBe(true)
+  expect(beta.getByRole('alert').textContent).toContain('дату АПП')
+  fireEvent.change(beta.getByLabelText('Дата АПП'), {
+    target: { value: '2026-11-02' },
+  })
+  fireEvent.change(beta.getByLabelText('Дата получения'), {
+    target: { value: '2026-11-02' },
+  })
+  fireEvent.change(common.getByLabelText('Дата получения'), {
+    target: { value: '' },
+  })
+  expect(save.disabled).toBe(true)
+  fireEvent.change(common.getByLabelText('Дата получения'), {
+    target: { value: '2026-11-03' },
+  })
+  fireEvent.change(common.getByLabelText('Номер АПП'), {
+    target: { value: 'АПП-Новый общий' },
+  })
+  expect(beta.getByLabelText<HTMLInputElement>('Дата получения').value).toBe(
+    '2026-11-02',
+  )
+  expect(beta.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
+    'АПП-Отдельный',
+  )
+  const extra = alphaElement.querySelector('details')!
+  expect(extra.open).toBe(false)
+  fireEvent.keyDown(alpha.getByText('Дополнительные сведения'), {
+    key: 'Enter',
+  })
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(alpha.getByText('Дополнительные сведения'))
+  fireEvent.change(alpha.getByPlaceholderText('Паспорт / сертификат'), {
+    target: { value: 'Паспорт-1' },
+  })
+  fireEvent.change(alpha.getByPlaceholderText('Примечание'), {
+    target: { value: 'Сохранить при сворачивании' },
+  })
+  fireEvent.click(alpha.getByText('Дополнительные сведения · Заполнено: 2'))
+  expect(extra.open).toBe(false)
+  // A hidden row keeps both its quantity and its individual document.
+  fireEvent.change(
+    form.getByPlaceholderText(
+      'Поиск по материалу, АПП, М-15, составу или документу',
+    ),
+    { target: { value: 'Альфа' } },
+  )
+  expect(form.queryByRole('group', { name: 'Материал: Бета' })).toBeNull()
+  fireEvent.click(save)
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const saved = lastSaved()
+  expect(saved.materialReceipts).toHaveLength(2)
+  const alphaReceipt = saved.materialReceipts.find(
+    (entry) => entry.requestId === 'request-conversion',
+  )!
+  const betaReceipt = saved.materialReceipts.find(
+    (entry) => entry.requestId === 'request-beta',
+  )!
+  expect(alphaReceipt).toMatchObject({
+    date: '2026-11-03',
+    quantity: 2.4,
+    altQuantity: 6,
+    certificate: 'Паспорт-1',
+    note: 'Сохранить при сворачивании',
+  })
+  expect(betaReceipt).toMatchObject({ date: '2026-11-02', quantity: 3 })
+  expect(
+    saved.qualityWorkflow!.receiptDocuments!.find(
+      (doc) => doc.id === alphaReceipt.appDocumentId,
+    )?.number,
+  ).toBe('АПП-Новый общий')
+  expect(
+    saved.qualityWorkflow!.receiptDocuments!.find(
+      (doc) => doc.id === betaReceipt.appDocumentId,
+    )?.number,
+  ).toBe('АПП-Отдельный')
+})
+
 describe('receipts grouped by material', () => {
   it('shows actual returns and opens only the selected material history, including partial rejected and surplus returns', async () => {
     const workspace = returnScenarioWorkspace()
@@ -1604,6 +1747,40 @@ describe('receipts grouped by material', () => {
     fireEvent.change(search, { target: { value: 'CONVERSION' } })
     expect(dialog.getByText('Заявки не найдены')).toBeTruthy()
     expect(dialog.getByText(/Показано 0 из 2/)).toBeTruthy()
+
+    fireEvent.change(search, { target: { value: 'PARTIAL' } })
+    fireEvent.mouseDown(dialog.getByRole('button', { name: /PARTIAL/ }))
+    expect(
+      dialog.getByText('Найдено 1 из 1 позиций. Заполнено: 0.'),
+    ).toBeTruthy()
+    expect(dialog.getByDisplayValue('Бета')).toBeTruthy()
+    expect(dialog.queryByDisplayValue('Альфа')).toBeNull()
+    fireEvent.click(dialog.getByRole('button', { name: 'Импорт Excel' }))
+    expect(dialog.getByText('Позиций в шаблоне: 1')).toBeTruthy()
+    fireEvent.click(dialog.getAllByRole('button', { name: 'Отмена' }).at(-1)!)
+    fireEvent.change(
+      dialog.getByPlaceholderText(
+        'Поиск по материалу, АПП, М-15, составу или документу',
+      ),
+      { target: { value: 'Альфа' } },
+    )
+    expect(
+      dialog.getByText('Найдено 0 из 1 позиций. Заполнено: 0.'),
+    ).toBeTruthy()
+    fireEvent.click(dialog.getByRole('button', { name: 'Отмена' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Оформить получение' }))
+    const allRequests = within(screen.getByRole('dialog'))
+    fireEvent.change(
+      allRequests.getByPlaceholderText(
+        'Начните вводить наименование, шифр, заявку, состав или документ',
+      ),
+      { target: { value: 'OPEN' } },
+    )
+    expect(allRequests.getAllByDisplayValue('Альфа')).toHaveLength(1)
+    expect(allRequests.getByText('Заявка OPEN')).toBeTruthy()
+    expect(allRequests.getByText(/^Найдено/).textContent).toBe(
+      'Найдено 1 из 2 позиций. Заполнено: 0.',
+    )
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
@@ -2149,6 +2326,105 @@ describe('receipt import dates and editing', () => {
     return input!
   }
 
+  it('imports using common details and skips unfilled rows with prefilled documents', async () => {
+    mount(conversionWorkspace())
+    const dialog = openReceipt()
+    const common = within(
+      within(dialog).getByRole('group', { name: 'Общие реквизиты получения' }),
+    )
+    fireEvent.change(common.getByLabelText('Дата получения'), {
+      target: { value: '2026-07-13' },
+    })
+    fireEvent.change(common.getByLabelText('Номер М-15'), {
+      target: { value: 'М-15-Общая' },
+    })
+    fireEvent.change(common.getByLabelText('Дата М-15'), {
+      target: { value: '2026-07-12' },
+    })
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        [],
+        [],
+        [],
+        [],
+        [
+          'ID заявки',
+          'Наименование ТМЦ по факту поступления',
+          'Поступило',
+          'Дата поступления',
+          'Номер М-15',
+          'Дата М-15',
+        ],
+        ['request-conversion', 'Альфа', 1.2, '', '', ''],
+        [
+          'request-conversion',
+          'Альфа',
+          '',
+          '2026-07-13',
+          'М-15-Общая',
+          '2026-07-12',
+        ],
+      ]),
+      'Получение',
+    )
+    const buffer = XLSX.write(workbook, {
+      type: 'array',
+      bookType: 'xlsx',
+    }) as ArrayBuffer
+    const file = new File([buffer], 'common-details.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Импорт Excel' }),
+    )
+    await uploadReceiptFile(dialog, file)
+    const api = await operationGridApi('receipt-import')
+    expect(api.getRowNode('6-request-conversion')!.data.row.row).toMatchObject({
+      date: '2026-07-13',
+      m15Number: 'М-15-Общая',
+      m15Date: '2026-07-12',
+    })
+    expect(api.getRowNode('7-request-conversion')!.data.row.status).toBe(
+      'ignored',
+    )
+    const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
+      name: 'Применить импорт',
+    })
+    expect(apply.disabled).toBe(false)
+    fireEvent.click(apply)
+    const alpha = within(
+      within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+    )
+    expect(
+      alpha.getByLabelText<HTMLInputElement>('Свои дата и документы').checked,
+    ).toBe(false)
+    fireEvent.change(common.getByLabelText('Дата получения'), {
+      target: { value: '2026-07-14' },
+    })
+    fireEvent.change(common.getByLabelText('Номер М-15'), {
+      target: { value: 'М-15-Обновлённая' },
+    })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+    )
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    const saved = lastSaved()
+    expect(saved.materialReceipts).toHaveLength(1)
+    expect(saved.materialReceipts[0]).toMatchObject({
+      date: '2026-07-14',
+      quantity: 1.2,
+      m15DocumentId: expect.any(String),
+    })
+    expect(
+      saved.qualityWorkflow!.receiptDocuments!.find(
+        (doc) => doc.id === saved.materialReceipts[0]!.m15DocumentId,
+      )?.number,
+    ).toBe('М-15-Обновлённая')
+  })
+
   it('corrects invalid imports in the grid, preserves service fields and calculates alternatives on save', async () => {
     mount(conversionWorkspace())
     const dialog = openReceipt()
@@ -2281,11 +2557,18 @@ describe('receipt import dates and editing', () => {
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Применить импорт' }),
     )
+    const material = within(
+      within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+    )
     expect(
-      within(dialog).getByLabelText<HTMLInputElement>('Номер АПП').value,
-    ).toBe('Н-Новая')
+      material.getByLabelText<HTMLInputElement>('Свои дата и документы')
+        .checked,
+    ).toBe(true)
+    expect(material.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
+      'Н-Новая',
+    )
     expect(
-      dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+      material.getByLabelText<HTMLInputElement>('Дата получения').value,
     ).toBe('2026-10-23')
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
@@ -2401,7 +2684,9 @@ describe('receipt import dates and editing', () => {
       )
       const date = expected || localDateInputValue()
       expect(
-        dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+        within(
+          within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+        ).getByLabelText<HTMLInputElement>('Дата получения').value,
       ).toBe(date)
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Сохранить получение' }),
