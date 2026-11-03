@@ -92,7 +92,14 @@ function openRequest(materialType = 'Трубопровод') {
   const dialog = screen.getByRole('dialog')
   const selects = within(dialog).getAllByRole('combobox')
   fireEvent.change(selects[0]!, { target: { value: 'ТЕСТ' } })
-  fireEvent.click(within(dialog).getByRole('checkbox', { name: materialType }))
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Типы материала' }),
+  )
+  fireEvent.click(screen.getByRole('checkbox', { name: materialType }))
+  fireEvent.keyDown(
+    screen.getByRole('group', { name: 'Выбор типов материала' }),
+    { key: 'Escape' },
+  )
   return dialog
 }
 function conversionWorkspace() {
@@ -244,7 +251,22 @@ it('saves and reopens a mixed request with its common note and protects populate
   workspace.lines[1]!.category = 'Арматура'
   mount(workspace)
   let dialog = openRequest()
-  fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Арматура' }))
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Типы материала' }),
+  )
+  fireEvent.click(
+    screen.getByText('Арматура', { selector: 'label span', exact: true }),
+  )
+  expect(
+    screen.getByRole('group', { name: 'Выбор типов материала' }),
+  ).toBeTruthy()
+  fireEvent.keyDown(
+    screen.getByRole('group', { name: 'Выбор типов материала' }),
+    { key: 'Escape' },
+  )
+  expect(
+    within(dialog).getByRole('button', { name: 'Типы материала' }).textContent,
+  ).toContain('Выбрано типов: 2')
   const quantities = within(dialog).getAllByPlaceholderText(
     'Количество по заявке, м',
   )
@@ -253,13 +275,21 @@ it('saves and reopens a mixed request with its common note and protects populate
   fireEvent.change(within(dialog).getByLabelText('Примечание к заявке'), {
     target: { value: 'Доставить вместе.\nРазгрузка утром.' },
   })
-  fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Арматура' }))
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Типы материала' }),
+  )
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Арматура' }))
   expect(
-    within(dialog).getByRole<HTMLInputElement>('checkbox', { name: 'Арматура' })
+    screen.getByRole<HTMLInputElement>('checkbox', { name: 'Арматура' })
       .checked,
   ).toBe(true)
-  expect(within(dialog).getByRole('alert').textContent).toContain(
-    'очистите количества',
+  expect(screen.getByRole('alert').textContent).toContain('очистите количества')
+  fireEvent.keyDown(
+    screen.getByRole('group', { name: 'Выбор типов материала' }),
+    { key: 'Escape' },
+  )
+  expect(document.activeElement).toBe(
+    within(dialog).getByRole('button', { name: 'Типы материала' }),
   )
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
@@ -295,8 +325,11 @@ it('saves and reopens a mixed request with its common note and protects populate
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Добавить материалы' }),
   )
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Типы материала' }),
+  )
   expect(
-    within(dialog)
+    screen
       .getAllByRole<HTMLInputElement>('checkbox')
       .every((input) => input.checked),
   ).toBe(true)

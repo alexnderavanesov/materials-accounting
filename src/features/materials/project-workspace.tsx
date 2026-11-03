@@ -1,3 +1,4 @@
+import { RequestMaterialTypeSelect } from './request-material-type-select'
 import { DocumentNumberingSettings } from './document-numbering-settings'
 import { QualityPrintSettings } from './quality-print-ui'
 import {
@@ -6009,65 +6010,84 @@ function RequestModal({
       size="xl"
       title={editingRequest ? 'Редактирование заявки' : 'Заявка на получение'}
       onClose={onClose}
-    >
-      <OperationModalLayout
-        footerStart={
-          editingRequest ? (
-            <div className="flex items-center gap-2">
-              {deleteConfirmOpen ? (
-                <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
-                  <div className="basis-full">
-                    <p>Удалить заявку {editingRequest.number}?</p>
-                    <p className="mt-1 text-xs leading-5">
-                      {receiptCount > 0
-                        ? `По заявке уже оформлены получения: ${receiptCount}. Они сохранятся во вкладке «Получение» как история удалённой заявки.`
-                        : 'Получений по заявке нет.'}
-                    </p>
+      bodyClassName="min-h-0 flex-1 overflow-auto px-5 py-4 lg:flex lg:flex-col lg:overflow-hidden"
+      footer={
+        <OperationModalFooter
+          footerStart={
+            editingRequest ? (
+              <div className="flex items-center gap-2">
+                {deleteConfirmOpen ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+                    <div className="basis-full">
+                      <p>Удалить заявку {editingRequest.number}?</p>
+                      <p className="mt-1 text-xs leading-5">
+                        {receiptCount > 0
+                          ? `По заявке уже оформлены получения: ${receiptCount}. Они сохранятся во вкладке «Получение» как история удалённой заявки.`
+                          : 'Получений по заявке нет.'}
+                      </p>
+                    </div>
+                    <Button
+                      className="h-8 border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-100"
+                      variant="outline"
+                      onClick={() => {
+                        try {
+                          onDelete(editingRequest.number)
+                        } catch (error) {
+                          setRequestSaveError(
+                            error instanceof Error
+                              ? error.message
+                              : 'Не удалось удалить заявку.',
+                          )
+                        }
+                      }}
+                    >
+                      Удалить
+                    </Button>
+                    <Button
+                      className="h-8 px-3 text-xs"
+                      variant="ghost"
+                      onClick={() => setDeleteConfirmOpen(false)}
+                    >
+                      Отмена
+                    </Button>
                   </div>
+                ) : (
                   <Button
-                    className="h-8 border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-100"
+                    className="border-red-200 bg-white text-red-700 hover:bg-red-50"
                     variant="outline"
-                    onClick={() => {
-                      try {
-                        onDelete(editingRequest.number)
-                      } catch (error) {
-                        setRequestSaveError(
-                          error instanceof Error
-                            ? error.message
-                            : 'Не удалось удалить заявку.',
-                        )
-                      }
-                    }}
+                    onClick={() => setDeleteConfirmOpen(true)}
                   >
-                    Удалить
+                    <Trash2 size={16} />
+                    Удалить заявку
                   </Button>
-                  <Button
-                    className="h-8 px-3 text-xs"
-                    variant="ghost"
-                    onClick={() => setDeleteConfirmOpen(false)}
-                  >
-                    Отмена
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  className="border-red-200 bg-white text-red-700 hover:bg-red-50"
-                  variant="outline"
-                  onClick={() => setDeleteConfirmOpen(true)}
-                >
-                  <Trash2 size={16} />
-                  Удалить заявку
-                </Button>
-              )}
-            </div>
-          ) : null
-        }
-        primaryDisabled={!hasRows || hasInvalidConvertedQuantities}
-        primaryLabel={
-          editingRequest ? 'Сохранить изменения' : 'Сохранить заявку'
-        }
-        onCancel={onClose}
-        onSubmit={submit}
+                )}
+              </div>
+            ) : null
+          }
+          primaryDisabled={!hasRows || hasInvalidConvertedQuantities}
+          primaryLabel={
+            editingRequest ? 'Сохранить изменения' : 'Сохранить заявку'
+          }
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      }
+    >
+      <div
+        className="grid gap-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col"
+        onKeyDown={(event) => {
+          if (
+            event.key === 'Enter' &&
+            !event.defaultPrevented &&
+            event.target instanceof HTMLInputElement &&
+            event.target.type !== 'checkbox' &&
+            hasRows &&
+            !hasInvalidConvertedQuantities
+          ) {
+            event.preventDefault()
+            submit()
+          }
+        }}
       >
         {requestSaveError && (
           <p role="alert" className="mb-3 text-sm text-red-700">
@@ -6083,11 +6103,13 @@ function RequestModal({
         <div
           className={
             editingRequest
-              ? 'grid gap-4'
-              : 'grid min-h-[min(70vh,760px)] gap-4 xl:grid-cols-[330px_minmax(0,1fr)]'
+              ? 'grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-[auto_minmax(0,1fr)]'
+              : 'grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[300px_minmax(0,1fr)] lg:grid-rows-1'
           }
         >
-          <aside className="grid content-start gap-3">
+          <aside
+            className={`grid min-w-0 grid-cols-1 content-start gap-3 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain ${editingRequest ? 'lg:max-h-[30dvh]' : ''}`}
+          >
             {!editingRequest || requestListMode === 'add' ? (
               <div className="rounded-xl border border-blue-100 bg-blue-50/55 p-4">
                 <div className="mb-3 flex items-center gap-2">
@@ -6134,53 +6156,38 @@ function RequestModal({
                       )}
                     />
                   </Field>
-                  <fieldset className="grid gap-2 text-sm">
-                    <legend className="mb-2 text-slate-500">
-                      Типы материала
-                    </legend>
-                    {materialTypesForCipher.map((type) => (
-                      <label
-                        key={type}
-                        className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white p-2"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={materialTypes.includes(type)}
-                          onChange={(event) => {
-                            if (
-                              !event.target.checked &&
-                              requestScopeLines.some(
-                                (line) =>
-                                  getRequestLineMaterialType(line) === type &&
-                                  parsePositiveNumber(
-                                    drafts[getProjectLineId(line)]?.quantity ??
-                                      '',
-                                  ) > 0,
-                              )
-                            ) {
-                              setScopeError(
-                                'Сначала очистите количества позиций этого типа.',
-                              )
-                              return
-                            }
-                            setScopeError('')
-                            setMaterialTypes((current) =>
-                              event.target.checked
-                                ? [...current, type]
-                                : current.filter((value) => value !== type),
-                            )
-                            setRequestSearch('')
-                          }}
-                        />
-                        {type}
-                      </label>
-                    ))}
-                    {scopeError && (
-                      <p role="alert" className="text-amber-800">
-                        {scopeError}
-                      </p>
-                    )}
-                  </fieldset>
+                  <Field label="Типы материала">
+                    <RequestMaterialTypeSelect
+                      key={cipher}
+                      options={materialTypesForCipher}
+                      value={materialTypes}
+                      error={scopeError}
+                      onToggle={(type, checked) => {
+                        if (
+                          !checked &&
+                          requestScopeLines.some(
+                            (line) =>
+                              getRequestLineMaterialType(line) === type &&
+                              parsePositiveNumber(
+                                drafts[getProjectLineId(line)]?.quantity ?? '',
+                              ) > 0,
+                          )
+                        ) {
+                          setScopeError(
+                            'Сначала очистите количества позиций этого типа.',
+                          )
+                          return
+                        }
+                        setScopeError('')
+                        setMaterialTypes((current) =>
+                          checked
+                            ? [...current, type]
+                            : current.filter((value) => value !== type),
+                        )
+                        setRequestSearch('')
+                      }}
+                    />
+                  </Field>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <RequestSidebarMetric
@@ -6272,8 +6279,8 @@ function RequestModal({
             </Button>
           </aside>
 
-          <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
-            <div className="grid gap-3 border-b border-slate-200 bg-slate-50/70 px-4 py-3 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-center">
+          <section className="flex h-[65dvh] min-h-[320px] min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50 lg:h-auto lg:min-h-0">
+            <div className="grid shrink-0 gap-3 border-b border-slate-200 bg-slate-50/70 px-4 py-3 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-center">
               <div className="grid gap-1">
                 <div className="text-sm font-medium text-slate-900">
                   {editingRequest
@@ -6327,7 +6334,7 @@ function RequestModal({
               )}
             </div>
 
-            <div className="border-b border-slate-200 bg-white px-4 py-3">
+            <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
               <div className="relative">
                 <Search
                   className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -6358,271 +6365,285 @@ function RequestModal({
               )}
             </div>
 
-            {hiddenFilteredCount > 0 ? (
-              <div className="mx-4 mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
-                Показаны первые {visibleRequestLines.length} позиций. Уточните
-                поиск, чтобы быстрее найти нужный материал.
-              </div>
-            ) : null}
+            <div
+              role="region"
+              aria-label="Список материалов заявки"
+              tabIndex={0}
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/35"
+            >
+              {hiddenFilteredCount > 0 ? (
+                <div className="mx-4 mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
+                  Показаны первые {visibleRequestLines.length} позиций. Уточните
+                  поиск, чтобы быстрее найти нужный материал.
+                </div>
+              ) : null}
 
-            <div className="grid gap-2 bg-slate-50/35 p-4">
-              {visibleRequestLines.length > 0 ? (
-                visibleRequestLines.map((line) => {
-                  const lineId = getProjectLineId(line)
-                  const draft = drafts[lineId]
-                  const conversion = getRequestConversion(line)
-                  const alternative = getRequestAlternative(line)
-                  const alternativeQuantity = getAlternativeQuantity(line)
-                  const altUnit = getAlternativeUnit(line)
-                  const unknownAltUnit =
-                    altUnit !== '' && !alternativeUnits.includes(altUnit)
-                  const requestedQuantity = parsePositiveNumber(
-                    draft?.quantity ?? '',
-                  )
-                  const lineMaterialType = getRequestLineMaterialType(line)
-                  const lineIsInScope =
-                    line.cipher === cipher &&
-                    materialTypes.includes(lineMaterialType)
-                  const lineIsDeletedProjectMaterial = !lineById.has(lineId)
-                  const currentProjectQuantities =
-                    referenceQuantityByLineId.get(lineId)
-                  const initialProjectQuantities =
-                    editingEntryByLineId.get(
+              <div className="grid gap-2 p-4">
+                {visibleRequestLines.length > 0 ? (
+                  visibleRequestLines.map((line) => {
+                    const lineId = getProjectLineId(line)
+                    const draft = drafts[lineId]
+                    const conversion = getRequestConversion(line)
+                    const alternative = getRequestAlternative(line)
+                    const alternativeQuantity = getAlternativeQuantity(line)
+                    const altUnit = getAlternativeUnit(line)
+                    const unknownAltUnit =
+                      altUnit !== '' && !alternativeUnits.includes(altUnit)
+                    const requestedQuantity = parsePositiveNumber(
+                      draft?.quantity ?? '',
+                    )
+                    const lineMaterialType = getRequestLineMaterialType(line)
+                    const lineIsInScope =
+                      line.cipher === cipher &&
+                      materialTypes.includes(lineMaterialType)
+                    const lineIsDeletedProjectMaterial = !lineById.has(lineId)
+                    const currentProjectQuantities =
+                      referenceQuantityByLineId.get(lineId)
+                    const initialProjectQuantities =
+                      editingEntryByLineId.get(
+                        lineId,
+                      )?.projectQuantitiesAtCreation
+                    const availableBalance = getRequestAvailableBalance(
+                      line,
                       lineId,
-                    )?.projectQuantitiesAtCreation
-                  const availableBalance = getRequestAvailableBalance(
-                    line,
-                    lineId,
-                  )
-                  const nextBalance = Math.max(
-                    0,
-                    availableBalance - requestedQuantity,
-                  )
-                  const exceeded = requestedQuantity > availableBalance
-                  const progressTone = getMaterialProgressTone({
-                    deleted: lineIsDeletedProjectMaterial,
-                    summary: summaryByLine.get(lineId),
-                  })
+                    )
+                    const nextBalance = Math.max(
+                      0,
+                      availableBalance - requestedQuantity,
+                    )
+                    const exceeded = requestedQuantity > availableBalance
+                    const progressTone = getMaterialProgressTone({
+                      deleted: lineIsDeletedProjectMaterial,
+                      summary: summaryByLine.get(lineId),
+                    })
 
-                  return (
-                    <div
-                      key={lineId}
-                      className={`relative rounded-xl border-2 p-4 shadow-sm transition-colors ${progressTone.card} ${
-                        !lineIsInScope
-                          ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/55'
-                          : ''
-                      } ${exceeded ? 'ring-1 ring-amber-300' : ''}`}
-                      role={!lineIsInScope ? 'button' : undefined}
-                      tabIndex={!lineIsInScope ? 0 : undefined}
-                      onClick={() => {
-                        if (!lineIsInScope) {
+                    return (
+                      <div
+                        key={lineId}
+                        className={`relative rounded-xl border-2 p-4 shadow-sm transition-colors ${progressTone.card} ${
+                          !lineIsInScope
+                            ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/55'
+                            : ''
+                        } ${exceeded ? 'ring-1 ring-amber-300' : ''}`}
+                        role={!lineIsInScope ? 'button' : undefined}
+                        tabIndex={!lineIsInScope ? 0 : undefined}
+                        onClick={() => {
+                          if (!lineIsInScope) {
+                            selectRequestScopeFromLine(line)
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (
+                            lineIsInScope ||
+                            (event.key !== 'Enter' && event.key !== ' ')
+                          ) {
+                            return
+                          }
+
+                          event.preventDefault()
                           selectRequestScopeFromLine(line)
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (
-                          lineIsInScope ||
-                          (event.key !== 'Enter' && event.key !== ' ')
-                        ) {
-                          return
-                        }
-
-                        event.preventDefault()
-                        selectRequestScopeFromLine(line)
-                      }}
-                    >
-                      {requestedQuantity > 0 ? (
-                        <span
-                          className={`absolute bottom-3 left-0 top-3 w-1 rounded-r-full ${
-                            exceeded ? 'bg-amber-300' : progressTone.accent
-                          }`}
-                        />
-                      ) : null}
-                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_440px] lg:items-start">
-                        <div className="min-w-0">
-                          <div className="max-w-5xl text-[15px] font-normal leading-6 text-slate-950">
-                            {line.projectMaterialName ?? line.material}
-                          </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-5 text-slate-500">
-                            {lineIsDeletedProjectMaterial ? (
-                              <DeletedProjectMaterialBadge />
-                            ) : null}
-                            <RequestMetaPill label="Шифр" value={line.cipher} />
-                            <RequestMetaPill
-                              label="Тип"
-                              value={lineMaterialType}
-                            />
-                            <RequestMetaPill
-                              label="Нормативный документ"
-                              value={
-                                line.normativeDocument ||
-                                'нормативный документ не указан'
-                              }
-                            />
-                            {line.material ? (
+                        }}
+                      >
+                        {requestedQuantity > 0 ? (
+                          <span
+                            className={`absolute bottom-3 left-0 top-3 w-1 rounded-r-full ${
+                              exceeded ? 'bg-amber-300' : progressTone.accent
+                            }`}
+                          />
+                        ) : null}
+                        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_440px] lg:items-start">
+                          <div className="min-w-0">
+                            <div className="max-w-5xl text-[15px] font-normal leading-6 text-slate-950">
+                              {line.projectMaterialName ?? line.material}
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-5 text-slate-500">
+                              {lineIsDeletedProjectMaterial ? (
+                                <DeletedProjectMaterialBadge />
+                              ) : null}
                               <RequestMetaPill
-                                label="Состав"
-                                value={line.material}
+                                label="Шифр"
+                                value={line.cipher}
                               />
-                            ) : null}
-                            <RequestMetaPill
-                              label="Единица измерения"
-                              value={line.unit}
-                            />
-                          </div>
-                        </div>
-
-                        <div
-                          className={`grid overflow-hidden rounded-lg border text-right sm:grid-cols-4 ${progressTone.metric}`}
-                        >
-                          <RequestMetric label="По проекту сейчас">
-                            {lineIsDeletedProjectMaterial
-                              ? 'удален'
-                              : `${formatQuantity(currentProjectQuantities?.projectQuantity ?? 0)} ${line.unit}`}
-                          </RequestMetric>
-                          <RequestMetric label="По шифру сейчас">
-                            {lineIsDeletedProjectMaterial
-                              ? 'удален'
-                              : `${formatQuantity(line.plannedQuantity)} ${line.unit}`}
-                          </RequestMetric>
-                          <RequestMetric label="Заявленное количество">
-                            {requestedQuantity > 0
-                              ? `${formatQuantity(requestedQuantity)} ${line.unit}`
-                              : '-'}
-                          </RequestMetric>
-                          <RequestMetric
-                            tone={exceeded ? 'warning' : 'default'}
-                            label="Остаток к заявке"
-                          >
-                            {formatQuantity(nextBalance)} {line.unit}
-                          </RequestMetric>
-                        </div>
-                      </div>
-
-                      {editingEntryByLineId.has(lineId) ? (
-                        <p className="mt-2 text-xs leading-5 text-slate-500">
-                          {initialProjectQuantities
-                            ? `При создании заявки: по проекту ${formatQuantity(initialProjectQuantities.projectQuantity)} ${initialProjectQuantities.unit}, по шифру ${formatQuantity(initialProjectQuantities.cipherQuantity)} ${initialProjectQuantities.unit}.`
-                            : 'Проектное количество при создании этой заявки не сохранялось.'}
-                        </p>
-                      ) : null}
-                      {!lineIsDeletedProjectMaterial ? (
-                        <RequestExcessWarning
-                          quantity={Math.max(
-                            0,
-                            requestedQuantity - availableBalance,
-                          )}
-                          unit={line.unit}
-                        />
-                      ) : null}
-
-                      {!lineIsInScope ? (
-                        <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-5 text-blue-800">
-                          Нажмите на позицию, чтобы выбрать шифр{' '}
-                          <span className="font-medium">{line.cipher}</span> и
-                          тип{' '}
-                          <span className="font-medium">
-                            {lineMaterialType}
-                          </span>
-                          .
-                        </div>
-                      ) : null}
-
-                      {lineIsInScope ? (
-                        <div className="mt-3 border-t border-slate-200 pt-3">
-                          <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_minmax(0,3fr)]">
-                            <RequestLineInputField
-                              label={`Количество по заявке, ${line.unit}`}
-                            >
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                inputMode="decimal"
-                                placeholder={`Количество по заявке, ${line.unit}`}
-                                value={draft?.quantity ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    lineId,
-                                    'quantity',
-                                    event.target.value,
-                                  )
+                              <RequestMetaPill
+                                label="Тип"
+                                value={lineMaterialType}
+                              />
+                              <RequestMetaPill
+                                label="Нормативный документ"
+                                value={
+                                  line.normativeDocument ||
+                                  'нормативный документ не указан'
                                 }
                               />
-                            </RequestLineInputField>
-                            <RequestLineInputField label="Примечание">
-                              <Input
-                                className="h-10 bg-white text-sm"
-                                placeholder="Примечание"
-                                value={draft?.note ?? ''}
-                                onChange={(event) =>
-                                  updateDraft(
-                                    lineId,
-                                    'note',
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                              {draft?.sourceCipher && draft.sourceQuantity ? (
-                                <TransferBadge
-                                  sourceCipher={draft.sourceCipher}
-                                  sourceQuantity={draft.sourceQuantity}
-                                  unit={line.unit}
+                              {line.material ? (
+                                <RequestMetaPill
+                                  label="Состав"
+                                  value={line.material}
                                 />
                               ) : null}
-                            </RequestLineInputField>
+                              <RequestMetaPill
+                                label="Единица измерения"
+                                value={line.unit}
+                              />
+                            </div>
                           </div>
-                          {alternativeQuantity !== null ? (
-                            <p className="mt-2 text-sm text-slate-600">
-                              В альтернативной единице:{' '}
-                              <output
-                                aria-label="Количество в альтернативной единице"
-                                className="font-medium text-slate-900"
-                              >
-                                {formatAlternativeQuantity(alternativeQuantity)}{' '}
-                                {altUnit}
-                              </output>
-                            </p>
-                          ) : null}
-                          {conversion || alternativeQuantity !== null ? (
-                            <p className="mt-2 text-xs text-slate-500">
-                              {conversion
-                                ? `1 ${editingEntryByLineId.get(lineId)?.projectUnit ?? line.unit} = ${formatAlternativeQuantity(conversion.factor)} ${altUnit}. Количество рассчитывается автоматически${getMaterialRequestConversion(lineById.get(lineId), editingEntryByLineId.get(lineId)?.projectUnit) ? ' по текущему коэффициенту материала' : ' по последнему сохранённому коэффициенту заявки'}.`
-                                : 'Прежнее альтернативное количество сохранено. Для пересчёта задайте коэффициент в проектной базе.'}
-                            </p>
-                          ) : null}
-                          {alternative.error ? (
-                            <p
-                              role="alert"
-                              className="mt-2 text-sm text-rose-700"
+
+                          <div
+                            className={`grid overflow-hidden rounded-lg border text-right sm:grid-cols-4 ${progressTone.metric}`}
+                          >
+                            <RequestMetric label="По проекту сейчас">
+                              {lineIsDeletedProjectMaterial
+                                ? 'удален'
+                                : `${formatQuantity(currentProjectQuantities?.projectQuantity ?? 0)} ${line.unit}`}
+                            </RequestMetric>
+                            <RequestMetric label="По шифру сейчас">
+                              {lineIsDeletedProjectMaterial
+                                ? 'удален'
+                                : `${formatQuantity(line.plannedQuantity)} ${line.unit}`}
+                            </RequestMetric>
+                            <RequestMetric label="Заявленное количество">
+                              {requestedQuantity > 0
+                                ? `${formatQuantity(requestedQuantity)} ${line.unit}`
+                                : '-'}
+                            </RequestMetric>
+                            <RequestMetric
+                              tone={exceeded ? 'warning' : 'default'}
+                              label="Остаток к заявке"
                             >
-                              {alternative.error}
-                            </p>
-                          ) : null}
-                          {unknownAltUnit ? (
-                            <p className="mt-1 text-xs text-amber-800">
-                              Единицы «{altUnit}» нет в настройках.
-                            </p>
-                          ) : null}
-                          {(conversion || alternativeQuantity !== null) &&
-                          alternativeUnits.length === 0 ? (
-                            <p className="mt-1 text-xs text-amber-800">
-                              Добавьте единицы в настройках базы, в разделе
-                              «Единицы измерения».
-                            </p>
-                          ) : null}
+                              {formatQuantity(nextBalance)} {line.unit}
+                            </RequestMetric>
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
-                  {!cipher && !materialType && requestSearch.trim().length === 0
-                    ? 'Выберите шифр и тип слева или начните поиск по всей базе.'
-                    : requestListMode === 'filled'
-                      ? 'Заполненных позиций пока нет.'
-                      : 'По выбранному шифру и типу материала позиций не найдено.'}
-                </div>
-              )}
+
+                        {editingEntryByLineId.has(lineId) ? (
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            {initialProjectQuantities
+                              ? `При создании заявки: по проекту ${formatQuantity(initialProjectQuantities.projectQuantity)} ${initialProjectQuantities.unit}, по шифру ${formatQuantity(initialProjectQuantities.cipherQuantity)} ${initialProjectQuantities.unit}.`
+                              : 'Проектное количество при создании этой заявки не сохранялось.'}
+                          </p>
+                        ) : null}
+                        {!lineIsDeletedProjectMaterial ? (
+                          <RequestExcessWarning
+                            quantity={Math.max(
+                              0,
+                              requestedQuantity - availableBalance,
+                            )}
+                            unit={line.unit}
+                          />
+                        ) : null}
+
+                        {!lineIsInScope ? (
+                          <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-5 text-blue-800">
+                            Нажмите на позицию, чтобы выбрать шифр{' '}
+                            <span className="font-medium">{line.cipher}</span> и
+                            тип{' '}
+                            <span className="font-medium">
+                              {lineMaterialType}
+                            </span>
+                            .
+                          </div>
+                        ) : null}
+
+                        {lineIsInScope ? (
+                          <div className="mt-3 border-t border-slate-200 pt-3">
+                            <div className="grid gap-3 md:grid-cols-[minmax(180px,1fr)_minmax(0,3fr)]">
+                              <RequestLineInputField
+                                label={`Количество по заявке, ${line.unit}`}
+                              >
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  inputMode="decimal"
+                                  placeholder={`Количество по заявке, ${line.unit}`}
+                                  value={draft?.quantity ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      lineId,
+                                      'quantity',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </RequestLineInputField>
+                              <RequestLineInputField label="Примечание">
+                                <Input
+                                  className="h-10 bg-white text-sm"
+                                  placeholder="Примечание"
+                                  value={draft?.note ?? ''}
+                                  onChange={(event) =>
+                                    updateDraft(
+                                      lineId,
+                                      'note',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                                {draft?.sourceCipher && draft.sourceQuantity ? (
+                                  <TransferBadge
+                                    sourceCipher={draft.sourceCipher}
+                                    sourceQuantity={draft.sourceQuantity}
+                                    unit={line.unit}
+                                  />
+                                ) : null}
+                              </RequestLineInputField>
+                            </div>
+                            {alternativeQuantity !== null ? (
+                              <p className="mt-2 text-sm text-slate-600">
+                                В альтернативной единице:{' '}
+                                <output
+                                  aria-label="Количество в альтернативной единице"
+                                  className="font-medium text-slate-900"
+                                >
+                                  {formatAlternativeQuantity(
+                                    alternativeQuantity,
+                                  )}{' '}
+                                  {altUnit}
+                                </output>
+                              </p>
+                            ) : null}
+                            {conversion || alternativeQuantity !== null ? (
+                              <p className="mt-2 text-xs text-slate-500">
+                                {conversion
+                                  ? `1 ${editingEntryByLineId.get(lineId)?.projectUnit ?? line.unit} = ${formatAlternativeQuantity(conversion.factor)} ${altUnit}. Количество рассчитывается автоматически${getMaterialRequestConversion(lineById.get(lineId), editingEntryByLineId.get(lineId)?.projectUnit) ? ' по текущему коэффициенту материала' : ' по последнему сохранённому коэффициенту заявки'}.`
+                                  : 'Прежнее альтернативное количество сохранено. Для пересчёта задайте коэффициент в проектной базе.'}
+                              </p>
+                            ) : null}
+                            {alternative.error ? (
+                              <p
+                                role="alert"
+                                className="mt-2 text-sm text-rose-700"
+                              >
+                                {alternative.error}
+                              </p>
+                            ) : null}
+                            {unknownAltUnit ? (
+                              <p className="mt-1 text-xs text-amber-800">
+                                Единицы «{altUnit}» нет в настройках.
+                              </p>
+                            ) : null}
+                            {(conversion || alternativeQuantity !== null) &&
+                            alternativeUnits.length === 0 ? (
+                              <p className="mt-1 text-xs text-amber-800">
+                                Добавьте единицы в настройках базы, в разделе
+                                «Единицы измерения».
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                    {!cipher &&
+                    !materialType &&
+                    requestSearch.trim().length === 0
+                      ? 'Выберите шифр и тип слева или начните поиск по всей базе.'
+                      : requestListMode === 'filled'
+                        ? 'Заполненных позиций пока нет.'
+                        : 'По выбранному шифру и типу материала позиций не найдено.'}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         </div>
@@ -6652,7 +6673,7 @@ function RequestModal({
             onClose={() => setOverRequest(null)}
           />
         ) : null}
-      </OperationModalLayout>
+      </div>
     </Modal>
   )
 }
@@ -9779,18 +9800,44 @@ function OperationModalLayout({
     >
       {children}
       {hideFooter ? null : (
-        <div className="-mx-5 -mb-5 mt-1 flex flex-col gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>{footerStart}</div>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onCancel}>
-              Отмена
-            </Button>
-            <Button disabled={primaryDisabled} onClick={onSubmit}>
-              {primaryLabel}
-            </Button>
-          </div>
+        <div className="-mx-5 -mb-5 mt-1">
+          <OperationModalFooter
+            footerStart={footerStart}
+            primaryDisabled={primaryDisabled}
+            primaryLabel={primaryLabel}
+            onCancel={onCancel}
+            onSubmit={onSubmit}
+          />
         </div>
       )}
+    </div>
+  )
+}
+
+function OperationModalFooter({
+  footerStart,
+  primaryDisabled,
+  primaryLabel,
+  onCancel,
+  onSubmit,
+}: {
+  footerStart?: React.ReactNode
+  primaryDisabled: boolean
+  primaryLabel: string
+  onCancel: () => void
+  onSubmit: () => void
+}) {
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-4">
+      <div>{footerStart}</div>
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={onCancel}>
+          Отмена
+        </Button>
+        <Button disabled={primaryDisabled} onClick={onSubmit}>
+          {primaryLabel}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -12571,6 +12618,7 @@ function ReferenceSettingsSection({
 
 function Modal({
   children,
+  bodyClassName,
   footer,
   open,
   size = 'md',
@@ -12578,6 +12626,7 @@ function Modal({
   onClose,
 }: {
   children: React.ReactNode
+  bodyClassName?: string
   footer?: React.ReactNode
   open: boolean
   size?: 'md' | 'lg' | 'xl'
@@ -12601,7 +12650,7 @@ function Modal({
         role="dialog"
         aria-modal="true"
       >
-        <div className="flex items-center justify-between border-b border-stone-200 px-5 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-4">
           <h2 className="text-lg font-semibold">{title}</h2>
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
@@ -12612,7 +12661,11 @@ function Modal({
             <X size={17} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto px-5 py-5">{children}</div>
+        <div
+          className={bodyClassName ?? 'min-h-0 flex-1 overflow-auto px-5 py-5'}
+        >
+          {children}
+        </div>
         {footer}
       </div>
     </div>
