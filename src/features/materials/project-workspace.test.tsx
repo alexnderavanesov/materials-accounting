@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { emptyNumberHistory, initialNumbering } from './document-numbering'
 import {
   act,
   cleanup,
@@ -18,6 +19,9 @@ import {
   editGridMaterial,
   filterGridName,
   projectGridApi,
+  openProjectColumnChooser,
+  closeProjectColumnChooser,
+  toggleProjectColumn,
   operationRowAction,
   operationGridApi,
 } from './project-grid-test-support'
@@ -756,6 +760,98 @@ afterEach(() => {
   cleanup()
 })
 
+it('exports the filtered view from the Excel menu while the full export keeps every material', async () => {
+  const workspace = base()
+  workspace.lines.push({
+    ...workspace.lines[0]!,
+    id: 'line-other',
+    cipher: 'ДРУГОЙ',
+    plannedQuantity: 25,
+  })
+  workspace.configuredCiphers.push('ДРУГОЙ')
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+  const api = await projectGridApi()
+  fireEvent.change(
+    screen.getByRole('textbox', { name: 'Поиск в проектной базе' }),
+    { target: { value: 'Сталь' } },
+  )
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ТЕСТ' } })
+  await filterGridName('Альфа')
+  await waitFor(() =>
+    expect(screen.getByText('Найдено 1 из 2 позиций')).toBeTruthy(),
+  )
+  expect(screen.getByRole('button', { name: 'Сбросить фильтры' })).toBeTruthy()
+  const chooser = await openProjectColumnChooser()
+  await toggleProjectColumn(chooser, 'Единица измерения')
+  await waitFor(() => expect(api.getColumn('unit')?.isVisible()).toBe(false))
+  await closeProjectColumnChooser(chooser)
+  const filteredExport = vi
+    .spyOn(api, 'exportDataAsExcel')
+    .mockImplementation(() => {})
+  const createObjectURL = vi.fn<typeof URL.createObjectURL>(
+    () => 'blob:export-test',
+  )
+  const previousCreate = URL.createObjectURL
+  const previousRevoke = URL.revokeObjectURL
+  URL.createObjectURL = createObjectURL
+  URL.revokeObjectURL = vi.fn()
+  const anchorClick = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(() => {})
+  async function readRows(blob: Blob) {
+    const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as ArrayBuffer)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsArrayBuffer(blob)
+    })
+    const workbook = XLSX.read(buffer, { type: 'array' })
+    return XLSX.utils.sheet_to_json<Record<string, unknown>>(
+      workbook.Sheets[workbook.SheetNames[0]!]!,
+    )
+  }
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Excel' }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Экспорт проектной базы с фильтрами',
+      }),
+    )
+    expect(filteredExport).toHaveBeenCalledTimes(1)
+    const options = filteredExport.mock.calls[0]![0]!
+    expect(options.columnKeys).not.toContain('unit')
+    expect(options.columnKeys).not.toContain('actions')
+    const blob = api.getDataAsExcel(options)!
+    if (typeof blob === 'string') throw new Error('Expected XLSX Blob')
+    const filtered = await readRows(blob)
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0]).toMatchObject({
+      'Наименование по проекту': 'Альфа',
+      ТЕСТ: 10,
+    })
+    expect(filtered[0]!['ДРУГОЙ']).not.toBe(25)
+    fireEvent.click(screen.getByRole('button', { name: 'Excel' }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Экспорт проектной базы',
+      }),
+    )
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
+    const full = await readRows(createObjectURL.mock.calls[0]![0] as Blob)
+    expect(full).toHaveLength(2)
+    expect(
+      full.find((row) => row['Наименование по проекту'] === 'Альфа'),
+    ).toMatchObject({ ТЕСТ: 10, ДРУГОЙ: 25 })
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  } finally {
+    filteredExport.mockRestore()
+    anchorClick.mockRestore()
+    URL.createObjectURL = previousCreate
+    URL.revokeObjectURL = previousRevoke
+  }
+})
+
 it('explains an empty material import and accepts a corrected file with cipher quantities', async () => {
   mount()
   fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
@@ -814,8 +910,10 @@ it('explains an empty material import and accepts a corrected file with cipher q
 describe('cipher reference removal', () => {
   function settings() {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Настройка' }))
-    return screen.getByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
+    const page = screen.getByRole('region', { name: 'Настройки приложения' })
+    fireEvent.click(within(page).getByRole('button', { name: 'Шифры' }))
+    return page
   }
   function remove(dialog: HTMLElement, cipher: string) {
     fireEvent.click(
@@ -842,6 +940,7 @@ describe('cipher reference removal', () => {
     )
     expect(lastSaved().configuredCiphers).toEqual(['НОВЫЙ'])
     expect(lastSaved().lines).toEqual(workspace.lines)
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(screen.queryByRole('columnheader', { name: 'ТЕСТ' })).toBeNull()
     expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('all')
     const saved = lastSaved()
@@ -873,7 +972,10 @@ describe('cipher reference removal', () => {
     expect(
       within(dialog).queryByRole('button', { name: 'Удалить ТЕСТ' }),
     ).toBeNull()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Отменить изменения' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(screen.queryByRole('columnheader', { name: 'ТЕСТ' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
@@ -910,7 +1012,10 @@ describe('cipher reference removal', () => {
       'Нельзя удалить шифры с заполненным проектным количеством: ТЕСТ',
     )
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Отменить изменения' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(
       await screen.findByRole('columnheader', { name: 'ТЕСТ' }),
     ).toBeTruthy()
@@ -928,6 +1033,7 @@ describe('cipher reference removal', () => {
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
     expect(lastSaved().configuredCiphers).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(lastSaved().lines).toEqual(workspace.lines)
     expect(await screen.findByRole('row', { name: /Альфа/ })).toBeTruthy()
     expect(await screen.findByRole('row', { name: /Бета/ })).toBeTruthy()
@@ -1941,14 +2047,9 @@ describe('operation deletion', () => {
     })
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        'Поиск по дате, заявке, АПП, М-15, материалу или замене',
-      ),
-      {
-        target: { value: 'Найти эту позицию' },
-      },
-    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+      target: { value: 'Найти эту позицию' },
+    })
     expandReceiptGroups()
     fireEvent.click(
       operationRowAction(
@@ -2138,6 +2239,18 @@ describe('workspace user workflows', () => {
       )
       fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
       dialog = screen.getByRole('dialog')
+      expect(
+        within(dialog).getByLabelText<HTMLInputElement>('Номер АВК').value,
+      ).toMatch(/^АВК-\d{4}-0001$/)
+      fireEvent.change(within(dialog).getByLabelText('Дата АВК'), {
+        target: { value: '2025-12-01' },
+      })
+      expect(
+        within(dialog).getByLabelText<HTMLInputElement>('Номер АВК').value,
+      ).toBe('АВК-2025-0001')
+      fireEvent.change(within(dialog).getByLabelText('Дата АВК'), {
+        target: { value: localToday() },
+      })
       fireEvent.change(within(dialog).getByLabelText('Номер АВК'), {
         target: { value: 'АВК-1' },
       })
@@ -2417,39 +2530,30 @@ describe('workspace user workflows', () => {
     let table = screen.getByRole('grid')
     await filterGridName('Альфа')
     expect((await projectGridApi()).getDisplayedRowCount()).toBe(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Настроить столбцы' }))
-    let settings = screen.getByRole('group', { name: 'Отображаемые столбцы' })
-    expect(within(settings).getAllByRole('checkbox')).toHaveLength(11)
+    expect(
+      screen.queryByRole('button', { name: 'Настроить столбцы' }),
+    ).toBeNull()
+    let settings = await openProjectColumnChooser()
     for (const name of [
       'Тип материала',
       'Наименование по проекту',
       'ТЕСТ',
       'Действия',
     ]) {
-      // A label click may blur the previous control before activating its input.
-      fireEvent.blur(
-        screen.getByRole('button', { name: 'Настроить столбцы' }),
-        {
-          relatedTarget: null,
-        },
-      )
-      fireEvent.click(within(settings).getByText(name, { exact: true }))
-      expect(screen.getByRole('group', { name: 'Отображаемые столбцы' })).toBe(
+      await toggleProjectColumn(settings, name)
+      expect(screen.getByRole('dialog', { name: 'Выбрать столбцы' })).toBe(
         settings,
       )
-      expect(within(table).queryByRole('columnheader', { name })).toBeNull()
+      await waitFor(() =>
+        expect(within(table).queryByRole('columnheader', { name })).toBeNull(),
+      )
     }
     // Hiding the name also removes its filter; both materials remain available.
     await waitFor(() =>
       expect(getGridApi('project-materials')!.getDisplayedRowCount()).toBe(2),
     )
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(
-      screen.queryByRole('group', { name: 'Отображаемые столбцы' }),
-    ).toBeNull()
-    expect(document.activeElement).toBe(
-      screen.getByRole('button', { name: 'Настроить столбцы' }),
-    )
+    await closeProjectColumnChooser(settings)
+    expect(screen.queryByRole('dialog', { name: 'Выбрать столбцы' })).toBeNull()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 
     view.unmount()
@@ -2467,30 +2571,32 @@ describe('workspace user workflows', () => {
     expect(
       await within(table).findByRole('columnheader', { name: 'ТЕСТ3' }),
     ).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Настроить столбцы' }))
-    settings = screen.getByRole('group', { name: 'Отображаемые столбцы' })
+    settings = await openProjectColumnChooser()
     fireEvent.click(
-      within(settings).getByRole('button', { name: 'Показать все' }),
+      within(settings).getByRole('checkbox', { name: 'Выбрать все столбцы' }),
     )
     expect(within(table).getByRole('gridcell', { name: 'Бета' })).toBeTruthy()
     expect(
       getGridApi('project-materials')!.getAllDisplayedColumns(),
     ).toHaveLength(12)
-    for (const checkbox of within(settings).getAllByRole('checkbox')) {
-      fireEvent.click(checkbox)
-    }
+    fireEvent.click(
+      within(settings).getByRole('checkbox', { name: 'Выбрать все столбцы' }),
+    )
     expect(
       getGridApi('project-materials')!.getAllDisplayedColumns(),
     ).toHaveLength(0)
-    expect(screen.getByText(/Все столбцы скрыты/)).toBeTruthy()
+    await closeProjectColumnChooser(settings)
+    expect(await screen.findByText(/Все столбцы скрыты/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Выбрать столбцы' }))
+    settings = await screen.findByRole('dialog', { name: 'Выбрать столбцы' })
     fireEvent.click(
-      within(settings).getByRole('button', { name: 'Показать все' }),
+      within(settings).getByRole('checkbox', { name: 'Выбрать все столбцы' }),
     )
-    expect(screen.getByRole('grid')).toBeTruthy()
-    fireEvent.pointerDown(document.body)
     expect(
-      screen.queryByRole('group', { name: 'Отображаемые столбцы' }),
-    ).toBeNull()
+      getGridApi('project-materials')!.getAllDisplayedColumns(),
+    ).toHaveLength(12)
+    await closeProjectColumnChooser(settings)
+    expect(screen.queryByRole('dialog', { name: 'Выбрать столбцы' })).toBeNull()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     view.unmount()
   })
@@ -2517,7 +2623,7 @@ describe('workspace user workflows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     fireEvent.click(screen.getByRole('button', { name: 'Скрыть меню' }))
     fireEvent.change(
-      screen.getByPlaceholderText(/Поиск по типу, наименованию/),
+      screen.getByRole('textbox', { name: 'Поиск в проектной базе' }),
       {
         target: { value: 'Сталь' },
       },
@@ -2531,9 +2637,9 @@ describe('workspace user workflows', () => {
     ).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Показать меню' })).toBeTruthy()
     expect(
-      screen.getByPlaceholderText<HTMLInputElement>(
-        /Поиск по типу, наименованию/,
-      ).value,
+      screen.getByRole<HTMLInputElement>('textbox', {
+        name: 'Поиск в проектной базе',
+      }).value,
     ).toBe('Сталь')
     expect((await gridCell('Альфа', 'projectMaterialName')).textContent).toBe(
       'Альфа',
@@ -3441,14 +3547,14 @@ it.each([
     received: 0,
     signed: 0,
     deleted: false,
-    tone: 'border-blue-200',
+    tone: 'border-stone-200',
   },
   {
     requested: 10,
     received: 10,
     signed: 0,
     deleted: false,
-    tone: 'border-amber-200',
+    tone: 'border-emerald-200',
   },
   {
     requested: 10,
@@ -3462,17 +3568,17 @@ it.each([
     received: 0,
     signed: 0,
     deleted: false,
-    tone: 'border-rose-300',
+    tone: 'border-stone-200',
   },
   {
     requested: 1,
     received: 0,
     signed: 0,
     deleted: true,
-    tone: 'border-slate-300',
+    tone: 'border-stone-200',
   },
 ])(
-  'preserves overview status styling: $tone',
+  'highlights only fully received overview materials: $requested / $received / $signed',
   async ({ requested, received, signed, deleted, tone }) => {
     const workspace = base()
     if (requested)
@@ -3698,7 +3804,7 @@ it('does not mark replacement delivery after a rejected return as excess', async
   validateQualityWorkspace(workspace)
   mount(workspace)
   const card = screen.getByText('Отвод 23х7').closest('div.border-2')
-  expect(card?.classList.contains('border-amber-200')).toBe(true)
+  expect(card?.classList.contains('border-emerald-200')).toBe(true)
   expect(card?.classList.contains('border-rose-300')).toBe(false)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 })
@@ -3722,6 +3828,11 @@ it('paginates 10000 overview materials without mounting off-page cards or saving
   )
   expect(cards()).toHaveLength(25)
   expect(screen.getByText('Материал 9999')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: /Без заявок/ }))
+  expect(screen.getByText('Материал 0000')).toBeTruthy()
+  expect(screen.getByText('Страница 1 из 400')).toBeTruthy()
+  expect(cards()).toHaveLength(25)
+  fireEvent.click(screen.getByRole('button', { name: 'Последняя страница' }))
   fireEvent.change(screen.getAllByLabelText('На странице: Общие данные')[0]!, {
     target: { value: '50' },
   })
@@ -3729,7 +3840,7 @@ it('paginates 10000 overview materials without mounting off-page cards or saving
   view.unmount()
   view = mount(workspace, true)
   expect(cards()).toHaveLength(50)
-  expect(screen.getAllByText('Страница 200 из 200')).toHaveLength(2)
+  expect(screen.getAllByText('Страница 200 из 200')).toHaveLength(1)
   fireEvent.change(
     screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
     { target: { value: 'Материал 1000' } },
@@ -3787,16 +3898,207 @@ it('paginates request and receipt groups independently and searches beyond the c
   expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
     25,
   )
-  fireEvent.change(
-    screen.getByPlaceholderText(
-      'Поиск по дате, заявке, АПП, М-15, материалу или замене',
-    ),
-    { target: { value: 'Материал 31' } },
-  )
+  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+    target: { value: 'Материал 31' },
+  })
   expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
     1,
   )
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(screen.getAllByText('Страница 4 из 4')).toHaveLength(2)
+  expect(screen.getAllByText('Страница 4 из 4')).toHaveLength(1)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+
+it('persists numbering settings separately from documents and restores the settings page after reload', async () => {
+  const workspace = conversionWorkspace()
+  Object.assign(workspace.materialRequests[0]!, {
+    altQuantity: 20,
+    altUnit: 'кг',
+    altUnitFactor: 2.5,
+  })
+  const before = structuredClone(workspace)
+  let view = mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
+  const panel = screen.getByRole('region', { name: 'Настройки приложения' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.change(within(panel).getByLabelText('Документ'), {
+    target: { value: 'avk' },
+  })
+  fireEvent.change(within(panel).getByLabelText('Шаблон номера'), {
+    target: { value: 'АКТ/{год}/{номер}' },
+  })
+  fireEvent.change(within(panel).getByLabelText('Текущее значение счётчика'), {
+    target: { value: '40' },
+  })
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(within(panel).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const saved = lastSaved()
+  expect(saved.documentNumbering?.avk.lastValue).toBe(40)
+  expect(saved.materialRequests).toEqual(before.materialRequests)
+  expect(saved.lines).toEqual(before.lines)
+  view.unmount()
+  view = mount(saved, true)
+  const restored = screen.getByRole('region', { name: 'Настройки приложения' })
+  fireEvent.change(within(restored).getByLabelText('Документ'), {
+    target: { value: 'avk' },
+  })
+  expect(within(restored).getByText(/АКТ\/\d{4}\/0041/)).toBeTruthy()
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+  view.unmount()
+})
+it('reserves a configured request number only when saving, together with its counter', async () => {
+  const workspace = base()
+  workspace.documentNumbering = initialNumbering(emptyNumberHistory())
+  workspace.documentNumbering.request = {
+    pattern: 'ЗАЯВКА-{шифр}-{номер}',
+    padding: 2,
+    lastValue: 8,
+  }
+  mount(workspace)
+  let dialog = openRequest()
+  expect(within(dialog).getByDisplayValue('ЗАЯВКА-ТЕСТ-09')).toBeTruthy()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  dialog = openRequest()
+  fireEvent.change(
+    within(dialog).getAllByPlaceholderText('Количество по заявке, м')[0]!,
+    { target: { value: '2' } },
+  )
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(lastSaved().materialRequests[0]!.number).toBe('ЗАЯВКА-ТЕСТ-09')
+  expect(lastSaved().documentNumbering?.request.lastValue).toBe(9)
+})
+
+it('prioritizes overview badges, keeps units separate and does not cover another cipher with surplus', () => {
+  const workspace = base()
+  workspace.lines[1]!.unit = 'шт'
+  workspace.lines.push(
+    { ...workspace.lines[0]!, id: 'alpha-second-cipher', cipher: 'ВТОРОЙ' },
+    {
+      ...workspace.lines[1]!,
+      id: 'gamma',
+      materialId: 'GAMMA',
+      projectMaterialName: 'Гамма',
+      plannedQuantity: 5,
+    },
+  )
+  workspace.materialRequests = workspace.lines.slice(0, 2).map((line, i) => ({
+    ...conversionWorkspace().materialRequests[0]!,
+    id: `request-${i}`,
+    number: `ЗП-${i}`,
+    projectLineId: line.id!,
+    projectMaterialName: line.projectMaterialName!,
+    materialId: line.materialId!,
+    projectUnit: line.unit!,
+    quantity: i === 0 ? 20 : 10,
+  }))
+  const receipt = documentInspectionFixture().materialReceipts[0]!
+  workspace.materialReceipts = workspace.materialRequests.map((request, i) => ({
+    ...receipt,
+    id: `receipt-${i}`,
+    requestId: request.id!,
+    projectLineId: request.projectLineId!,
+    actualName: request.projectMaterialName!,
+    projectUnit: request.projectUnit!,
+    quantity: request.quantity!,
+  }))
+  let view = mount(workspace)
+  const before = structuredClone(workspace)
+  const names = () =>
+    [
+      ...document.querySelectorAll(
+        '[id^="operation-overview-"] .material-name-clamp',
+      ),
+    ].map((el) => el.textContent)
+  const badges = () =>
+    within(screen.getByRole('group', { name: 'Сортировка материалов' }))
+  expect(names()).toEqual(['Альфа', 'Бета', 'Гамма'])
+  expect(
+    screen
+      .getByText('Альфа')
+      .closest('div.border-2')
+      ?.classList.contains('border-emerald-200'),
+  ).toBe(false)
+  expect(
+    screen
+      .getByText('Бета')
+      .closest('div.border-2')
+      ?.classList.contains('border-emerald-200'),
+  ).toBe(true)
+  const remaining = () =>
+    badges().getByRole('button', { name: /Осталось получить/ })
+  expect(remaining().textContent).toContain('10 м · 5 шт')
+  expect(
+    badges().getByRole('button', { name: /Без заявок/ }).textContent,
+  ).toContain('1 поз.')
+  fireEvent.click(remaining())
+  expect(remaining().getAttribute('aria-pressed')).toBe('true')
+  expect(names()).toEqual(['Альфа', 'Гамма', 'Бета'])
+  fireEvent.click(remaining())
+  expect(names()).toEqual(['Альфа', 'Бета', 'Гамма'])
+  fireEvent.click(badges().getByRole('button', { name: /Без заявок/ }))
+  expect(names()).toEqual(['Гамма', 'Альфа', 'Бета'])
+  view.unmount()
+  view = mount(workspace, true)
+  expect(names()).toEqual(['Гамма', 'Альфа', 'Бета'])
+  expect(
+    badges()
+      .getByRole('button', { name: /Без заявок/ })
+      .getAttribute('aria-pressed'),
+  ).toBe('true')
+  fireEvent.change(
+    screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
+    { target: { value: 'Бета' } },
+  )
+  expect(names()).toEqual(['Бета'])
+  const pagination = screen.getByRole('navigation', {
+    name: 'Страницы: Общие данные',
+  })
+  expect(pagination.previousElementSibling?.id).toMatch(/^operation-overview-/)
+  expect(workspace).toEqual(before)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('shows remaining project demand and removes green only after an actual rejected return', () => {
+  const workspace = returnScenarioWorkspace()
+  workspace.lines[0]!.plannedQuantity = 4
+  let view = mount(workspace)
+  const badge = () =>
+    within(
+      screen.getByRole('group', { name: 'Сортировка материалов' }),
+    ).getByRole('button', { name: /Осталось получить/ })
+  expect(badge().textContent).toContain('0 шт')
+  expect(
+    screen
+      .getByText('Отвод 23х7')
+      .closest('div.border-2')
+      ?.classList.contains('border-emerald-200'),
+  ).toBe(true)
+  view.unmount()
+  workspace.qualityWorkflow = recordCustomerReturn(
+    workspace.qualityWorkflow,
+    workspace.qualityWorkflow.cases[0]!.id,
+    [{ receiptId: 'receipt', quantity: 0.5 }],
+    localToday(),
+  )
+  view = mount(workspace)
+  expect(badge().textContent).toContain('0,5 шт')
+  expect(
+    screen
+      .getByText('Отвод 23х7')
+      .closest('div.border-2')
+      ?.classList.contains('border-emerald-200'),
+  ).toBe(false)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  view.unmount()
 })

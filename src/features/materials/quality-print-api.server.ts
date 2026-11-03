@@ -1,3 +1,4 @@
+import { printOutput } from './print-output.server'
 import { z } from 'zod'
 import {
   buildQualityPrintData,
@@ -27,6 +28,7 @@ import { maxTemplateBytes } from './request-print'
 const payload = z
   .object({
     action: z.enum(['inspect', 'preview', 'save', 'print']),
+    format: z.enum(['pdf', 'xlsx', 'bundle']).optional(),
     kind: z.enum(['zni', 'avk']),
     base64: z
       .string()
@@ -130,12 +132,16 @@ export function createQualityPrintHandler(
           body.revision,
           body.kind,
         )
-        pdf = await convert(
-          await fillQualityPrintWorkbook(
-            decodeTemplate(template.base64),
-            template.config,
-            data,
-          ),
+        const excel = await fillQualityPrintWorkbook(
+          decodeTemplate(template.base64),
+          template.config,
+          data,
+        )
+        return await printOutput(
+          excel,
+          convert,
+          `${body.kind === 'zni' ? 'ЗНИ' : 'АВК'} ${data.fields.number} · ревизия ${body.revision}`,
+          body.format,
         )
       } else {
         if (!body.base64) throw new PrintError('Загрузите файл .xlsx.')

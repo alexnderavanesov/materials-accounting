@@ -6,6 +6,14 @@
     'Segoe UI', sans-serif;
 }
 
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: #e2e8f0;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -20,7 +28,7 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   font-weight: 400;
-  background: #f7f5f0;
+  background: #fafaf9;
   color: #292524;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

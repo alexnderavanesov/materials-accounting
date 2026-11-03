@@ -48,5 +48,24 @@ export function MaterialsGridView<T>(
   // The source inspector adds an HTML attribute that is not a valid grid option.
   const gridProps = { ...props }
   delete gridProps['data-tsd-source']
-  return createElement(AgGridReact<T>, gridProps)
+  return createElement(AgGridReact<T>, {
+    ...gridProps,
+    suppressCsvExport: true,
+    postProcessPopup: (params) => {
+      if (params.type === 'columnChooser') {
+        const count = (params.api.getColumns() ?? []).filter(
+          (column) => !column.getColDef().suppressColumnsToolPanel,
+        ).length
+        const height = Math.max(200, count * 24 + 108)
+        Object.assign(params.ePopup.style, {
+          position: 'fixed',
+          height: `min(${height}px, calc(100dvh - 32px))`,
+          minHeight: 'min(200px, calc(100dvh - 32px))',
+          maxHeight: 'calc(100dvh - 32px)',
+          top: `max(16px, calc((100dvh - ${height}px) / 2))`,
+        })
+      }
+      gridProps.postProcessPopup?.(params)
+    },
+  })
 }

@@ -1,3 +1,4 @@
+import { useDocumentNumber } from './document-numbering-context'
 import { useMemo, useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
@@ -547,7 +548,15 @@ function SurplusReturnModal({
 }) {
   const [quantity, setQuantity] = useState('')
   const [date, setDate] = useState(localToday())
-  const [documentNumber, setDocumentNumber] = useState('')
+  const suggestNumber = useDocumentNumber()
+  const [manualNumber, setDocumentNumber] = useState<string | null>(null)
+  const documentNumber =
+    manualNumber ??
+    suggestNumber('return', {
+      date,
+      cipher: line?.cipher,
+      materialType: line?.materialType ?? undefined,
+    })
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const saving = useRef(false)

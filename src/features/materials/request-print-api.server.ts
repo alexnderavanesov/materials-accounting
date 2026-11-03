@@ -1,3 +1,4 @@
+import { printOutput } from './print-output.server'
 import { z } from 'zod'
 import { buildRequestPrintData } from './request-print-data'
 import {
@@ -24,6 +25,7 @@ import { projectWorkspaceStore } from './workspace-snapshot.server'
 const payload = z
   .object({
     action: z.enum(['inspect', 'save', 'preview', 'print']),
+    format: z.enum(['pdf', 'xlsx', 'bundle']).optional(),
     base64: z
       .string()
       .max(Math.ceil(maxTemplateBytes / 3) * 4)
@@ -122,14 +124,17 @@ export function createRequestPrintHandler(
             409,
           )
         const data = buildRequestPrintData(saved.workspace, body.entryId)
-        const pdf = await convert(
-          await fillPrintWorkbook(
-            decodeTemplate(template.base64),
-            template.config,
-            data,
-          ),
+        const excel = await fillPrintWorkbook(
+          decodeTemplate(template.base64),
+          template.config,
+          data,
         )
-        return pdfResponse(pdf, `Заявка ${data.headers.number}.pdf`)
+        return await printOutput(
+          excel,
+          convert,
+          `Заявка ${data.headers.number}`,
+          body.format,
+        )
       }
       if (!body.base64) throw new PrintError('Загрузите Excel-шаблон.')
       const bytes = decodeTemplate(body.base64),

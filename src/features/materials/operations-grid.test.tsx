@@ -94,6 +94,24 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+it('filters from a header popup and only offers reset while a filter is active', async () => {
+  render(<Harness />)
+  const api = await operationGridApi('test-requests')
+  expect(screen.queryByRole('button', { name: 'Сбросить фильтры' })).toBeNull()
+  expect(screen.queryByPlaceholderText('Фильтр…')).toBeNull()
+  const header = screen.getByRole('columnheader', { name: /^Материал/ })
+  fireEvent.click(header.querySelector('.ag-header-cell-filter-button')!)
+  fireEvent.input(await screen.findByPlaceholderText('Фильтр…'), {
+    target: { value: 'Отвод' },
+  })
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Сбросить фильтры' }),
+  )
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(3))
+  expect(screen.queryByRole('button', { name: 'Сбросить фильтры' })).toBeNull()
+})
+
 it('sorts and filters numeric quantities and calls the action for the displayed record', async () => {
   const before = structuredClone(rows)
   render(<Harness />)

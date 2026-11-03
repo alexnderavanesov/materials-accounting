@@ -1,10 +1,38 @@
+import { DocumentNumberingSettings } from './document-numbering-settings'
+import { QualityPrintSettings } from './quality-print-ui'
+import {
+  DocumentNumberingContext,
+  useDocumentNumber,
+} from './document-numbering-context'
+import {
+  consumeDocumentNumbers,
+  documentNumberHistory,
+  materialNumberContext,
+} from './document-numbering'
+import type { DocumentNumbering, NumberHistory } from './document-numbering'
 import {
   applyMaterialImportRows,
   buildIdentityLineFromImport,
   getMaterialIdentityKey,
   withStableId,
 } from './project-material-data'
-import { materialProgressStatus } from './material-progress'
+import {
+  isMaterialFullyReceived,
+  remainingMaterialQuantity,
+} from './material-progress'
+import {
+  emptyOverviewIndicators,
+  isOverviewSort,
+  overviewIndicatorKeys,
+  overviewIndicatorLabels,
+  prioritizeOverviewRows,
+  receiptIndicatorKeys,
+  receiptIndicatorsByLine,
+} from './operation-overview-indicators'
+import type {
+  OverviewIndicators,
+  OverviewSort,
+} from './operation-overview-indicators'
 import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
@@ -36,6 +64,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GridApi } from 'ag-grid-community'
 import {
+  ArrowUpWideNarrow,
   BarChart3,
   ClipboardCheck,
   Database,
@@ -49,6 +78,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  RotateCcw,
   Search,
   Send,
   Settings,
@@ -59,13 +89,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '#/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '#/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '#/components/ui/card'
 import { Input } from '#/components/ui/input'
 import { HoverTooltip } from '#/components/ui/hover-tooltip'
 import {
@@ -93,10 +117,7 @@ import type {
   MaterialHighlight,
   PendingDeleteMaterial,
 } from './project-grid-state'
-import {
-  ProjectMatrixColumnSettings,
-  useProjectMatrixColumns,
-} from './project-matrix-columns'
+import { useProjectMatrixColumns } from './project-matrix-columns'
 import {
   readWorkspaceCache,
   writeWorkspaceCache,
@@ -127,7 +148,7 @@ import type {
 } from './types'
 
 type InspectionApproval = ReturnType<typeof inspectionApprovals>[number]
-type Section = 'database' | 'operations'
+type Section = 'database' | 'operations' | 'settings'
 type OperationDocumentTab =
   | 'overview'
   | 'requests'
@@ -280,6 +301,7 @@ type MaterialIssueEntry = {
   receiver: string
 }
 type StoredProjectWorkspace = {
+  documentNumbering?: DocumentNumbering
   qualityWorkflow?: QualityWorkflow
   configuredAlloys?: Array<string>
   configuredCiphers?: Array<string>
@@ -406,7 +428,6 @@ const operationTabMeta: Record<
   OperationDocumentTab,
   {
     action: string
-    description: string
     empty: string
     icon: React.ReactNode
     label: string
@@ -414,45 +435,36 @@ const operationTabMeta: Record<
 > = {
   overview: {
     action: '',
-    description:
-      'Сводка по каждой позиции материала: по шифрам и всего по проекту.',
     empty: 'Материалов пока нет.',
     icon: <BarChart3 size={18} />,
     label: 'Общие данные',
   },
   requests: {
     action: 'Создать заявку',
-    description: 'Один шифр и несколько типов материала.',
     empty: 'Заявок пока нет.',
     icon: <FileInput size={18} />,
     label: 'Заявки',
   },
   receipts: {
     action: 'Оформить получение',
-    description:
-      'Раскройте материал, чтобы увидеть его поступления, заявки, АПП и М-15.',
     empty: 'Заявок и получений пока нет.',
     icon: <PackageCheck size={18} />,
     label: 'Получение',
   },
   quality: {
     action: 'Создать ЗНИ',
-    description:
-      'ЗНИ по АПП или М-15, результаты приёмки, АВК и возвраты заказчику.',
     empty: 'Документов входного контроля пока нет.',
     icon: <ClipboardCheck size={18} />,
     label: 'Входной контроль',
   },
   issues: {
     action: 'Выдать в монтаж',
-    description: 'Выдача идет из материала, который прошел входной контроль.',
     empty: 'Выдач в монтаж пока нет.',
     icon: <Send size={18} />,
     label: 'Выдача',
   },
   returns: {
     action: 'Оформить возврат',
-    description: 'Возврат непринятого и лишнего материала заказчику.',
     empty: 'Возвратов пока нет.',
     icon: <Undo2 size={18} />,
     label: 'Возврат',
@@ -528,7 +540,8 @@ export function ProjectWorkspace({
   const [section, setSection] = useWorkspaceViewState<Section>(
     'section',
     'operations',
-    (value): value is Section => value === 'operations' || value === 'database',
+    (value): value is Section =>
+      value === 'operations' || value === 'database' || value === 'settings',
   )
   const [sidebarCollapsed, setSidebarCollapsed] = useWorkspaceViewState(
     'sidebarCollapsed',
@@ -565,9 +578,40 @@ export function ProjectWorkspace({
     useState<MaterialImportDraft | null>(null)
   const [pendingDeleteMaterial, setPendingDeleteMaterial] =
     useState<PendingDeleteMaterial | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [documentNumbering, setDocumentNumbering] = useState<
+    DocumentNumbering | undefined
+  >(() => storedWorkspace.documentNumbering)
   const [settingsError, setSettingsError] = useState('')
   const [excelMenuOpen, setExcelMenuOpen] = useState(false)
+  const excelMenuRef = useRef<HTMLDivElement>(null)
+  const excelMenuButtonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!excelMenuOpen) return
+    function closeOutside(event: Event) {
+      if (
+        event.target instanceof Node &&
+        !excelMenuRef.current?.contains(event.target)
+      ) {
+        setExcelMenuOpen(false)
+      }
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setExcelMenuOpen(false)
+        excelMenuButtonRef.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('focusin', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('focusin', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [excelMenuOpen])
+  const [projectGrid, setProjectGrid] =
+    useState<GridApi<MaterialMatrixRow> | null>(null)
   const [configuredCiphers, setConfiguredCiphers] = useState<Array<string>>(
     () => storedWorkspace.configuredCiphers ?? [],
   )
@@ -583,12 +627,27 @@ export function ProjectWorkspace({
   const [materialTypeSettings, setMaterialTypeSettings] = useState<
     Array<MaterialTypeSetting>
   >(() => normalizeMaterialTypeSettings(storedWorkspace.materialTypeSettings))
-  const [settingsDraft, setSettingsDraft] = useState<ReferenceSettingsDraft>({
-    ciphers: '',
-    units: '',
-    documents: '',
-    alloys: '',
-  })
+  const [materialTypeDraft, setMaterialTypeDraft] =
+    useState(materialTypeSettings)
+  const [settingsDraft, setSettingsDraft] = useState<ReferenceSettingsDraft>(
+    () => ({
+      ciphers: serializeReferenceValues(
+        unique([...configuredCiphers, ...lines.map((line) => line.cipher)]),
+      ),
+      units: serializeReferenceValues(
+        unique([...configuredUnits, ...lines.map((line) => line.unit)]),
+      ),
+      documents: serializeReferenceValues(
+        unique([
+          ...configuredDocuments,
+          ...lines.map((line) => line.normativeDocument ?? ''),
+        ]),
+      ),
+      alloys: serializeReferenceValues(
+        unique([...configuredAlloys, ...lines.map((line) => line.material)]),
+      ),
+    }),
+  )
   const [storedMaterialRequests, setMaterialRequests] = useState<
     Array<MaterialRequestEntry>
   >(() => storedWorkspace.materialRequests ?? [])
@@ -646,6 +705,13 @@ export function ProjectWorkspace({
         materialRequests,
       },
     )
+    setDocumentNumbering((current) =>
+      consumeDocumentNumbers(
+        current,
+        numberHistory,
+        documentNumberHistory(materialRequests, materialIssues, next),
+      ),
+    )
     setQualityWorkflow(next)
   }
   const [storedMaterialIssues, setMaterialIssues] = useState<
@@ -672,6 +738,15 @@ export function ProjectWorkspace({
     if (materialIssues !== storedMaterialIssues)
       setMaterialIssues(materialIssues)
   }, [materialIssues, storedMaterialIssues])
+  const numberHistory = useMemo(
+    () =>
+      documentNumberHistory(materialRequests, materialIssues, qualityWorkflow),
+    [materialRequests, materialIssues, qualityWorkflow],
+  )
+  const numberingContext = useMemo(
+    () => ({ settings: documentNumbering, history: numberHistory }),
+    [documentNumbering, numberHistory],
+  )
   const [notice, setNotice] = useState(
     'Добавьте первую позицию материала или импортируйте Excel.',
   )
@@ -692,6 +767,7 @@ export function ProjectWorkspace({
         materialReceipts,
         materialRequests,
         qualityWorkflow,
+        documentNumbering,
       }),
       revision: initialStoredData.revision,
       pending: loadedWorkspace.pending,
@@ -733,6 +809,7 @@ export function ProjectWorkspace({
         materialReceipts,
         materialRequests,
         qualityWorkflow,
+        documentNumbering,
       }),
     )
   }, [
@@ -747,6 +824,7 @@ export function ProjectWorkspace({
     materialReceipts,
     materialRequests,
     qualityWorkflow,
+    documentNumbering,
   ])
 
   useEffect(() => {
@@ -785,6 +863,18 @@ export function ProjectWorkspace({
       if (event.key !== 'Escape' || event.defaultPrevented) {
         return
       }
+      // Closing a native grid popup must not also clear the workspace filters.
+      if (
+        event
+          .composedPath()
+          .some(
+            (target) =>
+              target instanceof Element &&
+              target.classList.contains('ag-popup-child'),
+          )
+      ) {
+        return
+      }
 
       if (pendingDeleteMaterial) {
         event.preventDefault()
@@ -798,11 +888,7 @@ export function ProjectWorkspace({
         return
       }
 
-      if (settingsOpen) {
-        event.preventDefault()
-        setSettingsOpen(false)
-        return
-      }
+      if (section === 'settings') return
 
       if (materialModalOpen) {
         event.preventDefault()
@@ -820,12 +906,7 @@ export function ProjectWorkspace({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [
-    materialImportOpen,
-    materialModalOpen,
-    pendingDeleteMaterial,
-    settingsOpen,
-  ])
+  }, [materialImportOpen, materialModalOpen, pendingDeleteMaterial, section])
 
   const selectedLine = lines.find((line) => line.id === selectedLineId)
   const filteredLines = useMemo(
@@ -891,7 +972,7 @@ export function ProjectWorkspace({
     setMaterialModalOpen(true)
   }
 
-  function openSettingsModal() {
+  function openSettingsPage() {
     setSettingsError('')
     setSettingsDraft({
       ciphers: serializeReferenceValues(ciphersForSelect),
@@ -899,7 +980,10 @@ export function ProjectWorkspace({
       documents: serializeReferenceValues(documentsForSelect),
       alloys: serializeReferenceValues(alloysForSelect),
     })
-    setSettingsOpen(true)
+    setMaterialTypeDraft(materialTypeSettings)
+    setSection('settings')
+    setMaterialModalOpen(false)
+    setExcelMenuOpen(false)
   }
 
   function saveSettings() {
@@ -927,7 +1011,8 @@ export function ProjectWorkspace({
     setConfiguredUnits(nextUnits)
     setConfiguredDocuments(nextDocuments)
     setConfiguredAlloys(nextAlloys)
-    setSettingsOpen(false)
+    setMaterialTypeSettings(materialTypeDraft)
+    setSettingsError('')
   }
 
   function flashMaterialRow(rowKey: string, cellKeys: Array<string>) {
@@ -1295,6 +1380,20 @@ export function ProjectWorkspace({
     setExcelMenuOpen(false)
   }
 
+  function downloadFilteredExcelExport() {
+    if (!projectGrid || projectGrid.isDestroyed()) return
+    projectGrid.exportDataAsExcel({
+      fileName: 'Проектная база с фильтрами.xlsx',
+      sheetName: 'Материалы',
+      exportedRows: 'filteredAndSorted',
+      columnKeys: projectGrid
+        .getAllDisplayedColumns()
+        .filter((column) => column.getColId() !== 'actions')
+        .map((column) => column.getColId()),
+    })
+    setExcelMenuOpen(false)
+  }
+
   function applyMaterialImportDraft() {
     if (materialImportDraft?.summary.totalRows === 0) {
       setNotice(
@@ -1367,6 +1466,19 @@ export function ProjectWorkspace({
   }
 
   function addMaterialRequestEntries(entries: Array<MaterialRequestEntry>) {
+    if (materialRequests.some((item) => item.number === entries[0]?.number))
+      throw new Error('Этот номер заявки уже занят. Выберите другой номер.')
+    setDocumentNumbering((current) =>
+      consumeDocumentNumbers(
+        current,
+        numberHistory,
+        documentNumberHistory(
+          [...entries, ...materialRequests],
+          materialIssues,
+          qualityWorkflow,
+        ),
+      ),
+    )
     setMaterialRequests((current) => [...entries, ...current])
     const message = `Создана заявка ${entries[0]?.number ?? ''}: ${entries.length} позиций.`
     setNotice(message)
@@ -1394,7 +1506,19 @@ export function ProjectWorkspace({
       ...entries,
       ...materialRequests.filter((entry) => entry.number !== originalNumber),
     ]
+    if (
+      entries[0]?.number !== originalNumber &&
+      materialRequests.some((entry) => entry.number === entries[0]?.number)
+    )
+      throw new Error('Этот номер заявки уже занят. Укажите другой номер.')
     validateRequestChange(nextRequests)
+    setDocumentNumbering((current) =>
+      consumeDocumentNumbers(
+        current,
+        numberHistory,
+        documentNumberHistory(nextRequests, materialIssues, qualityWorkflow),
+      ),
+    )
     setMaterialRequests(nextRequests)
     const message = `Обновлена заявка ${entries[0]?.number ?? originalNumber}: ${entries.length} позиций.`
     setNotice(message)
@@ -1480,6 +1604,19 @@ export function ProjectWorkspace({
   }
 
   function addMaterialIssueEntries(entries: Array<MaterialIssueEntry>) {
+    if (materialIssues.some((item) => item.document === entries[0]?.document))
+      throw new Error('Этот номер выдачи уже занят. Выберите другой номер.')
+    setDocumentNumbering((current) =>
+      consumeDocumentNumbers(
+        current,
+        numberHistory,
+        documentNumberHistory(
+          materialRequests,
+          [...entries, ...materialIssues],
+          qualityWorkflow,
+        ),
+      ),
+    )
     setMaterialIssues((current) => [...entries, ...current])
     const message = `Оформлена выдача в монтаж: ${entries.length} позиций.`
     setNotice(message)
@@ -1512,327 +1649,355 @@ export function ProjectWorkspace({
   }
 
   return (
-    <main className="min-h-screen bg-stone-50 text-stone-900">
-      {loadedWorkspace.recovery ? (
-        <div
-          role="status"
-          className="border-b border-amber-300 bg-amber-50 p-3 text-sm"
-        >
-          Найдена отличающаяся или повреждённая копия браузера. Скачайте её для
-          восстановления.
-          <Button
-            variant="outline"
-            className="ml-3"
-            onClick={() => downloadWorkspaceCopy(loadedWorkspace.recovery!)}
+    <DocumentNumberingContext value={numberingContext}>
+      <main
+        className={`bg-stone-50 text-stone-900 ${section === 'database' ? 'flex h-dvh min-h-[32rem] flex-col' : 'min-h-screen'}`}
+      >
+        {loadedWorkspace.recovery ? (
+          <div
+            role="status"
+            className="shrink-0 border-b border-amber-300 bg-amber-50 p-3 text-sm"
           >
-            Скачать копию браузера
-          </Button>
-        </div>
-      ) : null}
-      {saveStatus !== 'saved' ? (
-        <div
-          role="status"
-          className="border-b border-amber-300 bg-amber-50 p-3 text-sm"
-        >
-          {saveStatus === 'saving'
-            ? 'Сохранение…'
-            : saveStatus === 'conflict'
-              ? 'Данные изменены в другой вкладке. Эта версия не перезаписана на сервере. Скачайте свою копию и обновите страницу.'
-              : 'Не удалось сохранить на сервере. Не закрывайте страницу; повторите сохранение или скачайте свою копию.'}
-          {saveStatus !== 'saving' ? (
-            <>
-              <Button
-                variant="outline"
-                className="ml-3"
-                onClick={() =>
-                  downloadWorkspaceCopy(
-                    JSON.stringify(workspaceSaver.getLatest(), null, 2),
-                  )
-                }
-              >
-                Скачать текущую копию
-              </Button>
-              {saveStatus === 'error' ? (
+            Найдена отличающаяся или повреждённая копия браузера. Скачайте её
+            для восстановления.
+            <Button
+              variant="outline"
+              className="ml-3"
+              onClick={() => downloadWorkspaceCopy(loadedWorkspace.recovery!)}
+            >
+              Скачать копию браузера
+            </Button>
+          </div>
+        ) : null}
+        {saveStatus !== 'saved' ? (
+          <div
+            role="status"
+            className="shrink-0 border-b border-amber-300 bg-amber-50 p-3 text-sm"
+          >
+            {saveStatus === 'saving'
+              ? 'Сохранение…'
+              : saveStatus === 'conflict'
+                ? 'Данные изменены в другой вкладке. Эта версия не перезаписана на сервере. Скачайте свою копию и обновите страницу.'
+                : 'Не удалось сохранить на сервере. Не закрывайте страницу; повторите сохранение или скачайте свою копию.'}
+            {saveStatus !== 'saving' ? (
+              <>
                 <Button
                   variant="outline"
                   className="ml-3"
-                  onClick={() => void workspaceSaver.retry()}
+                  onClick={() =>
+                    downloadWorkspaceCopy(
+                      JSON.stringify(workspaceSaver.getLatest(), null, 2),
+                    )
+                  }
                 >
-                  Повторить сохранение
+                  Скачать текущую копию
                 </Button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="flex min-h-screen">
-        <aside
-          className={`sticky left-0 top-0 z-40 h-screen shrink-0 overflow-hidden border-r border-stone-200 bg-stone-100/90 py-6 transition-[width,padding] duration-300 ease-out ${
-            sidebarCollapsed ? 'w-[68px] px-2.5' : 'w-[280px] px-5'
-          }`}
+                {saveStatus === 'error' ? (
+                  <Button
+                    variant="outline"
+                    className="ml-3"
+                    onClick={() => void workspaceSaver.retry()}
+                  >
+                    Повторить сохранение
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        <div
+          className={`flex ${section === 'database' ? 'min-h-0 flex-1' : 'min-h-screen'}`}
         >
-          <div
-            className={`flex items-center ${
-              sidebarCollapsed ? 'justify-center' : 'justify-between gap-3'
+          <aside
+            className={`sticky left-0 top-0 z-40 ${section === 'database' ? 'h-full' : 'h-screen'} shrink-0 overflow-hidden border-r border-stone-200 bg-stone-100/90 py-6 transition-[width,padding] duration-300 ease-out ${
+              sidebarCollapsed ? 'w-[68px] px-2.5' : 'w-[280px] px-5'
             }`}
           >
             <div
-              className={`items-center gap-3 ${
-                sidebarCollapsed ? 'hidden' : 'flex'
+              className={`flex items-center ${
+                sidebarCollapsed ? 'justify-center' : 'justify-between gap-3'
               }`}
             >
-              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-stone-700 text-white">
-                <FolderKanban size={20} />
+              <div
+                className={`items-center gap-3 ${
+                  sidebarCollapsed ? 'hidden' : 'flex'
+                }`}
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-md bg-stone-700 text-white">
+                  <FolderKanban size={20} />
+                </div>
+                <div>
+                  <div className="font-semibold">Материалы</div>
+                </div>
               </div>
-              <div>
-                <div className="font-semibold">Материалы</div>
-              </div>
+              <button
+                className={`inline-flex shrink-0 items-center justify-center rounded-md border text-stone-500 outline-none transition-[background-color,border-color,color,box-shadow,width,height] duration-200 hover:text-stone-900 focus-visible:ring-2 focus-visible:ring-stone-300 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-100 ${
+                  sidebarCollapsed
+                    ? 'h-10 w-full border-transparent bg-transparent shadow-none hover:border-stone-200 hover:bg-white hover:shadow-sm'
+                    : 'h-9 w-9 border-stone-200 bg-white shadow-sm hover:bg-stone-50'
+                }`}
+                type="button"
+                aria-label={sidebarCollapsed ? 'Показать меню' : 'Скрыть меню'}
+                title={sidebarCollapsed ? 'Показать меню' : 'Скрыть меню'}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  lastHorizontalScrollRef.current = 0
+                  setSidebarCollapsed((collapsed) => !collapsed)
+                }}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen size={17} />
+                ) : (
+                  <PanelLeftClose size={17} />
+                )}
+              </button>
             </div>
-            <button
-              className={`inline-flex shrink-0 items-center justify-center rounded-md border text-stone-500 outline-none transition-[background-color,border-color,color,box-shadow,width,height] duration-200 hover:text-stone-900 focus-visible:ring-2 focus-visible:ring-stone-300 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-100 ${
-                sidebarCollapsed
-                  ? 'h-10 w-full border-transparent bg-transparent shadow-none hover:border-stone-200 hover:bg-white hover:shadow-sm'
-                  : 'h-9 w-9 border-stone-200 bg-white shadow-sm hover:bg-stone-50'
-              }`}
-              type="button"
-              aria-label={sidebarCollapsed ? 'Показать меню' : 'Скрыть меню'}
-              title={sidebarCollapsed ? 'Показать меню' : 'Скрыть меню'}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                lastHorizontalScrollRef.current = 0
-                setSidebarCollapsed((collapsed) => !collapsed)
-              }}
-            >
-              {sidebarCollapsed ? (
-                <PanelLeftOpen size={17} />
-              ) : (
-                <PanelLeftClose size={17} />
-              )}
-            </button>
-          </div>
 
-          <nav
-            className={sidebarCollapsed ? 'mt-4 grid gap-3' : 'mt-7 grid gap-2'}
+            <nav
+              className={
+                sidebarCollapsed ? 'mt-4 grid gap-3' : 'mt-7 grid gap-2'
+              }
+            >
+              <NavButton
+                active={section === 'operations'}
+                collapsed={sidebarCollapsed}
+                icon={<Workflow size={17} />}
+                label="Операции"
+                onClick={() => {
+                  setSection('operations')
+                  setExcelMenuOpen(false)
+                  setNotice('Открыт учетный маршрут выбранного материала.')
+                  setLastAction('Переход: Операции.')
+                }}
+              />
+              <NavButton
+                active={section === 'database'}
+                collapsed={sidebarCollapsed}
+                icon={<Database size={17} />}
+                label="Проектная база"
+                onClick={() => {
+                  setSection('database')
+                  setNotice('Открыта проектная база материалов.')
+                  setLastAction('Переход: Проектная база.')
+                }}
+              />
+              <NavButton
+                active={section === 'settings'}
+                collapsed={sidebarCollapsed}
+                icon={<Settings size={17} />}
+                label="Настройки"
+                onClick={openSettingsPage}
+              />
+            </nav>
+          </aside>
+
+          <div
+            className={`min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 ${section === 'database' ? 'flex min-h-0 flex-col' : ''}`}
           >
-            <NavButton
-              active={section === 'operations'}
-              collapsed={sidebarCollapsed}
-              icon={<Workflow size={17} />}
-              label="Операции"
-              onClick={() => {
-                setSection('operations')
-                setExcelMenuOpen(false)
-                setNotice('Открыт учетный маршрут выбранного материала.')
-                setLastAction('Переход: Операции.')
-              }}
-            />
-            <NavButton
-              active={section === 'database'}
-              collapsed={sidebarCollapsed}
-              icon={<Database size={17} />}
-              label="Проектная база"
-              onClick={() => {
-                setSection('database')
-                setNotice('Открыта проектная база материалов.')
-                setLastAction('Переход: Проектная база.')
-              }}
-            />
-          </nav>
-        </aside>
+            <header className="flex shrink-0 flex-col gap-4 border-b border-stone-200 pb-5 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <h1 className="text-2xl font-semibold tracking-normal">
+                  {section === 'database'
+                    ? 'Проектная база материалов'
+                    : section === 'settings'
+                      ? 'Настройки'
+                      : 'Операции'}
+                </h1>
+              </div>
 
-        <div className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8">
-          <header className="flex flex-col gap-4 border-b border-stone-200 pb-5 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-normal">
-                {section === 'database'
-                  ? 'Проектная база материалов'
-                  : 'Учетный маршрут материала'}
-              </h1>
-              <p className="mt-1 text-sm text-stone-500">
-                {section === 'database'
-                  ? 'Общий список материала из спецификаций: шифр, реквизиты материала и количество.'
-                  : 'Заявка, получение, входной контроль и выдача на линию по выбранной проектной позиции.'}
-              </p>
-            </div>
+              {section === 'database' ? (
+                <div className="flex flex-wrap gap-2">
+                  <div ref={excelMenuRef} className="relative z-50">
+                    <Button
+                      ref={excelMenuButtonRef}
+                      variant="outline"
+                      aria-expanded={excelMenuOpen}
+                      onClick={() => setExcelMenuOpen((open) => !open)}
+                    >
+                      <FileSpreadsheet size={16} />
+                      Excel
+                      <ChevronDown size={15} />
+                    </Button>
+                    {excelMenuOpen ? (
+                      <div className="absolute right-0 z-[80] mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-stone-200 bg-white shadow-lg">
+                        <button
+                          className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
+                          type="button"
+                          onClick={() => void downloadExcelTemplate()}
+                        >
+                          <Download size={15} />
+                          Скачать шаблон
+                        </button>
+                        <button
+                          className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
+                          type="button"
+                          onClick={() => {
+                            setExcelMenuOpen(false)
+                            setMaterialImportDraft(null)
+                            setMaterialImportOpen(true)
+                          }}
+                        >
+                          <FileInput size={15} />
+                          Импорт проектной базы
+                        </button>
+                        <button
+                          className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
+                          type="button"
+                          onClick={() => void downloadExcelExport()}
+                        >
+                          <Download size={15} />
+                          Экспорт проектной базы
+                        </button>
+                        <button
+                          className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                          type="button"
+                          disabled={!projectGrid || projectGrid.isDestroyed()}
+                          onClick={downloadFilteredExcelExport}
+                        >
+                          <Download size={15} className="shrink-0" />
+                          Экспорт проектной базы с фильтрами
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </header>
 
             {section === 'database' ? (
-              <div className="flex flex-wrap gap-2">
-                <div className="relative z-50">
-                  <Button
-                    variant="outline"
-                    onClick={() => setExcelMenuOpen((open) => !open)}
-                  >
-                    <FileSpreadsheet size={16} />
-                    Excel
-                    <ChevronDown size={15} />
-                  </Button>
-                  {excelMenuOpen ? (
-                    <div className="absolute right-0 z-[80] mt-2 w-72 overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl">
-                      <button
-                        className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
-                        type="button"
-                        onClick={() => void downloadExcelTemplate()}
-                      >
-                        <Download size={15} />
-                        Скачать шаблон
-                      </button>
-                      <button
-                        className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
-                        type="button"
-                        onClick={() => {
-                          setExcelMenuOpen(false)
-                          setMaterialImportDraft(null)
-                          setMaterialImportOpen(true)
-                        }}
-                      >
-                        <FileInput size={15} />
-                        Импорт проектной базы
-                      </button>
-                      <button
-                        className="flex w-full items-center gap-3 px-3 py-3 text-left text-sm text-stone-700 hover:bg-stone-50"
-                        type="button"
-                        onClick={() => void downloadExcelExport()}
-                      >
-                        <Download size={15} />
-                        Экспорт проектной базы
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-                <Button variant="outline" onClick={openSettingsModal}>
-                  <Settings size={16} />
-                  Настройка
-                </Button>
-              </div>
+              <DatabaseSection
+                cipherFilter={cipherFilter}
+                ciphers={ciphersForSelect}
+                highlight={materialHighlight}
+                lines={filteredLines}
+                selectedCombination={selectedCombination}
+                selectedImportedCount={importedCombinationKeys.length}
+                selectedLineId={selectedLine?.id ?? ''}
+                tableFilterResetVersion={tableFilterResetVersion}
+                onAddMaterial={openAddMaterialModal}
+                onChangeCipherFilter={setCipherFilter}
+                onClearSelectedCombination={() => {
+                  setSelectedCombinationKey(null)
+                  setImportedCombinationKeys([])
+                }}
+                onRequestDelete={(material) =>
+                  setPendingDeleteMaterial(material)
+                }
+                onEditLine={openEditMaterialModal}
+                onSelectLine={(lineId) => {
+                  setSelectedLineId(lineId)
+                  setNotice('Выбрана позиция материала.')
+                  setLastAction('Выбор позиции материала.')
+                }}
+                onUpdateQuantity={updateProjectQuantity}
+                onGridReady={setProjectGrid}
+              />
+            ) : section === 'operations' ? (
+              <OperationsSection
+                qualityWorkflow={qualityWorkflow}
+                onChangeQualityWorkflow={updateQualityWorkflow}
+                prepareRequestPrint={() => workspaceSaver.waitUntilSaved()}
+                availableCiphers={ciphersForSelect}
+                configuredUnits={configuredUnits}
+                lines={lines}
+                materialIssues={materialIssues}
+                materialReceipts={materialReceipts}
+                materialRequests={materialRequests}
+                qualityControls={qualityControls}
+                onAdjustProjectQuantity={setProjectLineQuantity}
+                onCreateIssues={addMaterialIssueEntries}
+                onCreateReceipts={addMaterialReceiptEntries}
+                onCreateRequests={addMaterialRequestEntries}
+                onDeleteRequests={deleteMaterialRequestEntries}
+                onDeleteOperation={deleteOperation}
+                onUpdateReceipts={updateMaterialReceiptEntries}
+                onUpdateRequests={updateMaterialRequestEntries}
+              />
             ) : null}
-          </header>
 
-          {section === 'database' ? (
-            <DatabaseSection
-              cipherFilter={cipherFilter}
-              ciphers={ciphersForSelect}
-              highlight={materialHighlight}
-              lines={filteredLines}
-              selectedCombination={selectedCombination}
-              selectedImportedCount={importedCombinationKeys.length}
-              selectedLineId={selectedLine?.id ?? ''}
-              tableFilterResetVersion={tableFilterResetVersion}
-              onAddMaterial={openAddMaterialModal}
-              onChangeCipherFilter={setCipherFilter}
-              onClearSelectedCombination={() => {
-                setSelectedCombinationKey(null)
+            <div className="sr-only" aria-live="polite">
+              {notice} {lastAction}
+            </div>
+
+            <MaterialModal
+              alternativeUnits={configuredUnits}
+              alloys={alloysForSelect}
+              documents={documentsForSelect}
+              editing={Boolean(editingLineId)}
+              existingMaterials={materialCombinations}
+              form={newLine}
+              materialTypes={materialTypesForSelect}
+              open={materialModalOpen}
+              units={unitsForSelect}
+              onChange={setNewLine}
+              onClose={() => {
+                setMaterialModalOpen(false)
+                setEditingLineId(null)
+              }}
+              onOpenSettings={openSettingsPage}
+              onSubmit={saveProjectLine}
+              onEditExisting={openEditMaterialModal}
+              onUseExisting={(row) => {
+                setSelectedLineId(row.firstLineId)
+                setSelectedCombinationKey(row.key)
                 setImportedCombinationKeys([])
+                setCipherFilter('all')
+                setSection('database')
+                setMaterialModalOpen(false)
+                setEditingLineId(null)
+                setNotice(
+                  'Выбрана существующая комбинация. Количество можно заполнить в таблице по нужному шифру.',
+                )
+                setLastAction('Использована существующая комбинация.')
               }}
-              onRequestDelete={(material) => setPendingDeleteMaterial(material)}
-              onEditLine={openEditMaterialModal}
-              onSelectLine={(lineId) => {
-                setSelectedLineId(lineId)
-                setNotice('Выбрана позиция материала.')
-                setLastAction('Выбор позиции материала.')
-              }}
-              onUpdateQuantity={updateProjectQuantity}
             />
-          ) : (
-            <OperationsSection
-              qualityWorkflow={qualityWorkflow}
-              onChangeQualityWorkflow={updateQualityWorkflow}
-              prepareRequestPrint={() => workspaceSaver.waitUntilSaved()}
-              availableCiphers={ciphersForSelect}
-              configuredUnits={configuredUnits}
-              lines={lines}
-              materialIssues={materialIssues}
-              materialReceipts={materialReceipts}
-              materialRequests={materialRequests}
-              qualityControls={qualityControls}
-              onAdjustProjectQuantity={setProjectLineQuantity}
-              onCreateIssues={addMaterialIssueEntries}
-              onCreateReceipts={addMaterialReceiptEntries}
-              onCreateRequests={addMaterialRequestEntries}
-              onDeleteRequests={deleteMaterialRequestEntries}
-              onDeleteOperation={deleteOperation}
-              onUpdateReceipts={updateMaterialReceiptEntries}
-              onUpdateRequests={updateMaterialRequestEntries}
-            />
-          )}
 
-          <div className="sr-only" aria-live="polite">
-            {notice} {lastAction}
+            <MaterialImportModal
+              draft={materialImportDraft}
+              open={materialImportOpen}
+              onAddMissingReferences={addMissingImportReferences}
+              onApply={applyMaterialImportDraft}
+              onClose={() => setMaterialImportOpen(false)}
+              onDownloadTemplate={() => void downloadExcelTemplate()}
+              onImportFile={(file) => void handleMaterialImportFile(file)}
+            />
+
+            <DeleteMaterialDialog
+              material={pendingDeleteMaterial}
+              onCancel={() => setPendingDeleteMaterial(null)}
+              onConfirm={() => {
+                if (!pendingDeleteMaterial) {
+                  return
+                }
+
+                deleteProjectLines(pendingDeleteMaterial.lineIds)
+                setPendingDeleteMaterial(null)
+              }}
+            />
+
+            {section === 'settings' && (
+              <SettingsPanel
+                numbering={documentNumbering}
+                numberHistory={numberHistory}
+                onSaveNumbering={setDocumentNumbering}
+                qualityWorkflow={qualityWorkflow}
+                onChangeQualityWorkflow={updateQualityWorkflow}
+                draft={settingsDraft}
+                error={settingsError}
+                materialTypeSettings={materialTypeDraft}
+                onChangeDraft={(key, value) => {
+                  setSettingsError('')
+                  setSettingsDraft((current) => ({ ...current, [key]: value }))
+                }}
+                onChangeMaterialTypeSettings={setMaterialTypeDraft}
+                onDiscard={openSettingsPage}
+                onSave={saveSettings}
+              />
+            )}
           </div>
-
-          <MaterialModal
-            alternativeUnits={configuredUnits}
-            alloys={alloysForSelect}
-            documents={documentsForSelect}
-            editing={Boolean(editingLineId)}
-            existingMaterials={materialCombinations}
-            form={newLine}
-            materialTypes={materialTypesForSelect}
-            open={materialModalOpen}
-            units={unitsForSelect}
-            onChange={setNewLine}
-            onClose={() => {
-              setMaterialModalOpen(false)
-              setEditingLineId(null)
-            }}
-            onOpenSettings={openSettingsModal}
-            onSubmit={saveProjectLine}
-            onEditExisting={openEditMaterialModal}
-            onUseExisting={(row) => {
-              setSelectedLineId(row.firstLineId)
-              setSelectedCombinationKey(row.key)
-              setImportedCombinationKeys([])
-              setCipherFilter('all')
-              setSection('database')
-              setMaterialModalOpen(false)
-              setEditingLineId(null)
-              setNotice(
-                'Выбрана существующая комбинация. Количество можно заполнить в таблице по нужному шифру.',
-              )
-              setLastAction('Использована существующая комбинация.')
-            }}
-          />
-
-          <MaterialImportModal
-            draft={materialImportDraft}
-            open={materialImportOpen}
-            onAddMissingReferences={addMissingImportReferences}
-            onApply={applyMaterialImportDraft}
-            onClose={() => setMaterialImportOpen(false)}
-            onDownloadTemplate={() => void downloadExcelTemplate()}
-            onImportFile={(file) => void handleMaterialImportFile(file)}
-          />
-
-          <DeleteMaterialDialog
-            material={pendingDeleteMaterial}
-            onCancel={() => setPendingDeleteMaterial(null)}
-            onConfirm={() => {
-              if (!pendingDeleteMaterial) {
-                return
-              }
-
-              deleteProjectLines(pendingDeleteMaterial.lineIds)
-              setPendingDeleteMaterial(null)
-            }}
-          />
-
-          <SettingsModal
-            qualityWorkflow={qualityWorkflow}
-            onChangeQualityWorkflow={updateQualityWorkflow}
-            draft={settingsDraft}
-            error={settingsError}
-            materialTypeSettings={materialTypeSettings}
-            open={settingsOpen}
-            onChangeDraft={(key, value) => {
-              setSettingsError('')
-              setSettingsDraft((current) => ({ ...current, [key]: value }))
-            }}
-            onChangeMaterialTypeSettings={setMaterialTypeSettings}
-            onClose={() => setSettingsOpen(false)}
-            onSave={saveSettings}
-          />
         </div>
-      </div>
-    </main>
+      </main>
+    </DocumentNumberingContext>
   )
 }
 
@@ -1852,6 +2017,7 @@ function DatabaseSection({
   onRequestDelete,
   onSelectLine,
   onUpdateQuantity,
+  onGridReady,
 }: {
   cipherFilter: string
   ciphers: Array<string>
@@ -1861,6 +2027,7 @@ function DatabaseSection({
   selectedImportedCount: number
   selectedLineId: string
   tableFilterResetVersion: number
+  onGridReady: (api: GridApi<MaterialMatrixRow> | null) => void
   onAddMaterial: () => void
   onChangeCipherFilter: (value: string) => void
   onClearSelectedCombination: () => void
@@ -1887,45 +2054,39 @@ function DatabaseSection({
     [matrixRows, search],
   )
   const matrixCiphers = ciphers
+  const grid = useRef<GridApi<MaterialMatrixRow> | null>(null)
+  const [tableFiltered, setTableFiltered] = useState(false)
+  const [gridRowCount, setGridRowCount] = useState<number | null>(null)
 
   return (
     <section
       ref={viewScrollRef}
-      className="mt-5 grid min-w-0 grid-cols-1 gap-5"
+      className="mt-5 flex min-h-0 min-w-0 flex-1 flex-col"
     >
-      <Card className="min-w-0">
-        <CardHeader className="gap-3">
-          <div className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] 2xl:items-start">
-            <div className="min-w-0">
-              <CardTitle>Общий проектный материал</CardTitle>
-              <CardDescription>
-                Материалы позициями, реквизиты отдельными колонками, шифры
-                отдельными столбцами.
-              </CardDescription>
+      <Card className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <CardHeader className="shrink-0 px-4 py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <div className="relative min-w-48 flex-1">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                size={17}
+              />
+              <Input
+                className="h-10 bg-white pl-9 text-sm"
+                aria-label="Поиск в проектной базе"
+                placeholder="Поиск материалов"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
             </div>
-            <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto_160px] lg:items-start">
-              <div className="grid min-w-0 gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-                <div className="relative min-w-0">
-                  <Search
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                    size={17}
-                  />
-                  <Input
-                    className="h-10 bg-white pl-9 text-sm"
-                    placeholder="Поиск по типу, наименованию, нормативному документу, составу, шифру или количеству"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </div>
-                <span className="whitespace-nowrap px-2 text-sm text-slate-500">
-                  Найдено {visibleMatrixRows.length} из {matrixRows.length}{' '}
-                  позиций
-                </span>
-              </div>
-              <Button onClick={onAddMaterial}>
-                <Plus size={16} />
-                Материал
-              </Button>
+            <span className="whitespace-nowrap text-xs text-slate-500">
+              Найдено{' '}
+              {matrixRows.length
+                ? (gridRowCount ?? visibleMatrixRows.length)
+                : 0}{' '}
+              из {matrixRows.length} позиций
+            </span>
+            <div className="w-48">
               <NativeSelect
                 value={cipherFilter}
                 onChange={onChangeCipherFilter}
@@ -1938,16 +2099,30 @@ function DatabaseSection({
                 ]}
               />
             </div>
+            {(search || cipherFilter !== 'all' || tableFiltered) && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Сбросить фильтры"
+                title="Сбросить фильтры"
+                onClick={() => {
+                  setSearch('')
+                  onChangeCipherFilter('all')
+                  grid.current?.setFilterModel(null)
+                }}
+              >
+                <RotateCcw size={16} />
+              </Button>
+            )}
+            <Button onClick={onAddMaterial}>
+              <Plus size={16} />
+              Материал
+            </Button>
           </div>
-          <ProjectMatrixColumnSettings
-            ciphers={matrixCiphers}
-            hiddenColumns={hiddenColumns}
-            onChange={changeHiddenColumns}
-          />
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="flex min-h-0 flex-1 flex-col p-0">
           {selectedCombination || selectedImportedCount > 0 ? (
-            <div className="border-t border-slate-200 bg-blue-50/40 px-4 py-3">
+            <div className="shrink-0 border-t border-slate-200 bg-blue-50/40 px-4 py-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-xs font-medium uppercase text-blue-700">
@@ -1972,7 +2147,7 @@ function DatabaseSection({
             </div>
           ) : null}
           {matrixRows.length > 0 ? (
-            <div className="overflow-hidden border-t border-stone-200">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <ProjectMaterialGrid
                 ciphers={matrixCiphers}
                 hiddenColumns={hiddenColumns}
@@ -1985,10 +2160,18 @@ function DatabaseSection({
                 onRequestDelete={onRequestDelete}
                 onSelectLine={onSelectLine}
                 onUpdateQuantity={onUpdateQuantity}
+                onReady={(api) => {
+                  grid.current = api
+                  onGridReady(api)
+                }}
+                onFilterChanged={(active, count) => {
+                  setTableFiltered(active)
+                  setGridRowCount(count)
+                }}
               />
             </div>
           ) : (
-            <div className="grid min-h-56 place-items-center border-t border-stone-100 bg-stone-50/40 px-6 py-10">
+            <div className="grid min-h-0 flex-1 place-items-center border-t border-stone-100 bg-stone-50/40 px-6 py-10">
               <div className="max-w-sm text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 shadow-sm">
                   <Database size={20} />
@@ -2266,6 +2449,7 @@ function OperationsSection({
     () =>
       buildOperationOverviewRows({
         summaryByLine: operationSummary.byLine,
+        balancesByReceipt,
         workflow: qualityWorkflow,
         lines,
         materialIssues,
@@ -2281,6 +2465,7 @@ function OperationsSection({
       qualityControls,
       operationSummary,
       qualityWorkflow,
+      balancesByReceipt,
     ],
   )
 
@@ -2329,10 +2514,9 @@ function OperationsSection({
             <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
               <div className="min-w-0">
                 <CardTitle>{tabMeta.label}</CardTitle>
-                <CardDescription>{tabMeta.description}</CardDescription>
               </div>
               <div className="grid w-full min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center 2xl:max-w-[1180px]">
-                <div className="grid min-w-0 gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-1.5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
                   <div className="relative min-w-0">
                     <Search
                       className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -2341,7 +2525,8 @@ function OperationsSection({
                     <Input
                       className="h-10 bg-white pl-9 text-sm"
                       aria-label={search.label}
-                      placeholder={search.placeholder}
+                      placeholder={search.label}
+                      title={search.placeholder}
                       value={search.value}
                       onChange={(event) => search.onChange(event.target.value)}
                     />
@@ -2373,13 +2558,11 @@ function OperationsSection({
           </CardHeader>
         ) : null}
         <CardContent className="p-0">
-          {['overview', 'receipts', 'quality', 'issues'].includes(
-            activeTab,
-          ) && (
+          {['receipts', 'quality', 'issues'].includes(activeTab) && (
             <div className="grid gap-2 border-b p-4 sm:grid-cols-3 xl:grid-cols-6">
               {(
                 [
-                  ['received', 'Поступило'],
+                  ['received', 'Получено'],
                   ['returned', 'Возвращено'],
                   ['awaitingInspection', 'Ожидает инспекции'],
                   ['awaitingAct', 'Ожидает АВК'],
@@ -2676,7 +2859,6 @@ function OperationsSection({
 
       <IssueModal
         workflow={qualityWorkflow}
-        existingCount={materialIssues.length}
         requests={materialRequests}
         lineById={lineById}
         issues={materialIssues}
@@ -2739,6 +2921,34 @@ function OperationOverview({
   const [expandedRows, setExpandedRows] = useWorkspaceViewState<
     Record<string, boolean>
   >('overview.expanded', {}, isViewExpanded)
+  const [sort, setSort] = useWorkspaceViewState<OverviewSort>(
+    'overview.sort',
+    '',
+    isOverviewSort,
+  )
+  const indicatorValues = useMemo(
+    () =>
+      Object.fromEntries(
+        overviewIndicatorKeys.map((key) => [
+          key,
+          key === 'withoutRequests'
+            ? `${rows.reduce((total, row) => total + row.indicators.withoutRequests, 0)} поз.`
+            : formatUnitTotals(
+                rows
+                  .filter((row) =>
+                    key === 'remaining'
+                      ? !row.deleted && row.totalProjectQuantity > 0
+                      : row.totals.receipts.documents.length > 0,
+                  )
+                  .map((row) => ({
+                    unit: row.unit,
+                    quantity: row.indicators[key],
+                  })),
+              ),
+        ]),
+      ) as Record<keyof OverviewIndicators, string>,
+    [rows],
+  )
   const [search, setSearch] = useWorkspaceViewState(
     'overview.search',
     '',
@@ -2764,19 +2974,22 @@ function OperationOverview({
   )
   const filteredRows = useMemo(
     () =>
-      rows.filter(
-        (row) =>
-          operationOverviewRowMatchesSearch(row, search) &&
-          operationOverviewRowMatchesCipher(row, cipherFilter) &&
-          operationOverviewRowMatchesMaterialType(row, materialTypeFilter),
+      prioritizeOverviewRows(
+        rows.filter(
+          (row) =>
+            operationOverviewRowMatchesSearch(row, search) &&
+            operationOverviewRowMatchesCipher(row, cipherFilter) &&
+            operationOverviewRowMatchesMaterialType(row, materialTypeFilter),
+        ),
+        sort,
       ),
-    [cipherFilter, materialTypeFilter, rows, search],
+    [cipherFilter, materialTypeFilter, rows, search, sort],
   )
 
   const pagination = useOperationPagination(
     'overview',
     filteredRows,
-    JSON.stringify([search, cipherFilter, materialTypeFilter]),
+    JSON.stringify([search, cipherFilter, materialTypeFilter, sort]),
     {
       key:
         !search && !cipherFilter && !materialTypeFilter
@@ -2826,8 +3039,42 @@ function OperationOverview({
 
   return (
     <div className="bg-stone-50/60">
+      <div
+        className="grid grid-cols-2 gap-2 border-b bg-white p-4 lg:grid-cols-4 2xl:grid-cols-8"
+        role="group"
+        aria-label="Сортировка материалов"
+      >
+        {overviewIndicatorKeys.map((key) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={sort === key}
+            title={
+              sort === key
+                ? 'Вернуть обычный порядок'
+                : `Сначала материалы: ${overviewIndicatorLabels[key].toLocaleLowerCase('ru')}`
+            }
+            onClick={() => setSort((current) => (current === key ? '' : key))}
+            className={`min-w-0 rounded-lg border px-3 py-2 text-left shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 ${sort === key ? 'border-slate-500 bg-slate-100' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+          >
+            <span className="flex items-center justify-between gap-1 text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-500">
+              {overviewIndicatorLabels[key]}
+              {sort === key && (
+                <ArrowUpWideNarrow
+                  size={14}
+                  className="shrink-0 text-slate-700"
+                  aria-hidden="true"
+                />
+              )}
+            </span>
+            <span className="mt-0.5 block break-words text-sm leading-5 text-slate-900">
+              {indicatorValues[key]}
+            </span>
+          </button>
+        ))}
+      </div>
       <div className="border-b border-stone-200 bg-white px-4 py-3">
-        <div className="grid gap-2 xl:grid-cols-[minmax(360px,1fr)_240px_280px_auto] xl:items-center">
+        <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-[minmax(240px,1fr)_200px_240px_auto] 2xl:items-center">
           <div className="relative min-w-0">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -2852,7 +3099,7 @@ function OperationOverview({
             value={materialTypeFilter}
             onChange={setMaterialTypeFilter}
           />
-          <div className="whitespace-nowrap text-sm text-slate-500 xl:text-right">
+          <div className="whitespace-nowrap text-sm text-slate-500 md:self-center md:text-right">
             Найдено {filteredRows.length} из {rows.length} позиций
           </div>
         </div>
@@ -2879,7 +3126,6 @@ function OperationOverview({
         ref={pagination.containerRef}
         className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 p-4"
       >
-        <OperationPagination pagination={pagination} label="Общие данные" />
         {pagination.items.map((row) => {
           const isExpanded = expandedRows[row.key] ?? false
           const rowTone = getOperationOverviewRowTone(row)
@@ -2912,7 +3158,7 @@ function OperationOverview({
                   <span
                     className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-slate-400 transition-colors ${
                       isExpanded
-                        ? 'border-blue-100 bg-blue-50 text-blue-500'
+                        ? 'border-stone-300 bg-stone-100 text-stone-600'
                         : 'border-stone-200 bg-stone-50'
                     }`}
                   >
@@ -2973,9 +3219,9 @@ function OperationOverview({
               </div>
 
               {isExpanded ? (
-                <div className="border-t border-blue-100 bg-blue-50/20">
+                <div className="border-t border-stone-200 bg-stone-50/40">
                   <div className="grid gap-3 px-4 py-3">
-                    <div className="grid gap-0 overflow-hidden rounded-lg border border-blue-100 bg-white sm:grid-cols-2 lg:grid-cols-[minmax(280px,1.45fr)_170px_minmax(180px,1fr)_150px]">
+                    <div className="grid gap-0 overflow-hidden rounded-lg border border-stone-200 bg-white sm:grid-cols-2 lg:grid-cols-[minmax(280px,1.45fr)_170px_minmax(180px,1fr)_150px]">
                       <OverviewPassportItem
                         label="Нормативный документ"
                         value={row.normativeDocument || 'не указан'}
@@ -3001,7 +3247,7 @@ function OperationOverview({
 
                     <div
                       data-workspace-scroll={`overview:${row.key}`}
-                      className="overflow-auto rounded-lg border border-blue-100 bg-white"
+                      className="overflow-auto rounded-lg border border-stone-200 bg-white"
                     >
                       <OperationsGrid
                         id={`overview:${row.key}`}
@@ -3087,7 +3333,7 @@ function OperationOverview({
             </div>
           )
         })}
-        {pagination.pageCount > 1 && (
+        {pagination.total > 0 && (
           <OperationPagination pagination={pagination} label="Общие данные" />
         )}
       </div>
@@ -3525,7 +3771,6 @@ function RequestsTable({
       ref={pagination.containerRef}
       className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 bg-stone-50/50 p-4"
     >
-      <OperationPagination pagination={pagination} label="Заявки" />
       {filteredGroupMeta.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">
           Заявки по такому запросу не найдены.
@@ -3943,7 +4188,7 @@ function RequestsTable({
           </div>
         )
       })}
-      {pagination.pageCount > 1 && (
+      {pagination.total > 0 && (
         <OperationPagination pagination={pagination} label="Заявки" />
       )}
     </div>
@@ -4161,7 +4406,6 @@ function ReceiptsTable({
       ref={pagination.containerRef}
       className="grid scroll-mt-[32rem] md:scroll-mt-48 xl:scroll-mt-32 gap-3 bg-stone-50/60 p-4"
     >
-      <OperationPagination pagination={pagination} label="Получение" />
       {visibleGroups.length === 0 ? (
         <OperationFormEmpty text="Получения по такому запросу не найдены." />
       ) : null}
@@ -4224,7 +4468,7 @@ function ReceiptsTable({
               </button>
               <div className="grid min-w-0 gap-2 sm:grid-cols-4">
                 <RequestGroupMetric
-                  label="Поступило"
+                  label="Получено"
                   value={formatUnitTotals(
                     group.entries.map((entry) => ({
                       quantity: entry.quantity,
@@ -4534,7 +4778,7 @@ function ReceiptsTable({
           </div>
         )
       })}
-      {pagination.pageCount > 1 && (
+      {pagination.total > 0 && (
         <OperationPagination pagination={pagination} label="Получение" />
       )}
     </div>
@@ -4766,6 +5010,7 @@ function RequestModal({
       ]),
     [availableCiphers, editingRequest],
   )
+  const suggestNumber = useDocumentNumber()
   const [number, setNumber] = useState('')
   const alternativeUnits = unique(configuredUnits.map((unit) => unit.trim()))
   const [date, setDate] = useState('')
@@ -5008,7 +5253,7 @@ function RequestModal({
     } else {
       const initialDate = todayInputValue()
 
-      setNumber(makeMaterialRequestNumber(existingRequests, initialDate, ''))
+      setNumber(suggestNumber('request', { date: initialDate }))
       setDate(initialDate)
       setRequester('')
       setCipher('')
@@ -5032,6 +5277,7 @@ function RequestModal({
     lines,
     open,
     requestSourceLines,
+    suggestNumber,
   ])
 
   useEffect(() => {
@@ -5040,9 +5286,21 @@ function RequestModal({
     }
 
     setNumber(
-      makeMaterialRequestNumber(existingRequests, date, numberMaterialType),
+      suggestNumber('request', {
+        date,
+        cipher,
+        materialType: numberMaterialType,
+      }),
     )
-  }, [date, editingRequest, existingRequests, materialType, open])
+  }, [
+    date,
+    cipher,
+    editingRequest,
+    materialType,
+    numberMaterialType,
+    open,
+    suggestNumber,
+  ])
 
   function getRequestAvailableBalance(
     line: SubobjectMaterialMetric,
@@ -5327,7 +5585,11 @@ function RequestModal({
         materialType: getRequestLineMaterialType(line),
         number:
           number.trim() ||
-          makeMaterialRequestNumber(existingRequests, date, numberMaterialType),
+          suggestNumber('request', {
+            date,
+            cipher,
+            materialType: numberMaterialType,
+          }),
         projectLineId: lineId,
         projectMaterialName:
           line.projectMaterialName || line.material || 'Материал',
@@ -5363,7 +5625,6 @@ function RequestModal({
       onClose={onClose}
     >
       <OperationModalLayout
-        hint="Сначала выберите шифр проекта и типы материала. После этого справа появится список позиций для заполнения заявки."
         footerStart={
           editingRequest ? (
             <div className="flex items-center gap-2">
@@ -5589,26 +5850,17 @@ function RequestModal({
               </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs leading-5 text-slate-500 shadow-sm shadow-slate-200/50">
-              <div className="text-sm font-medium text-slate-900">
-                Excel для больших заявок
-              </div>
-              <p className="mt-1">
-                Шаблон формируется только по выбранному шифру и типам материала.
-                Серые колонки в файле остаются справочными.
-              </p>
-              <Button
-                className="mt-3 w-full justify-center bg-white"
-                disabled={
-                  !cipher || !materialType || requestScopeLines.length === 0
-                }
-                variant="outline"
-                onClick={() => setRequestImportOpen(true)}
-              >
-                <FileInput size={16} />
-                Импорт Excel
-              </Button>
-            </div>
+            <Button
+              className="w-full justify-center bg-white"
+              disabled={
+                !cipher || !materialType || requestScopeLines.length === 0
+              }
+              variant="outline"
+              onClick={() => setRequestImportOpen(true)}
+            >
+              <FileInput size={16} />
+              Импорт Excel
+            </Button>
           </aside>
 
           <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
@@ -7231,7 +7483,6 @@ function ReceiptModal({
         </p>
       )}
       <OperationModalLayout
-        hint="Получение можно оформить по выбранной заявке или через поиск материала по всем заявкам. Если фактически пришла замена, укажите фактическое наименование ТМЦ."
         hideFooter
         primaryDisabled={receiptSaveDisabled}
         primaryLabel={
@@ -7319,24 +7570,15 @@ function ReceiptModal({
               </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <h3 className="text-sm font-medium text-slate-950">
-                Excel для больших получений
-              </h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                Шаблон формируется по найденным позициям справа. Серые колонки в
-                файле остаются справочными.
-              </p>
-              <Button
-                className="mt-3 w-full"
-                disabled={receiptTemplateWorkItems.length === 0}
-                variant="outline"
-                onClick={() => setReceiptImportOpen(true)}
-              >
-                <FileInput size={16} />
-                Импорт Excel
-              </Button>
-            </div>
+            <Button
+              className="w-full"
+              disabled={receiptTemplateWorkItems.length === 0}
+              variant="outline"
+              onClick={() => setReceiptImportOpen(true)}
+            >
+              <FileInput size={16} />
+              Импорт Excel
+            </Button>
 
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <h3 className="text-sm font-medium text-slate-950">Сохранение</h3>
@@ -7344,11 +7586,7 @@ function ReceiptModal({
                 <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
                   Нельзя сохранить: {receiptSaveBlockedReason}
                 </div>
-              ) : (
-                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-900">
-                  Все обязательные поля заполнены, получение можно сохранить.
-                </div>
-              )}
+              ) : null}
               <div className="mt-3 grid gap-2">
                 <Button disabled={receiptSaveDisabled} onClick={submit}>
                   {editingReceipt
@@ -8122,11 +8360,7 @@ function ReceiptImportDialog({
                 Позиций в шаблоне: {scopeCount}
               </span>
             </div>
-            <p className="mt-2 text-sm leading-6 text-slate-500">
-              Сначала скачайте шаблон, заполните поступившее количество по
-              нужным позициям, затем загрузите файл обратно и проверьте
-              черновик.
-            </p>
+
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Button variant="outline" onClick={onDownloadTemplate}>
                 <Download size={16} /> Скачать шаблон
@@ -8141,10 +8375,7 @@ function ReceiptImportDialog({
             </div>
             {draft ? (
               <p className="mt-2 text-sm leading-6 text-slate-500">
-                Дважды нажмите на ячейку, чтобы исправить значение. Enter или
-                Tab — подтвердить, Escape — отменить правку. Серые колонки не
-                редактируются. Новый файл заменит весь черновик, включая правки
-                в таблице.
+                Новый файл заменит черновик и правки в таблице.
               </p>
             ) : null}
             {fileError ? (
@@ -8449,7 +8680,6 @@ function ReceiptImportDialog({
 
 function IssueModal({
   workflow,
-  existingCount,
   lineById,
   issues,
   open,
@@ -8460,7 +8690,6 @@ function IssueModal({
   onSubmit,
 }: {
   workflow?: QualityWorkflow
-  existingCount: number
   lineById: Map<string, SubobjectMaterialMetric>
   issues: Array<MaterialIssueEntry>
   open: boolean
@@ -8470,12 +8699,13 @@ function IssueModal({
   onClose: () => void
   onSubmit: (entries: Array<MaterialIssueEntry>) => void
 }) {
+  const suggestNumber = useDocumentNumber()
   const [drafts, setDrafts] = useState<Record<string, IssueDraft>>({})
   const draftsRef = useRef(drafts)
   const gridRef = useRef<GridApi<IssueTableRow> | null>(null)
   const submitting = useRef(false)
   const initialized = useRef(false)
-  const [documentNumber, setDocumentNumber] = useState('')
+  const [manualNumber, setManualNumber] = useState<string | null>(null)
   const [date, setDate] = useState('')
   const [receiver, setReceiver] = useState('')
   const [search, setSearch] = useState('')
@@ -8493,7 +8723,7 @@ function IssueModal({
     initialized.current = true
     draftsRef.current = {}
     setDrafts({})
-    setDocumentNumber(makeOperationNumber('ПМ', existingCount))
+    setManualNumber(null)
     setDate(localDateInputValue())
     setReceiver('')
     setSearch('')
@@ -8502,7 +8732,7 @@ function IssueModal({
     setOnlySelected(false)
     setSubmitError('')
     submitting.current = false
-  }, [open, existingCount])
+  }, [open, suggestNumber])
 
   const candidates = useMemo(() => {
     if (!open) return []
@@ -8605,6 +8835,9 @@ function IssueModal({
   }
   const rows = buildRows(drafts)
   const selectedRows = rows.filter((row) => row.selected)
+  const documentNumber =
+    manualNumber ??
+    suggestNumber('issue', { date, ...materialNumberContext(selectedRows) })
   const tokens = normalizeSearchValue(search).split(/\s+/).filter(Boolean)
   const visibleRows = onlySelected
     ? selectedRows
@@ -8774,7 +9007,7 @@ function IssueModal({
             <Input
               aria-label="Документ передачи"
               value={documentNumber}
-              onChange={(event) => setDocumentNumber(event.target.value)}
+              onChange={(event) => setManualNumber(event.target.value)}
             />
           </Field>
           <Field label="Дата выдачи">
@@ -9074,7 +9307,6 @@ function OperationModalLayout({
   children,
   footerStart,
   hideFooter = false,
-  hint,
   primaryDisabled,
   primaryLabel,
   onCancel,
@@ -9083,7 +9315,6 @@ function OperationModalLayout({
   children: React.ReactNode
   footerStart?: React.ReactNode
   hideFooter?: boolean
-  hint: string
   primaryDisabled: boolean
   primaryLabel: string
   onCancel: () => void
@@ -9101,9 +9332,6 @@ function OperationModalLayout({
         onSubmit()
       }}
     >
-      <div className="rounded-lg border border-blue-100 bg-blue-50/35 px-3 py-2 text-[13px] leading-6 text-blue-900">
-        {hint}
-      </div>
       {children}
       {hideFooter ? null : (
         <div className="-mx-5 -mb-5 mt-1 flex flex-col gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -9158,7 +9386,7 @@ type OperationOverviewCipherRow = {
   projectQuantity: number
 }
 type OperationOverviewRow = {
-  progress: MaterialProgress
+  indicators: OverviewIndicators
   ciphers: Array<OperationOverviewCipherRow>
   deleted: boolean
   key: string
@@ -9255,6 +9483,7 @@ function buildOperationSummary({
 function buildOperationOverviewRows({
   workflow,
   summaryByLine,
+  balancesByReceipt,
   lines,
   materialIssues,
   materialReceipts,
@@ -9268,7 +9497,12 @@ function buildOperationOverviewRows({
   qualityControls: Array<InspectionApproval>
   workflow?: QualityWorkflow
   summaryByLine: Map<string, OperationLineSummary>
+  balancesByReceipt: ReturnType<typeof receiptBalances>
 }): Array<OperationOverviewRow> {
+  const balancesByLine = receiptIndicatorsByLine(
+    materialReceipts,
+    balancesByReceipt,
+  )
   const documentById = indexReceiptDocuments(workflow)
   const requestById = new Map(
     materialRequests.map((request) => [request.id, request]),
@@ -9336,6 +9570,7 @@ function buildOperationOverviewRows({
     const current =
       rowMap.get(key) ??
       ({
+        indicators: emptyOverviewIndicators(),
         ciphers: [],
         deleted: false,
         key,
@@ -9347,12 +9582,6 @@ function buildOperationOverviewRows({
         projectMaterialName: line.projectMaterialName ?? '',
         totalProjectQuantity: 0,
         totals: createEmptyOverviewMetrics(),
-        progress: {
-          projectQuantity: 0,
-          requestedQuantity: 0,
-          receivedQuantity: 0,
-          qcSignedQuantity: 0,
-        },
         unit: line.unit,
         unitWeight: line.unitWeight ?? null,
       } satisfies OperationOverviewRow)
@@ -9375,15 +9604,13 @@ function buildOperationOverviewRows({
       projectQuantity: line.plannedQuantity,
     })
     current.totalProjectQuantity += line.plannedQuantity
-    const progress = summaryByLine.get(lineId)
-    if (progress)
-      for (const field of [
-        'projectQuantity',
-        'requestedQuantity',
-        'receivedQuantity',
-        'qcSignedQuantity',
-      ] as const)
-        current.progress[field] += progress[field]
+    // A surplus under one cipher must not cover an unreceived quantity under another.
+    current.indicators.remaining += remainingMaterialQuantity({
+      projectQuantity: line.plannedQuantity,
+      receivedQuantity: summaryByLine.get(lineId)?.receivedQuantity ?? 0,
+    })
+    for (const field of receiptIndicatorKeys)
+      current.indicators[field] += balancesByLine.get(lineId)?.[field] ?? 0
     current.totals = addOverviewMetrics(current.totals, metrics)
     rowMap.set(key, current)
   }
@@ -9413,6 +9640,7 @@ function buildOperationOverviewRows({
     const current =
       rowMap.get(key) ??
       ({
+        indicators: emptyOverviewIndicators(),
         ciphers: [],
         deleted: true,
         key,
@@ -9425,12 +9653,6 @@ function buildOperationOverviewRows({
           descriptor.projectMaterialName || 'Удаленный материал',
         totalProjectQuantity: 0,
         totals: createEmptyOverviewMetrics(),
-        progress: {
-          projectQuantity: 0,
-          requestedQuantity: 0,
-          receivedQuantity: 0,
-          qcSignedQuantity: 0,
-        },
         unit: descriptor.unit,
         unitWeight: null,
       } satisfies OperationOverviewRow)
@@ -9446,17 +9668,18 @@ function buildOperationOverviewRows({
       metrics,
       projectQuantity: 0,
     })
-    const progress = summaryByLine.get(lineId)
-    if (progress)
-      for (const field of [
-        'projectQuantity',
-        'requestedQuantity',
-        'receivedQuantity',
-        'qcSignedQuantity',
-      ] as const)
-        current.progress[field] += progress[field]
+    for (const field of receiptIndicatorKeys)
+      current.indicators[field] += balancesByLine.get(lineId)?.[field] ?? 0
     current.totals = addOverviewMetrics(current.totals, metrics)
     rowMap.set(key, current)
+  }
+
+  for (const row of rowMap.values()) {
+    row.indicators.withoutRequests = Number(
+      !row.deleted &&
+        row.totalProjectQuantity > 0 &&
+        row.totals.requests.documents.length === 0,
+    )
   }
 
   return Array.from(rowMap.values()).sort((left, right) => {
@@ -10300,50 +10523,16 @@ function operationOverviewRowMatchesMaterialType(
 }
 
 function getOperationOverviewRowTone(row: OperationOverviewRow) {
-  const status = materialProgressStatus(row.progress)
-
-  if (row.deleted) {
-    return {
-      card: 'border-slate-300 bg-slate-100/75 shadow-slate-200/70',
-      expanded: 'ring-1 ring-slate-300',
-      focus: 'ring-2 ring-slate-300',
-      header: 'bg-slate-100/80',
-    }
-  }
-
-  if (status === 'excess') {
-    return {
-      card: 'border-rose-300 bg-rose-50/45 shadow-rose-100/70',
-      expanded: 'ring-1 ring-rose-300',
-      focus: 'ring-2 ring-rose-300',
-      header: 'bg-rose-50/45',
-    }
-  }
-
-  if (status === 'approved') {
+  if (
+    !row.deleted &&
+    row.totalProjectQuantity > 0 &&
+    row.indicators.remaining === 0
+  ) {
     return {
       card: 'border-emerald-200 bg-emerald-50/45 shadow-emerald-100/60',
       expanded: 'ring-1 ring-emerald-200',
       focus: 'ring-2 ring-emerald-200',
       header: 'bg-emerald-50/45',
-    }
-  }
-
-  if (status === 'in-progress') {
-    return {
-      card: 'border-amber-200 bg-amber-50/45 shadow-amber-100/60',
-      expanded: 'ring-1 ring-amber-200',
-      focus: 'ring-2 ring-amber-200',
-      header: 'bg-amber-50/45',
-    }
-  }
-
-  if (status === 'requested') {
-    return {
-      card: 'border-blue-200 bg-blue-50/45 shadow-blue-100/60',
-      expanded: 'ring-1 ring-blue-200',
-      focus: 'ring-2 ring-blue-200',
-      header: 'bg-blue-50/45',
     }
   }
 
@@ -10362,40 +10551,7 @@ function getMaterialProgressTone({
   deleted?: boolean
   summary?: OperationLineSummary
 }) {
-  const status = materialProgressStatus(
-    summary ?? {
-      projectQuantity: 0,
-      requestedQuantity: 0,
-      receivedQuantity: 0,
-      qcSignedQuantity: 0,
-    },
-  )
-
-  if (deleted) {
-    return {
-      accent: 'bg-slate-300',
-      card: 'border-slate-300 bg-slate-100/75 shadow-slate-200/70',
-      divider: 'border-slate-200',
-      header: 'bg-slate-100/80',
-      leftBorder: 'border-l-slate-300',
-      metric: 'border-slate-200 bg-slate-50/80',
-      ring: 'ring-slate-200',
-    }
-  }
-
-  if (status === 'excess') {
-    return {
-      accent: 'bg-rose-300',
-      card: 'border-rose-300 bg-rose-50/45 shadow-rose-100/70',
-      divider: 'border-rose-200',
-      header: 'bg-rose-50/45',
-      leftBorder: 'border-l-rose-300',
-      metric: 'border-rose-200 bg-rose-50/65',
-      ring: 'ring-rose-200',
-    }
-  }
-
-  if (status === 'approved') {
+  if (!deleted && summary && isMaterialFullyReceived(summary)) {
     return {
       accent: 'bg-emerald-300',
       card: 'border-emerald-200 bg-emerald-50/45 shadow-emerald-100/60',
@@ -10404,30 +10560,6 @@ function getMaterialProgressTone({
       leftBorder: 'border-l-emerald-300',
       metric: 'border-emerald-200 bg-emerald-50/65',
       ring: 'ring-emerald-200',
-    }
-  }
-
-  if (status === 'in-progress') {
-    return {
-      accent: 'bg-amber-300',
-      card: 'border-amber-200 bg-amber-50/45 shadow-amber-100/60',
-      divider: 'border-amber-200',
-      header: 'bg-amber-50/45',
-      leftBorder: 'border-l-amber-300',
-      metric: 'border-amber-200 bg-amber-50/65',
-      ring: 'ring-amber-200',
-    }
-  }
-
-  if (status === 'requested') {
-    return {
-      accent: 'bg-blue-300',
-      card: 'border-blue-200 bg-blue-50/45 shadow-blue-100/60',
-      divider: 'border-blue-200',
-      header: 'bg-blue-50/45',
-      leftBorder: 'border-l-blue-300',
-      metric: 'border-blue-200 bg-blue-50/65',
-      ring: 'ring-blue-200',
     }
   }
 
@@ -10589,50 +10721,6 @@ function createClientId(prefix: string) {
   }
 
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function makeOperationNumber(prefix: string, existingCount: number) {
-  const year = new Date().getFullYear()
-  return `${prefix}-${year}-${String(existingCount + 1).padStart(4, '0')}`
-}
-
-function makeMaterialRequestNumber(
-  existingRequests: Array<MaterialRequestEntry>,
-  dateValue: string,
-  materialType: string,
-) {
-  const date = parseDocumentDate(dateValue)
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const year = String(date.getFullYear()).slice(-2)
-  const monthKey = `${date.getFullYear()}-${month}`
-  const sequence = getMaterialRequestMonthSequence(existingRequests, monthKey)
-  const typeSuffix = normalizeRequestNumberType(materialType)
-
-  return `ЗП-${month}-${year}-${String(sequence).padStart(4, '0')}-${typeSuffix}`
-}
-
-function getMaterialRequestMonthSequence(
-  existingRequests: Array<MaterialRequestEntry>,
-  monthKey: string,
-) {
-  const requestNumbers = new Set<string>()
-
-  for (const request of existingRequests) {
-    if (getDocumentMonthKey(request.date) === monthKey) {
-      requestNumbers.add(request.number)
-    }
-  }
-
-  return requestNumbers.size + 1
-}
-
-function normalizeRequestNumberType(materialType: string) {
-  return materialType.trim().replace(/\s+/g, ' ') || 'Материалы'
-}
-
-function getDocumentMonthKey(dateValue: string) {
-  const date = parseDocumentDate(dateValue)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
 function parseDocumentDate(dateValue: string) {
@@ -11456,34 +11544,42 @@ function FormSection({
   )
 }
 
-function SettingsModal({
+function SettingsPanel({
+  numbering,
+  numberHistory,
+  onSaveNumbering,
   qualityWorkflow,
   onChangeQualityWorkflow,
   draft,
   error,
   materialTypeSettings,
-  open,
   onChangeDraft,
   onChangeMaterialTypeSettings,
-  onClose,
+  onDiscard,
   onSave,
 }: {
+  numbering?: DocumentNumbering
+  numberHistory: NumberHistory
+  onSaveNumbering: (next: DocumentNumbering) => void
   qualityWorkflow?: QualityWorkflow
   onChangeQualityWorkflow: (next: QualityWorkflow) => void
   draft: ReferenceSettingsDraft
   error: string
   materialTypeSettings: Array<MaterialTypeSetting>
-  open: boolean
   onChangeDraft: (key: keyof ReferenceSettingsDraft, value: string) => void
   onChangeMaterialTypeSettings: (
     materialTypeSettings: Array<MaterialTypeSetting>,
   ) => void
-  onClose: () => void
+  onDiscard: () => void
   onSave: () => void
 }) {
   const [activeTab, setActiveTab] = useState<
-    ReferenceSettingsKey | 'print' | 'quality'
-  >('ciphers')
+    ReferenceSettingsKey | 'print' | 'quality' | 'numbering'
+  >('numbering')
+  const [printKind, setPrintKind] = useState<'request' | 'zni' | 'avk'>(
+    'request',
+  )
+  const [saved, setSaved] = useState(false)
   const sections: Array<{
     key: ReferenceSettingsKey
     label: string
@@ -11545,10 +11641,25 @@ function SettingsModal({
   if (!activeSection) return null
 
   return (
-    <Modal open={open} title="Настройки базы" size="lg" onClose={onClose}>
+    <section className="mt-5" aria-label="Настройки приложения">
       <div className="grid gap-5">
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div className="grid gap-2 rounded-md border border-stone-200 bg-stone-50/70 p-2 sm:grid-cols-5 md:block">
+        <div
+          className={`grid gap-4 ${activeTab === 'print' ? '' : 'md:grid-cols-[220px_1fr]'}`}
+        >
+          <div
+            className={
+              activeTab === 'print'
+                ? 'flex flex-wrap gap-1 rounded-md border border-stone-200 bg-stone-50/70 p-2 [&>button]:mb-0 [&>button]:min-h-0 [&>button]:w-auto [&>button]:py-2'
+                : 'grid content-start gap-2 rounded-md border border-stone-200 bg-stone-50/70 p-2 md:block'
+            }
+          >
+            <button
+              type="button"
+              className={`mb-2 w-full rounded-md px-3 py-3 text-left text-sm ${activeTab === 'numbering' ? 'bg-white font-medium shadow-sm' : 'text-stone-600 hover:bg-white'}`}
+              onClick={() => setActiveTab('numbering')}
+            >
+              Нумерация документов
+            </button>
             <button
               type="button"
               className={`mb-2 w-full rounded-md px-3 py-3 text-left text-sm ${activeTab === 'print' ? 'bg-white font-medium text-stone-900 shadow-sm ring-1 ring-stone-200' : 'text-stone-600 hover:bg-white'}`}
@@ -11561,7 +11672,7 @@ function SettingsModal({
               className="mb-2 w-full rounded-md px-3 py-3 text-left text-sm hover:bg-white"
               onClick={() => setActiveTab('quality')}
             >
-              ЗНИ и АВК · Реквизиты и шаблоны
+              Реквизиты документов
             </button>
             {sections.map((section) => {
               const active = activeTab === section.key
@@ -11579,22 +11690,52 @@ function SettingsModal({
                 >
                   <span className="grid gap-0.5">
                     <span className="font-medium">{section.shortLabel}</span>
-                    <span className="hidden text-xs text-stone-400 md:block">
-                      {section.label}
-                    </span>
                   </span>
                 </button>
               )
             })}
           </div>
 
-          {activeTab === 'quality' ? (
+          {activeTab === 'numbering' ? (
+            <DocumentNumberingSettings
+              value={numbering}
+              history={numberHistory}
+              onSave={onSaveNumbering}
+            />
+          ) : activeTab === 'quality' ? (
             <QualitySettings
               value={qualityWorkflow}
               onChange={onChangeQualityWorkflow}
             />
           ) : activeTab === 'print' ? (
-            <RequestPrintSettings />
+            <div className="grid content-start gap-4 min-w-0">
+              <div
+                className="flex flex-wrap gap-2"
+                role="tablist"
+                aria-label="Шаблоны печати"
+              >
+                {(['request', 'zni', 'avk'] as const).map((kind) => (
+                  <Button
+                    role="tab"
+                    aria-selected={printKind === kind}
+                    key={kind}
+                    variant={printKind === kind ? 'default' : 'outline'}
+                    onClick={() => setPrintKind(kind)}
+                  >
+                    {kind === 'request'
+                      ? 'Заявка на получение'
+                      : kind === 'zni'
+                        ? 'ЗНИ'
+                        : 'АВК'}
+                  </Button>
+                ))}
+              </div>
+              {printKind === 'request' ? (
+                <RequestPrintSettings />
+              ) : (
+                <QualityPrintSettings key={printKind} kind={printKind} />
+              )}
+            </div>
           ) : activeSection.key === 'materialTypes' ? (
             <MaterialTypeSettingsSection
               description={activeSection.description}
@@ -11626,16 +11767,34 @@ function SettingsModal({
             {error}
           </p>
         ) : null}
-        <div className="flex justify-between gap-2 border-t border-stone-200 pt-4">
-          <Button variant="outline" onClick={onClose}>
-            {activeTab === 'print' ? 'Закрыть' : 'Отмена'}
-          </Button>
-          {activeTab !== 'print' && activeTab !== 'quality' ? (
-            <Button onClick={onSave}>Сохранить</Button>
-          ) : null}
-        </div>
+        {!['print', 'quality', 'numbering'].includes(activeTab) && (
+          <div className="flex items-center gap-2 border-t border-stone-200 pt-4">
+            <Button
+              onClick={() => {
+                onSave()
+                setSaved(true)
+              }}
+            >
+              Сохранить
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                onDiscard()
+                setSaved(false)
+              }}
+            >
+              Отменить изменения
+            </Button>
+            {saved && !error && (
+              <span role="status" className="text-sm text-emerald-700">
+                Настройки применены.
+              </span>
+            )}
+          </div>
+        )}
       </div>
-    </Modal>
+    </section>
   )
 }
 
@@ -12229,7 +12388,7 @@ function NativeSelect({
 }) {
   return (
     <select
-      className="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm text-stone-900 shadow-sm outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+      className="h-10 min-w-0 max-w-full rounded-md border border-stone-200 bg-white px-3 text-sm text-stone-900 outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
       value={value}
       onChange={(event) => onChange(event.target.value)}
     >
@@ -12316,6 +12475,7 @@ function normalizeStoredProjectWorkspace(
       ? parsed.materialRequests
       : undefined,
     qualityWorkflow: parsed.qualityWorkflow,
+    documentNumbering: parsed.documentNumbering,
   }
 }
 

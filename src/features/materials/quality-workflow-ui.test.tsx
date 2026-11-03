@@ -12,6 +12,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { operationGridApi } from './project-grid-test-support'
 import { InspectionWorkspace } from './quality-workflow-ui'
 import { QualityPrintButton } from './quality-print-ui'
+import { DocumentNumberingContext } from './document-numbering-context'
+import { emptyNumberHistory, initialNumbering } from './document-numbering'
 import {
   acceptFixture,
   documentInspectionFixture,
@@ -417,10 +419,59 @@ it('paginates inspection cases and opens a linked inspection on another page', a
     <InspectionWorkspace {...props} focusId="inspection:case-30:1" />,
   )
   expect(document.querySelectorAll('article')).toHaveLength(7)
-  expect(screen.getAllByText('Страница 2 из 2')).toHaveLength(2)
+  expect(screen.getAllByText('Страница 2 из 2')).toHaveLength(1)
   const grid = await operationGridApi('inspection:case-30:1')
   expect(grid.getDisplayedRowCount()).toBe(1)
   view.rerender(<InspectionWorkspace {...props} search="ЗНИ-5" />)
   expect(document.querySelectorAll('article')).toHaveLength(1)
   expect(onChange).not.toHaveBeenCalled()
+})
+
+it('keeps a new AVK unsaved until confirmation, updates automatic date tokens and preserves manual numbers', () => {
+  const fixture = acceptFixture()
+  currentInspection(fixture.qualityWorkflow.cases[0]!).avk = null
+  const before = structuredClone(fixture)
+  const history = emptyNumberHistory(),
+    settings = initialNumbering(history),
+    onChange = vi.fn()
+  settings.avk = { pattern: 'АКТ/{год}/{номер}', padding: 2, lastValue: 6 }
+  render(
+    <DocumentNumberingContext value={{ settings, history }}>
+      <InspectionWorkspace
+        value={fixture.qualityWorkflow}
+        receipts={receiptsOf(fixture)}
+        lines={linesOf(fixture)}
+        onChange={onChange}
+        prepare={async () => 'revision'}
+      />
+    </DocumentNumberingContext>,
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
+  fireEvent.change(screen.getByLabelText('Дата АВК'), {
+    target: { value: '2025-12-01' },
+  })
+  expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toBe(
+    'АКТ/2025/07',
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Закрыть документ' }))
+  expect(onChange).not.toHaveBeenCalled()
+  expect(fixture).toEqual(before)
+  fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
+  expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toMatch(
+    /^АКТ\/\d{4}\/07$/,
+  )
+  fireEvent.change(screen.getByLabelText('Номер АВК'), {
+    target: { value: 'Мой номер' },
+  })
+  fireEvent.change(screen.getByLabelText('Дата АВК'), {
+    target: { value: '2025-12-01' },
+  })
+  expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toBe(
+    'Мой номер',
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить документы' }))
+  expect(onChange).toHaveBeenCalledTimes(1)
+  expect(
+    currentInspection(onChange.mock.calls[0]![0].cases[0]).avk?.number,
+  ).toBe('Мой номер')
 })

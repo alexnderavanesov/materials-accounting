@@ -16,6 +16,22 @@ Object.defineProperty(HTMLElement.prototype, 'innerText', {
     this.textContent = value
   },
 })
+// Native column chooser dialogs need a positioned parent to compute their centre.
+Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+  configurable: true,
+  get() {
+    return this.matches('.ag-dialog') ? this.parentElement : null
+  },
+})
+for (const property of ['clientHeight', 'offsetHeight']) {
+  Object.defineProperty(HTMLElement.prototype, property, {
+    configurable: true,
+    get() {
+      if (!this.closest('.ag-dialog')) return 0
+      return Number.parseFloat(this.style.height) || 300
+    },
+  })
+}
 
 // jsdom has no layout: keep the real grid/editors, but render all test cells.
 vi.mock('ag-grid-react', async (importOriginal) => {
@@ -42,14 +58,33 @@ export async function projectGridApi() {
   return getGridApi('project-materials')! as GridApi<MaterialMatrixRow>
 }
 
-function expectGridReady() {
-  if (!getGridApi('project-materials')) throw new Error('Grid is not ready')
-  const container = screen.getByRole('grid').closest('.materials-project-grid')!
-  const button = within(container as HTMLElement).getByRole<HTMLButtonElement>(
-    'button',
-    { name: 'Excel' },
+export async function openProjectColumnChooser() {
+  await projectGridApi()
+  fireEvent.contextMenu(screen.getAllByRole('columnheader')[0]!)
+  fireEvent.click(
+    await screen.findByRole('menuitem', { name: 'Выбрать столбцы' }),
   )
-  if (button.disabled) throw new Error('Waiting for gridReady')
+  return screen.findByRole('dialog', { name: 'Выбрать столбцы' })
+}
+
+export async function toggleProjectColumn(dialog: HTMLElement, name: string) {
+  fireEvent.click(await within(dialog).findByText(name, { exact: true }))
+}
+
+export async function closeProjectColumnChooser(dialog: HTMLElement) {
+  const input = within(dialog).getByRole('textbox', { name: 'Поиск столбцов' })
+  act(() => input.focus())
+  fireEvent.keyDown(input, { key: 'Escape' })
+  await waitFor(() => {
+    if (screen.queryByRole('dialog', { name: 'Выбрать столбцы' })) {
+      throw new Error('Column chooser did not close')
+    }
+  })
+}
+
+function expectGridReady() {
+  const api = getGridApi('project-materials')
+  if (!api?.getColumns()?.length) throw new Error('Grid is not ready')
 }
 
 export async function gridCell(materialName: string, columnId: string) {

@@ -294,6 +294,13 @@ describe('quality templates and PDF endpoint', () => {
       409,
     )
     expect(convert).toHaveBeenCalledTimes(1)
+    const bundle = await (await handle(request({ format: 'bundle' }))).json()
+    expect(bundle.pdf).toBe(Buffer.from('%PDF-test').toString('base64'))
+    expect(bundle.excel).toBeTruthy()
+    expect(convert).toHaveBeenCalledTimes(2)
+    const excelResponse = await handle(request({ format: 'xlsx' }))
+    expect(excelResponse.headers.get('content-type')).toContain('spreadsheetml')
+    expect(convert).toHaveBeenCalledTimes(2)
     expect(await readFile(join(path, 'workspace.json'))).toEqual(before)
   })
 })

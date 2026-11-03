@@ -141,7 +141,7 @@ export const samplePrintData: PrintData = {
     number: 'ЗП-2026-0001',
     date: '16.10.2026',
     requester: 'Иванов И.И.',
-    requestNote: '',
+    requestNote: 'Для линии 2',
     cipher: 'ТК1',
     materialType: 'Соединительные детали трубопроводов',
   },

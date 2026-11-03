@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { documentNumberingSchema } from './document-numbering'
 import { qualityWorkflowSchema } from './quality-workflow'
 
 const records = z.array(z.record(z.string(), z.json()))
@@ -18,6 +19,7 @@ export const workspaceSnapshotSchema = z
     // Old empty envelopes may still have this key; legacy controls are not accepted.
     qualityControls: z.array(z.never()).max(0).optional(),
     qualityWorkflow: qualityWorkflowSchema.optional(),
+    documentNumbering: documentNumberingSchema.optional(),
   })
   .strict()
 

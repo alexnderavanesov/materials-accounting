@@ -492,6 +492,19 @@ describe('template persistence and print API', () => {
     const response = await handler(apiRequest(print))
     expect(response.headers.get('content-type')).toBe('application/pdf')
     expect(response.status).toBe(200)
+    const bundleResponse = await handler(
+      apiRequest({ ...print, format: 'bundle' }),
+    )
+    const bundle = await bundleResponse.json()
+    expect(bundle.pdf).toBe(Buffer.from('%PDF-test').toString('base64'))
+    expect(Buffer.from(bundle.excel, 'base64')).toEqual(
+      convert.mock.calls[1]![0],
+    )
+    const excelResponse = await handler(
+      apiRequest({ ...print, format: 'xlsx' }),
+    )
+    expect(excelResponse.headers.get('content-type')).toContain('spreadsheetml')
+    expect(convert).toHaveBeenCalledTimes(2)
     const printed = await workbook(convert.mock.calls[0]![0])
     expect(printed.worksheets[0]!.getCell('F8').value).toBe(7.5)
     expect(printed.worksheets[0]!.getCell('B9').value).toBe(

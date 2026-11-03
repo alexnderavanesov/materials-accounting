@@ -1,13 +1,12 @@
+import { readPrintBundle } from './print-output'
+import type { PrintBundle } from './print-output'
 import { useEffect, useState } from 'react'
 import { Printer } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
-import {
-  downloadTemplate,
-  fileBase64,
-  PdfPreview,
-  SheetGrid,
-} from './request-print-ui'
+import { PrintTemplateEditor } from './print-template-editor'
+import { sampleQualityPrintData } from './quality-print-data'
+import { downloadTemplate, fileBase64, PdfPreview } from './request-print-ui'
 import { cellPosition, columnName, maxTemplateBytes } from './request-print'
 import {
   qualityDocumentColumns,
@@ -65,24 +64,25 @@ export function QualityPrintButton({
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
-    [pdf, setPdf] = useState<Blob | null>(null)
+    [bundle, setBundle] = useState<PrintBundle | null>(null)
   async function print() {
     setBusy(true)
     setError('')
     try {
       const workspaceRevision = await prepare(),
         template = await load(kind)
-      setPdf(
-        await (
+      setBundle(
+        await readPrintBundle(
           await post({
             action: 'print',
+            format: 'bundle',
             kind,
             caseId,
             revision,
             workspaceRevision,
             templateRevision: template.revision,
-          })
-        ).blob(),
+          }),
+        ),
       )
     } catch (cause) {
       setError(message(cause))
@@ -101,24 +101,80 @@ export function QualityPrintButton({
           {error}
         </p>
       )}
-      {pdf && (
+      {bundle && (
         <PdfPreview
-          pdf={pdf}
-          name={`${kind === 'zni' ? 'ЗНИ' : 'АВК'} · ревизия ${revision}`}
-          onClose={() => setPdf(null)}
+          pdf={bundle.pdf}
+          excel={bundle.excel}
+          pdfError={bundle.pdfError}
+          name={bundle.name}
+          onClose={() => setBundle(null)}
         />
       )}
     </div>
   )
 }
+const signatureFields = new Set([
+  'signatureLine',
+  'customer',
+  'generalContractor',
+  'contractor',
+  'issuerRole',
+  'issuerName',
+  'customerRepresentative',
+  'generalRepresentative',
+  'contractorRepresentative',
+  'chairmanRole',
+  'chairmanName',
+  'contractorRole',
+  'generalRole',
+  'customerRole',
+  'buyer',
+  'supplier',
+  'manufacturer',
+])
+const resultFields = new Set([
+  'remarks',
+  'acceptedMark',
+  'remarksMark',
+  'rejectedMark',
+  'conclusion',
+  'attachments',
+  'photosYes',
+  'photosNo',
+])
+const qualityFieldGroup = (key: string) =>
+  signatureFields.has(key)
+    ? 'people'
+    : resultFields.has(key) || key.startsWith('check')
+      ? 'results'
+      : 'main'
+const qualityFieldGroups = [
+  {
+    id: 'main',
+    label: 'Данные документа',
+    description:
+      'Номер, даты и основание берутся из ЗНИ или АВК. Одно поле можно разместить в нескольких ячейках.',
+  },
+  {
+    id: 'people',
+    label: 'Организации и подписи',
+    description:
+      'Участники и организации из реквизитов документа. Оставьте в Excel постоянные подписи, а для переменных данных выберите ячейки.',
+  },
+  {
+    id: 'results',
+    label: 'Результаты контроля',
+    description: 'Результат, замечания и отметки из ЗНИ или АВК.',
+  },
+]
+
 export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
+  const [editorVersion, setEditorVersion] = useState(0)
   const [template, setTemplate] = useState<QualityPrintTemplate | null>(null),
     [dirty, setDirty] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
-    [selected, setSelected] = useState(''),
-    [binding, setBinding] = useState('field:number'),
     [pdf, setPdf] = useState<Blob | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -151,58 +207,54 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
       setDirty(true)
     }
   }
-  function bind() {
-    if (!selected || !template) return
+  function assign(fieldId: string, address: string) {
+    if (!template) return
     const config = structuredClone(template.config),
-      [scope, key] = binding.split(':')
-    // A cell has only one source. Repeated header fields may have multiple destinations.
-    for (const addresses of Object.values(config.fields)) {
-      const index = addresses.indexOf(selected)
-      if (index >= 0) addresses.splice(index, 1)
-    }
+      [scope, key] = fieldId.split(':')
+    if (
+      scope === 'field' &&
+      config.tables.some((table) => table.row === cellPosition(address).row)
+    )
+      return 'Данные документа разместите выше или ниже повторяемых строк таблиц.'
+    for (const [field, addresses] of Object.entries(config.fields))
+      config.fields[field] = addresses.filter((item) => item !== address)
     for (const table of config.tables)
       for (const [field, column] of Object.entries(table.columns))
-        if (`${column}${table.row}` === selected) delete table.columns[field]
+        if (`${column}${table.row}` === address) delete table.columns[field]
     if (scope === 'field')
-      config.fields[key!] = [...(config.fields[key!] ?? []), selected]
+      config.fields[key!] = [...(config.fields[key!] ?? []), address]
     else {
       const table = config.tables.find((item) => item.kind === scope)
-      if (!table) {
-        setError('Сначала включите соответствующую таблицу.')
-        return
-      }
-      if (cellPosition(selected).row !== table.row) {
-        setError('Выберите ячейку в строке образца этой таблицы.')
-        return
-      }
-      table.columns[key!] = columnName(cellPosition(selected).column)
+      if (!table) return 'Сначала включите таблицу.'
+      table.columns[key!] = columnName(cellPosition(address).column)
     }
     change(config)
   }
-  const bindings: Record<string, string> = {}
-  if (template) {
-    for (const [key, addresses] of Object.entries(template.config.fields))
-      for (const address of addresses)
-        bindings[address] =
-          qualityPrintFields[key as keyof typeof qualityPrintFields]
-    for (const table of template.config.tables)
-      for (const [key, column] of Object.entries(table.columns))
-        bindings[`${column}${table.row}`] = (
-          table.kind === 'materials'
-            ? qualityMaterialColumns
-            : qualityDocumentColumns
-        )[key as 'name']
+  function remove(fieldId: string, address: string) {
+    if (!template) return
+    const config = structuredClone(template.config),
+      [scope, key] = fieldId.split(':')
+    if (scope === 'field')
+      config.fields[key!] = (config.fields[key!] ?? []).filter(
+        (item) => item !== address,
+      )
+    else {
+      const table = config.tables.find((item) => item.kind === scope)
+      if (table) delete table.columns[key!]
+    }
+    change(config)
   }
   return (
     <section className="grid min-w-0 gap-4 rounded-xl border p-4">
-      <h3 className="text-lg font-semibold">
-        Шаблон печати · {kind === 'zni' ? 'ЗНИ' : 'АВК'}
-      </h3>
-      <p className="text-sm text-slate-500">
-        Скачайте образец, измените оформление в Excel и загрузите .xlsx.
-        Выберите ячейку на листе и назначьте поле. Изменения вступят в силу
-        после сохранения шаблона. Формулы не поддерживаются.
-      </p>
+      <div>
+        <h3 className="text-lg font-semibold">
+          1. Бланк {kind === 'zni' ? 'ЗНИ' : 'АВК'}
+        </h3>
+        <p className="mt-2 text-sm text-slate-500">
+          Готовый образец уже настроен. Чтобы изменить оформление, скачайте
+          Excel, отредактируйте его и загрузите обратно.
+        </p>
+      </div>
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
@@ -246,11 +298,16 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
                 ).json()) as Pick<QualityPrintTemplate, 'config' | 'sheet'>
                 setTemplate({
                   ...template!,
-                  ...result,
+                  sheet: result.sheet,
+                  config: { ...template!.config, sheetName: result.sheet.name },
                   fileName: file.name,
                   base64,
                 })
                 setDirty(true)
+                setEditorVersion((version) => version + 1)
+                setNotice(
+                  'Бланк загружен. Укажите места для полей и проверьте PDF перед сохранением.',
+                )
               })
             }}
           />
@@ -262,11 +319,12 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
             void run(async () => {
               setTemplate(await load(kind))
               setDirty(false)
-              setSelected('')
+              setEditorVersion((version) => version + 1)
+              setNotice('Загружен сохранённый шаблон.')
             })
           }
         >
-          Отменить изменения / загрузить сохранённое
+          Отменить изменения
         </Button>
       </div>
       {error && (
@@ -277,111 +335,50 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
       {notice && <p role="status">{notice}</p>}
       {template && (
         <fieldset disabled={busy} className="grid min-w-0 gap-4">
-          <div className="grid gap-3 md:grid-cols-2">
-            <label>
-              Область печати
-              <Input
-                value={template.config.printArea}
-                onChange={(e) =>
-                  change({
-                    ...template.config,
-                    printArea: e.target.value.toUpperCase(),
-                  })
-                }
-              />
-            </label>
-            <label>
-              Повторяемые строки заголовка
-              <Input
-                placeholder="Например 1:5; можно оставить пустым"
-                value={template.config.headerRows}
-                onChange={(e) =>
-                  change({ ...template.config, headerRows: e.target.value })
-                }
-              />
-            </label>
-          </div>
-          <SheetGrid
+          <p className="text-sm text-slate-500">
+            {template.fileName} · лист «{template.sheet.name}»
+            {dirty ? ' · есть несохранённые изменения' : ''}
+          </p>
+          <PrintTemplateEditor
+            key={editorVersion}
             sheet={template.sheet}
-            bindings={bindings}
-            selected={selected}
-            onSelect={setSelected}
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <span>Ячейка: {selected || 'не выбрана'}</span>
-            <select
-              aria-label="Поле для подстановки"
-              className="rounded-lg border p-2"
-              value={binding}
-              onChange={(e) => setBinding(e.target.value)}
-            >
-              <optgroup label="Реквизиты документа">
-                {Object.entries(qualityPrintFields).map(([key, label]) => (
-                  <option key={key} value={`field:${key}`}>
-                    {label}
-                  </option>
-                ))}
-              </optgroup>
-              {template.config.tables.map((table) => (
-                <optgroup
-                  key={table.kind}
-                  label={
-                    table.kind === 'materials'
-                      ? 'Материалы'
-                      : 'Документы качества'
-                  }
-                >
-                  {Object.entries(
-                    table.kind === 'materials'
-                      ? qualityMaterialColumns
-                      : qualityDocumentColumns,
-                  ).map(([key, label]) => (
-                    <option key={key} value={`${table.kind}:${key}`}>
-                      {label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-            <Button variant="outline" disabled={!selected} onClick={bind}>
-              Привязать ячейку
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={!selected}
-              onClick={() => {
-                const config = structuredClone(template.config)
-                for (const [key, addresses] of Object.entries(config.fields))
-                  config.fields[key] = addresses.filter(
-                    (address) => address !== selected,
-                  )
-                for (const table of config.tables)
-                  for (const [key, column] of Object.entries(table.columns))
-                    if (`${column}${table.row}` === selected)
-                      delete table.columns[key]
-                change(config)
-              }}
-            >
-              Убрать привязку
-            </Button>
-          </div>
-          {(['materials', 'documents'] as const).map((tableKind) => {
-            const table = template.config.tables.find(
-              (item) => item.kind === tableKind,
-            )
-            return (
-              <div
-                className="flex flex-wrap items-center gap-3"
-                key={tableKind}
-              >
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={!!table}
-                    onChange={(e) =>
+            groups={[
+              ...qualityFieldGroups.map((group) => ({
+                id: group.id,
+                label: group.label,
+                description: group.description,
+                fields: Object.entries(qualityPrintFields)
+                  .filter(([key]) => qualityFieldGroup(key) === group.id)
+                  .map(([key, label]) => ({
+                    id: `field:${key}`,
+                    label,
+                    example: String(
+                      sampleQualityPrintData.fields[key] ?? 'Из документа',
+                    ),
+                    addresses: template.config.fields[key] ?? [],
+                  })),
+              })),
+              ...(['materials', 'documents'] as const).map((tableKind) => {
+                const table = template.config.tables.find(
+                  (item) => item.kind === tableKind,
+                )
+                return {
+                  id: tableKind,
+                  label:
+                    tableKind === 'materials'
+                      ? 'Таблица материалов'
+                      : 'Документы качества',
+                  description:
+                    tableKind === 'materials'
+                      ? `Каждый материал — отдельная строка. Количество берётся ${kind === 'zni' ? 'из предъявленного по ЗНИ' : 'из принятого по ЗНИ'}.`
+                      : 'Паспорта, сертификаты и другие документы — по одному в строке.',
+                  table: {
+                    enabled: !!table,
+                    row: table?.row ?? 1,
+                    onEnabledChange: (enabled: boolean) =>
                       change({
                         ...template.config,
-                        tables: e.target.checked
+                        tables: enabled
                           ? [
                               ...template.config.tables,
                               { kind: tableKind, row: 1, columns: {} },
@@ -389,38 +386,95 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
                           : template.config.tables.filter(
                               (item) => item.kind !== tableKind,
                             ),
-                      })
-                    }
-                  />
-                  {tableKind === 'materials'
-                    ? 'Таблица материалов'
-                    : 'Таблица документов качества'}
-                </label>
-                {table && (
-                  <label className="flex items-center gap-2">
-                    Строка образца
-                    <Input
-                      type="number"
-                      min={1}
-                      max={200}
-                      className="w-24"
-                      value={table.row}
-                      onChange={(e) =>
-                        change({
-                          ...template.config,
-                          tables: template.config.tables.map((item) =>
-                            item.kind === tableKind
-                              ? { ...item, row: Number(e.target.value) }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                )}
-              </div>
-            )
-          })}
+                      }),
+                    onRowChange: (row: number) =>
+                      change({
+                        ...template.config,
+                        tables: template.config.tables.map((item) =>
+                          item.kind === tableKind ? { ...item, row } : item,
+                        ),
+                      }),
+                  },
+                  fields: Object.entries(
+                    tableKind === 'materials'
+                      ? qualityMaterialColumns
+                      : qualityDocumentColumns,
+                  ).map(([key, label]) => ({
+                    id: `${tableKind}:${key}`,
+                    label:
+                      key === 'quantity'
+                        ? kind === 'zni'
+                          ? 'Предъявленное количество'
+                          : 'Принятое количество'
+                        : key === 'accepted'
+                          ? 'Принято по ЗНИ'
+                          : label,
+                    example: String(
+                      (tableKind === 'materials'
+                        ? sampleQualityPrintData.materials[0]!
+                        : sampleQualityPrintData.documents[0]!)[key] ??
+                        'Из документа',
+                    ),
+                    addresses: table?.columns[key]
+                      ? [`${table.columns[key]}${table.row}`]
+                      : [],
+                  })),
+                }
+              }),
+            ]}
+            onAssign={assign}
+            onRemove={remove}
+          />
+          <details className="rounded-lg border border-slate-200 p-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              Параметры страницы
+            </summary>
+            <p className="my-3 text-sm text-slate-500">
+              Оформление и подписи меняйте в Excel. Один лист, без формул и
+              макросов.
+            </p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="text-sm">
+                Печатать ячейки от и до
+                <Input
+                  aria-label="Область печати"
+                  value={template.config.printArea}
+                  onChange={(e) =>
+                    change({
+                      ...template.config,
+                      printArea: e.target.value.toUpperCase(),
+                    })
+                  }
+                />
+                <span className="text-xs text-slate-500">
+                  Например, A1:G38 — от A1 до G38, включая подписи.
+                </span>
+              </label>
+              <label className="text-sm">
+                Повторять заголовки на каждой странице
+                <Input
+                  aria-label="Повторять заголовки"
+                  placeholder="Например, 1:5"
+                  value={template.config.headerRows}
+                  onChange={(e) =>
+                    change({ ...template.config, headerRows: e.target.value })
+                  }
+                />
+                <span className="text-xs text-slate-500">
+                  1:5 — строки с 1 по 5. Можно оставить пустым.
+                </span>
+              </label>
+            </div>
+          </details>
+          <div>
+            <h4 className="font-semibold">
+              3. Проверьте результат и сохраните
+            </h4>
+            <p className="mt-1 text-sm text-slate-500">
+              PDF покажет заполненный бланк на примерных данных. Изменения
+              начнут действовать после сохранения.
+            </p>
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"

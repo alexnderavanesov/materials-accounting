@@ -1,3 +1,5 @@
+import { materialNumberContext } from './document-numbering'
+import { useDocumentNumber } from './document-numbering-context'
 import { useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
@@ -36,7 +38,25 @@ export function CustomerReturnModal({
   const pending = pendingCustomerReturns(workflow, entry)
   const [quantities, setQuantities] = useState<Record<string, string>>({})
   const [date, setDate] = useState(localToday())
-  const [documentNumber, setDocumentNumber] = useState('')
+  const suggestNumber = useDocumentNumber()
+  const [manualNumber, setDocumentNumber] = useState<string | null>(null)
+  const documentNumber =
+    manualNumber ??
+    suggestNumber('return', {
+      date,
+      ...materialNumberContext(
+        pending
+          .filter(
+            ({ row }) =>
+              Number((quantities[row.receiptId] ?? '').replace(',', '.')) > 0,
+          )
+          .map(({ row }) => ({
+            cipher: row.cipher,
+            materialType: findInspectionMaterial(lines, row.projectLineId)
+              ?.materialType,
+          })),
+      ),
+    })
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const saving = useRef(false)

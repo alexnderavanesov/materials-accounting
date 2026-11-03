@@ -7,7 +7,7 @@ import type {
   ICellRendererParams,
 } from 'ag-grid-community'
 import { projectGridLocale } from './project-grid-locale'
-import { Download, Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { projectMatrixColumns } from './project-matrix-columns'
 import {
@@ -35,7 +35,8 @@ const defaultColDef: ColDef<MaterialMatrixRow> = {
   resizable: true,
   minWidth: 90,
   filter: 'agTextColumnFilter',
-  floatingFilter: true,
+  floatingFilter: false,
+  suppressHeaderMenuButton: true,
   wrapHeaderText: true,
   autoHeaderHeight: true,
   filterParams: { debounceMs: 150 },
@@ -53,6 +54,8 @@ export function ProjectMaterialGrid({
   onRequestDelete,
   onSelectLine,
   onUpdateQuantity,
+  onReady,
+  onFilterChanged,
 }: {
   ciphers: Array<string>
   hiddenColumns: Array<string>
@@ -61,6 +64,8 @@ export function ProjectMaterialGrid({
   rows: Array<MaterialMatrixRow>
   selectedLineId: string
   tableFilterResetVersion: number
+  onReady?: (api: GridApi<MaterialMatrixRow> | null) => void
+  onFilterChanged?: (active: boolean, count: number) => void
   onEditLine: (id: string) => void
   onRequestDelete: (value: PendingDeleteMaterial) => void
   onSelectLine: (id: string) => void
@@ -199,12 +204,8 @@ export function ProjectMaterialGrid({
   useEffect(() => {
     const grid = api.current
     if (!grid || grid.isDestroyed()) return
-    grid.applyColumnState({
-      state: columns.map(({ colId }) => ({
-        colId: colId!,
-        hide: hiddenColumns.includes(colId!),
-      })),
-    })
+    // The native chooser owns visibility; replaying React state here can undo
+    // a newer checkbox click while AG Grid's visibility event is still queued.
     const filters = grid.getFilterModel()
     const visibleFilters = Object.fromEntries(
       Object.entries(filters).filter(([id]) => !hiddenColumns.includes(id)),
@@ -220,51 +221,25 @@ export function ProjectMaterialGrid({
   }, [tableFilterResetVersion])
 
   return (
-    <div className="materials-project-grid">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
-        <span className="text-xs text-slate-500">
-          Количество: двойной щелчок → Enter / Tab. Escape — отмена.
-        </span>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => api.current?.setFilterModel(null)}
-          >
-            Сбросить фильтры
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!ready}
-            onClick={() =>
-              api.current?.exportDataAsExcel({
-                fileName: 'Проектная база.xlsx',
-                sheetName: 'Материалы',
-                columnKeys: api.current
-                  .getAllDisplayedColumns()
-                  .filter((column) => column.getColId() !== 'actions')
-                  .map((column) => column.getColId()),
-              })
-            }
-          >
-            <Download size={15} />
-            Excel
-          </Button>
-        </div>
-      </div>
+    <div className="materials-project-grid flex min-h-0 flex-1 flex-col">
       {error && (
-        <p role="alert" className="px-4 py-2 text-sm text-red-700">
+        <p role="alert" className="shrink-0 px-4 py-2 text-sm text-red-700">
           {error}
         </p>
       )}
       {columns.every((column) => hiddenColumns.includes(column.colId!)) && (
-        <p className="px-4 py-3 text-sm text-slate-500">
-          Все столбцы скрыты. Выберите нужные в настройках столбцов над
-          таблицей.
-        </p>
+        <div className="flex shrink-0 items-center gap-3 px-4 py-3 text-sm text-slate-500">
+          Все столбцы скрыты.
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => api.current?.showColumnChooser()}
+          >
+            Выбрать столбцы
+          </Button>
+        </div>
       )}
-      <div style={{ height: 'min(65vh, 620px)', minHeight: 280 }}>
+      <div className="min-h-0 flex-1">
         <MaterialsGridView<MaterialMatrixRow>
           gridId="project-materials"
           theme={materialsGridTheme}
@@ -296,9 +271,19 @@ export function ProjectMaterialGrid({
           onGridReady={({ api: grid }) => {
             api.current = grid
             setReady(true)
+            onReady?.(grid)
           }}
+          onModelUpdated={({ api: grid }) =>
+            onFilterChanged?.(
+              grid.isAnyFilterPresent(),
+              grid.getDisplayedRowCount(),
+            )
+          }
           onStateUpdated={({ state }) => saveProjectGridState(state)}
-          onGridPreDestroyed={({ state }) => saveProjectGridState(state)}
+          onGridPreDestroyed={({ state }) => {
+            saveProjectGridState(state)
+            onReady?.(null)
+          }}
           onColumnVisible={({ api: grid }) => {
             const known = new Set(
               (grid.getColumns() ?? []).map((column) => column.getColId()),

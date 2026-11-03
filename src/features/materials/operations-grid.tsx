@@ -40,7 +40,8 @@ const defaults = {
   autoHeight: true,
   wrapHeaderText: true,
   autoHeaderHeight: true,
-  floatingFilter: true,
+  floatingFilter: false,
+  suppressHeaderMenuButton: true,
   cellDataType: false,
   filterParams: { debounceMs: 150 },
   useValueFormatterForExport: false,
@@ -85,6 +86,7 @@ export function OperationsGrid<T>({
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
+  const [filtered, setFiltered] = useState(false)
   const hasEditableColumns = columns.some((column) => column.onEdit)
   const [savedFilterKey, setSavedFilterKey] = useWorkspaceViewState(
     `${id}.paginationFilter`,
@@ -206,18 +208,20 @@ export function OperationsGrid<T>({
       className="operations-grid min-w-0 max-w-full"
       aria-label={label}
     >
-      <div className="flex flex-wrap items-center justify-end gap-2 border-b bg-white px-3 py-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 bg-white px-3 py-1">
+        {filtered && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!ready}
+            onClick={() => api.current?.setFilterModel(null)}
+          >
+            Сбросить фильтры
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
-          disabled={!ready}
-          onClick={() => api.current?.setFilterModel(null)}
-        >
-          Сбросить фильтры
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
           disabled={!ready}
           aria-label={`Экспорт Excel: ${label}`}
           onClick={() => {
@@ -279,6 +283,12 @@ export function OperationsGrid<T>({
             onReady?.(grid)
           }}
           onStateUpdated={({ state }) => saveDataGridState(id, state)}
+          onFirstDataRendered={({ api: grid }) =>
+            setFiltered(grid.isAnyFilterPresent())
+          }
+          onFilterChanged={({ api: grid }) =>
+            setFiltered(grid.isAnyFilterPresent())
+          }
           onGridPreDestroyed={({ state }) => saveDataGridState(id, state)}
         />
       </div>

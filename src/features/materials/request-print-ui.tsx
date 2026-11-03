@@ -1,14 +1,17 @@
+import { createPortal } from 'react-dom'
+import { readPrintBundle } from './print-output'
+import type { PrintBundle } from './print-output'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Download, LoaderCircle, Printer, Upload, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
+import { PrintTemplateEditor } from './print-template-editor'
 import {
   cellPosition,
-  cellRange,
-  columnName,
   maxTemplateBytes,
   printHeaderFields,
   printLineFields,
+  samplePrintData,
 } from './request-print'
 import type {
   PrintConfig,
@@ -85,89 +88,125 @@ export async function fileBase64(file: File): Promise<string> {
 export function PdfPreview({
   pdf,
   name,
+  excel,
+  pdfError,
   onClose,
 }: {
-  pdf: Blob
+  pdf: Blob | null
+  excel?: Blob
+  pdfError?: string
   name: string
   onClose: () => void
 }) {
   const [url, setUrl] = useState('')
+  const [excelUrl, setExcelUrl] = useState('')
   const close = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    const created = URL.createObjectURL(pdf)
+    const created = pdf ? URL.createObjectURL(pdf) : ''
+    const workbookUrl = excel ? URL.createObjectURL(excel) : ''
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     setUrl(created)
+    setExcelUrl(workbookUrl)
     close.current?.focus()
     return () => {
-      URL.revokeObjectURL(created)
+      if (created) URL.revokeObjectURL(created)
+      if (workbookUrl) URL.revokeObjectURL(workbookUrl)
+      document.body.style.overflow = previousOverflow
       previous?.focus()
     }
-  }, [pdf])
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Предпросмотр PDF"
-      className="fixed inset-0 z-[100] flex flex-col bg-white p-4"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          event.stopPropagation()
-          onClose()
-        }
-        if (event.key === 'Tab') {
-          const controls = event.currentTarget.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), a[href]',
-          )
-          const first = controls[0],
-            last = controls[controls.length - 1]
-          if (event.shiftKey && document.activeElement === first) {
+  }, [pdf, excel])
+  return createPortal(
+    <div className="fixed inset-0 z-[100] grid place-items-center bg-black/40 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Предпросмотр PDF"
+        className="flex h-[calc(100dvh-2rem)] max-h-[1100px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-xl"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
             event.preventDefault()
-            last?.focus()
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault()
-            first?.focus()
+            event.stopPropagation()
+            onClose()
           }
-        }
-      }}
-    >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="mr-auto text-lg font-semibold">{name}</h2>
-        <Button
-          variant="outline"
-          disabled={!url}
-          onClick={() =>
-            download(url, `${name.replace(/[\\/:*?"<>|]/g, '-')}.pdf`)
+          if (event.key === 'Tab') {
+            const controls = event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), a[href]',
+            )
+            const first = controls[0],
+              last = controls[controls.length - 1]
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault()
+              last?.focus()
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault()
+              first?.focus()
+            }
           }
-        >
-          <Download size={16} />
-          Скачать PDF
-        </Button>
-        <a
-          href={url || undefined}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-medium"
-        >
-          <Printer size={16} />
-          Открыть PDF для печати
-        </a>
-        <Button
-          ref={close}
-          variant="ghost"
-          size="icon"
-          aria-label="Закрыть PDF"
-          onClick={onClose}
-        >
-          <X size={20} />
-        </Button>
+        }}
+      >
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <h2 className="mr-auto text-lg font-semibold">{name}</h2>
+          <Button
+            variant="outline"
+            disabled={!url}
+            onClick={() =>
+              download(url, `${name.replace(/[\\/:*?"<>|]/g, '-')}.pdf`)
+            }
+          >
+            <Download size={16} />
+            Скачать PDF
+          </Button>
+          {excel && (
+            <Button
+              variant="outline"
+              disabled={!excelUrl}
+              onClick={() =>
+                download(excelUrl, `${name.replace(/[\\/:*?"<>|]/g, '-')}.xlsx`)
+              }
+            >
+              <Download size={16} />
+              Скачать Excel
+            </Button>
+          )}
+          {url && (
+            <a
+              href={url || undefined}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-medium"
+            >
+              <Printer size={16} />
+              Открыть PDF для печати
+            </a>
+          )}
+          <Button
+            ref={close}
+            variant="ghost"
+            size="icon"
+            aria-label="Закрыть PDF"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </Button>
+        </div>
+        {pdfError && (
+          <p
+            role="alert"
+            className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900"
+          >
+            {pdfError} Excel доступен для скачивания.
+          </p>
+        )}
+        {url ? (
+          <Suspense fallback={<p role="status">Загрузка просмотра PDF…</p>}>
+            <RequestPrintPreview url={url} />
+          </Suspense>
+        ) : null}
       </div>
-      {url ? (
-        <Suspense fallback={<p role="status">Загрузка просмотра PDF…</p>}>
-          <RequestPrintPreview url={url} />
-        </Suspense>
-      ) : null}
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -184,7 +223,7 @@ export function RequestPrintButton({
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
-    [pdf, setPdf] = useState<Blob | null>(null)
+    [bundle, setBundle] = useState<PrintBundle | null>(null)
   async function print() {
     setBusy(true)
     setError('')
@@ -193,11 +232,12 @@ export function RequestPrintButton({
       const template = await loadPrintTemplate()
       const response = await post({
         action: 'print',
+        format: 'bundle',
         entryId,
         workspaceRevision,
         templateRevision: template.revision,
       })
-      setPdf(await response.blob())
+      setBundle(await readPrintBundle(response))
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -229,11 +269,13 @@ export function RequestPrintButton({
           {error}
         </p>
       ) : null}
-      {pdf ? (
+      {bundle ? (
         <PdfPreview
-          pdf={pdf}
-          name={`Заявка ${number}`}
-          onClose={() => setPdf(null)}
+          pdf={bundle.pdf}
+          excel={bundle.excel}
+          pdfError={bundle.pdfError}
+          name={bundle.name || `Заявка ${number}`}
+          onClose={() => setBundle(null)}
         />
       ) : null}
     </div>
@@ -245,9 +287,8 @@ export function RequestPrintSettings() {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('')
-  const [dirty, setDirty] = useState(false),
-    [selected, setSelected] = useState(''),
-    [binding, setBinding] = useState('field:number')
+  const [dirty, setDirty] = useState(false)
+  const [editorVersion, setEditorVersion] = useState(0)
   const [pdf, setPdf] = useState<Blob | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -301,33 +342,32 @@ export function RequestPrintSettings() {
       config: { ...template.config, sheetName: inspected.sheet.name },
     })
     setDirty(true)
-    setSelected('')
+    setEditorVersion((version) => version + 1)
     setNotice(
-      'Файл загружен. Проверьте привязки и предпросмотр, затем сохраните шаблон.',
+      'Бланк загружен. Если вы перемещали ячейки, укажите для полей новые места. Затем проверьте PDF.',
     )
   }
-  function bind() {
-    if (!template || !selected) return
-    const config = template.config
-    const [kind, key] = binding.split(':')
-    if (kind === 'field')
-      change({ ...config, fields: { ...config.fields, [key!]: selected } })
-    else
-      change({
-        ...config,
-        repeatRow: cellPosition(selected).row,
-        columns: { ...config.columns, [key!]: selected.replace(/\d/g, '') },
-      })
+  function assign(fieldId: string, address: string) {
+    if (!template) return
+    const config = structuredClone(template.config)
+    const [scope, key] = fieldId.split(':')
+    if (scope === 'field' && cellPosition(address).row === config.repeatRow)
+      return 'Данные заявки разместите выше или ниже строки материалов.'
+    for (const field of Object.keys(config.fields) as Array<PrintHeaderField>)
+      if (config.fields[field] === address) config.fields[field] = ''
+    for (const field of Object.keys(config.columns) as Array<PrintLineField>)
+      if (`${config.columns[field]}${config.repeatRow}` === address)
+        config.columns[field] = ''
+    if (scope === 'field') config.fields[key as PrintHeaderField] = address
+    else config.columns[key as PrintLineField] = address.replace(/\d/g, '')
+    change(config)
   }
   return (
     <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-4">
-      <h3 className="text-lg font-semibold">
-        Шаблоны печати → Заявка на получение
-      </h3>
+      <h3 className="text-lg font-semibold">1. Бланк заявки</h3>
       <p className="mt-2 text-sm text-slate-500">
-        Один общий бланк для всех заявок. Оформление и подписи меняются в Excel,
-        подстановки — здесь. Поддерживается один лист без формул, макросов и
-        сложных объектов.
+        Готовый образец уже настроен. Можно сразу посмотреть PDF. Чтобы изменить
+        оформление, скачайте Excel, отредактируйте его и загрузите обратно.
       </p>
       {error ? (
         <p
@@ -377,7 +417,7 @@ export function RequestPrintSettings() {
             void run(async () => {
               setTemplate(await loadPrintTemplate())
               setDirty(false)
-              setSelected('')
+              setEditorVersion((version) => version + 1)
               setNotice('Загружен сохранённый шаблон.')
             })
           }
@@ -404,151 +444,140 @@ export function RequestPrintSettings() {
             {dirty ? ' · есть несохранённые изменения' : ''}
           </p>
           <fieldset disabled={busy} className="min-w-0 space-y-4">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="text-sm">
-                Строка материалов
-                <Input
-                  aria-label="Строка материалов"
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={template.config.repeatRow}
-                  onChange={(e) =>
-                    change({
-                      ...template.config,
-                      repeatRow: Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label className="text-sm">
-                Область печати
-                <Input
-                  aria-label="Область печати"
-                  value={template.config.printArea}
-                  onChange={(e) =>
-                    change({
-                      ...template.config,
-                      printArea: e.target.value.toUpperCase(),
-                    })
-                  }
-                />
-              </label>
-              <label className="text-sm">
-                Повторять заголовки (строки)
-                <Input
-                  aria-label="Повторять заголовки"
-                  placeholder="7:7"
-                  value={template.config.headerRows}
-                  onChange={(e) =>
-                    change({ ...template.config, headerRows: e.target.value })
-                  }
-                />
-              </label>
-            </div>
-            <div className="flex flex-wrap items-end gap-2 rounded border border-blue-100 bg-blue-50/40 p-3">
-              <label className="grid gap-1 text-sm">
-                Поле для подстановки
-                <select
-                  aria-label="Поле для подстановки"
-                  className="h-10 rounded border border-slate-200 bg-white px-2"
-                  value={binding}
-                  onChange={(e) => setBinding(e.target.value)}
-                >
-                  <optgroup label="Реквизиты">
-                    {Object.entries(printHeaderFields).map(([key, label]) => (
-                      <option key={key} value={`field:${key}`}>
-                        {label}
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="Материалы">
-                    {Object.entries(printLineFields).map(([key, label]) => (
-                      <option key={key} value={`column:${key}`}>
-                        {label}
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
-              </label>
-              <Button variant="outline" disabled={!selected} onClick={bind}>
-                Связать с {selected || 'ячейкой'}
-              </Button>
-              <p className="text-xs text-slate-500">
-                Выберите ячейку на листе. Для материала её строка станет
-                повторяемой.
-              </p>
-            </div>
-            <SheetGrid
+            <PrintTemplateEditor
+              key={editorVersion}
               sheet={template.sheet}
-              config={template.config}
-              selected={selected}
-              onSelect={setSelected}
+              groups={[
+                {
+                  id: 'fields',
+                  label: 'Данные заявки',
+                  description:
+                    'Заполняются один раз: номер, дата, заявитель и другие данные всей заявки.',
+                  fields: Object.entries(printHeaderFields).map(
+                    ([key, label]) => ({
+                      id: `field:${key}`,
+                      label,
+                      example:
+                        key === 'numberAndDate'
+                          ? 'Заявка № ЗП-2026-0001 от 16.10.2026'
+                          : samplePrintData.headers[
+                              key as Exclude<PrintHeaderField, 'numberAndDate'>
+                            ],
+                      addresses: template.config.fields[key as PrintHeaderField]
+                        ? [template.config.fields[key as PrintHeaderField]]
+                        : [],
+                    }),
+                  ),
+                },
+                {
+                  id: 'materials',
+                  label: 'Таблица материалов',
+                  description:
+                    'Выберите место для каждого значения в первой строке материала. Не выбирайте заголовок столбца.',
+                  table: {
+                    enabled: true,
+                    row: template.config.repeatRow,
+                    onRowChange: (repeatRow) =>
+                      change({ ...template.config, repeatRow }),
+                  },
+                  fields: Object.entries(printLineFields).map(
+                    ([key, label]) => ({
+                      id: `column:${key}`,
+                      label:
+                        (
+                          {
+                            unit: 'Единица измерения',
+                            altUnit: 'Альтернативная единица',
+                            altQuantity: 'Альтернативное количество',
+                          } as Record<string, string>
+                        )[key] ?? label,
+                      example:
+                        key === 'nameWithDetails'
+                          ? 'Отвод 108×4, ГОСТ 17375-2001, 09Г2С'
+                          : String(
+                              samplePrintData.rows[0]![
+                                key as Exclude<
+                                  PrintLineField,
+                                  'nameWithDetails'
+                                >
+                              ] ?? '',
+                            ),
+                      addresses: template.config.columns[key as PrintLineField]
+                        ? [
+                            `${template.config.columns[key as PrintLineField]}${template.config.repeatRow}`,
+                          ]
+                        : [],
+                    }),
+                  ),
+                },
+              ]}
+              onAssign={assign}
+              onRemove={(fieldId) => {
+                const [scope, key] = fieldId.split(':')
+                change(
+                  scope === 'field'
+                    ? {
+                        ...template.config,
+                        fields: { ...template.config.fields, [key!]: '' },
+                      }
+                    : {
+                        ...template.config,
+                        columns: { ...template.config.columns, [key!]: '' },
+                      },
+                )
+              }}
             />
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div>
-                <h4 className="mb-2 font-medium">Реквизиты — адреса ячеек</h4>
-                <div className="grid gap-2">
-                  {Object.entries(printHeaderFields).map(([key, label]) => (
-                    <label
-                      key={key}
-                      className="grid grid-cols-[1fr_100px] items-center gap-2 text-sm"
-                    >
-                      {label}
-                      <Input
-                        aria-label={`Ячейка: ${label}`}
-                        placeholder="Не выводить"
-                        value={template.config.fields[key as PrintHeaderField]}
-                        onChange={(e) =>
-                          change({
-                            ...template.config,
-                            fields: {
-                              ...template.config.fields,
-                              [key]: e.target.value.toUpperCase(),
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                  ))}
-                </div>
+            <details className="rounded-lg border border-slate-200 p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Параметры страницы
+              </summary>
+              <p className="my-3 text-sm text-slate-500">
+                Оформление, ширину столбцов и подписи меняйте в Excel. Один
+                лист, без формул и макросов.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm">
+                  Печатать ячейки от и до
+                  <Input
+                    aria-label="Область печати"
+                    placeholder="A1:I13"
+                    value={template.config.printArea}
+                    onChange={(e) =>
+                      change({
+                        ...template.config,
+                        printArea: e.target.value.toUpperCase(),
+                      })
+                    }
+                  />
+                  <span className="text-xs text-slate-500">
+                    Например, A1:I13 — от A1 до I13, включая подписи.
+                  </span>
+                </label>
+                <label className="text-sm">
+                  Повторять заголовки на каждой странице
+                  <Input
+                    aria-label="Повторять заголовки"
+                    placeholder="7:7"
+                    value={template.config.headerRows}
+                    onChange={(e) =>
+                      change({ ...template.config, headerRows: e.target.value })
+                    }
+                  />
+                  <span className="text-xs text-slate-500">
+                    7:7 — только строка 7; 6:7 — две строки. Можно оставить
+                    пустым.
+                  </span>
+                </label>
               </div>
-              <div>
-                <h4 className="mb-2 font-medium">Материалы — столбцы</h4>
-                <div className="grid gap-2">
-                  {Object.entries(printLineFields).map(([key, label]) => (
-                    <label
-                      key={key}
-                      className="grid grid-cols-[1fr_100px] items-center gap-2 text-sm"
-                    >
-                      {label}
-                      <Input
-                        aria-label={`Столбец: ${label}`}
-                        placeholder="Не выводить"
-                        value={template.config.columns[key as PrintLineField]}
-                        onChange={(e) =>
-                          change({
-                            ...template.config,
-                            columns: {
-                              ...template.config.columns,
-                              [key]: e.target.value.toUpperCase(),
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <p className="text-xs text-slate-500">
-              Пустая привязка отключает подстановку; сам столбец можно убрать в
-              Excel. Номер и дату можно связать с одной общей ячейкой. Для
-              наименования доступно общее поле с нормативным документом и
-              составом. Обязательны номер, дата, наименование, ЕИ и количество.
-              Альтернативные количества подставляются автоматически.
-            </p>
+            </details>
           </fieldset>
+          <h4 className="mt-5 font-semibold">
+            3. Проверьте результат и сохраните
+          </h4>
+          <p className="mt-1 text-sm text-slate-500">
+            PDF покажет заполненный бланк на примерных данных. Изменения начнут
+            действовать после сохранения.
+          </p>
           <div className="mt-5 flex flex-wrap gap-2 border-t pt-4">
             <Button
               variant="outline"
@@ -612,100 +641,5 @@ export function RequestPrintSettings() {
         />
       ) : null}
     </section>
-  )
-}
-
-export function SheetGrid({
-  sheet,
-  config,
-  bindings,
-  selected,
-  onSelect,
-}: {
-  sheet: TemplateSheet
-  config?: PrintConfig
-  bindings?: Record<string, string>
-  selected: string
-  onSelect: (value: string) => void
-}) {
-  const cells = new Map(sheet.cells.map((cell) => [cell.address, cell.text]))
-  const merges = sheet.merges.map(cellRange)
-  const labels = new Map<string, string>(Object.entries(bindings ?? {}))
-  Object.entries(config?.fields ?? {}).forEach(([key, address]) => {
-    if (address) labels.set(address, printHeaderFields[key as PrintHeaderField])
-  })
-  Object.entries(config?.columns ?? {}).forEach(([key, col]) => {
-    if (col)
-      labels.set(
-        `${col}${config!.repeatRow}`,
-        printLineFields[key as PrintLineField],
-      )
-  })
-  return (
-    <div
-      className="max-h-80 overflow-auto rounded border border-slate-200"
-      aria-label="Лист шаблона"
-    >
-      <table className="border-collapse text-xs">
-        <thead className="sticky top-0 z-10 bg-slate-100">
-          <tr>
-            <th className="p-2">№</th>
-            {Array.from({ length: sheet.columns }, (_, col) => (
-              <th key={col} className="border px-3 py-2">
-                {columnName(col + 1)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {Array.from({ length: sheet.rows }, (_, rowIndex) => {
-            const row = rowIndex + 1
-            return (
-              <tr key={row}>
-                <th className="border bg-slate-50 p-2">{row}</th>
-                {Array.from({ length: sheet.columns }, (_cell, colIndex) => {
-                  const col = colIndex + 1,
-                    address = `${columnName(col)}${row}`
-                  const merge = merges.find(
-                    (r) =>
-                      row >= r.top &&
-                      row <= r.bottom &&
-                      col >= r.left &&
-                      col <= r.right,
-                  )
-                  if (merge && (merge.top !== row || merge.left !== col))
-                    return null
-                  return (
-                    <td
-                      key={address}
-                      colSpan={merge ? merge.right - merge.left + 1 : 1}
-                      rowSpan={merge ? merge.bottom - merge.top + 1 : 1}
-                      className="border border-slate-200 p-0"
-                    >
-                      <button
-                        type="button"
-                        aria-label={`Ячейка ${address}`}
-                        aria-pressed={selected === address}
-                        onClick={() => onSelect(address)}
-                        className={`block min-h-10 w-full min-w-24 px-2 py-1 text-left ${selected === address ? 'bg-blue-100 outline-2 outline-blue-500' : labels.has(address) ? 'bg-blue-50' : 'bg-white hover:bg-slate-50'}`}
-                      >
-                        <span className="block text-[10px] text-slate-400">
-                          {address}
-                        </span>
-                        <span className="block max-w-xl whitespace-pre-wrap">
-                          {labels.get(address)
-                            ? `‹${labels.get(address)}›`
-                            : cells.get(address) || '\u00a0'}
-                        </span>
-                      </button>
-                    </td>
-                  )
-                })}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
   )
 }

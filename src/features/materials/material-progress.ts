@@ -7,27 +7,16 @@ export type MaterialProgress = {
   qcSignedQuantity: number
 }
 
-export function materialProgressStatus(value: MaterialProgress) {
-  const {
-    projectQuantity: plan,
-    requestedQuantity,
-    receivedQuantity,
-    qcSignedQuantity,
-  } = value
+export function remainingMaterialQuantity(
+  value: Pick<MaterialProgress, 'projectQuantity' | 'receivedQuantity'>,
+) {
   const precise = (amount: number) => Number(amount.toPrecision(15))
-  if (plan > 0) {
-    if (
-      [requestedQuantity, receivedQuantity, qcSignedQuantity].some(
-        (amount) => precise(amount) > precise(plan),
-      )
-    )
-      return 'excess'
-    if (precise(qcSignedQuantity) >= precise(plan)) return 'approved'
-    if (
-      precise(receivedQuantity) >= precise(plan) ||
-      precise(requestedQuantity) >= precise(plan)
-    )
-      return 'in-progress'
-  }
-  return requestedQuantity > 0 ? 'requested' : 'empty'
+  return Math.max(
+    0,
+    precise(precise(value.projectQuantity) - precise(value.receivedQuantity)),
+  )
+}
+
+export function isMaterialFullyReceived(value: MaterialProgress) {
+  return value.projectQuantity > 0 && remainingMaterialQuantity(value) === 0
 }

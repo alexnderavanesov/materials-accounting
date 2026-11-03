@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ExcelJS from 'exceljs'
 import {
@@ -129,6 +136,22 @@ describe('project quantity input', () => {
 })
 
 describe('project AG Grid integration', () => {
+  it('opens the column filter on demand and applies its input without changing quantities', async () => {
+    render(<Harness />)
+    const api = await projectGridApi()
+    expect(screen.queryByPlaceholderText('Фильтр…')).toBeNull()
+    const header = screen.getByRole('columnheader', {
+      name: /^Наименование по проекту/,
+    })
+    fireEvent.click(header.querySelector('.ag-header-cell-filter-button')!)
+    const input = await screen.findByPlaceholderText('Фильтр…')
+    fireEvent.input(input, { target: { value: 'Бета' } })
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+    expect(api.getDisplayedRowAtIndex(0)?.data?.projectMaterialName).toBe(
+      'Бета',
+    )
+    expect(updated).not.toHaveBeenCalled()
+  })
   it('commits a decimal once, cancels with Escape, blocks invalid values and lets blank clear the quantity', async () => {
     render(<Harness />)
     await editGridQuantity('Альфа', 'ТЕСТ', '2,75')

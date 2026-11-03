@@ -1,3 +1,5 @@
+import { materialNumberContext } from './document-numbering'
+import { useDocumentNumber } from './document-numbering-context'
 import { CustomerReturnModal } from './customer-return-modal'
 import { customerReturnAlternative } from './receipt-balances'
 import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
@@ -6,7 +8,7 @@ import {
   OperationPagination,
   useOperationPagination,
 } from './operation-pagination'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
@@ -37,7 +39,7 @@ import type {
   QualityWorkflow,
 } from './quality-workflow'
 import type { SubobjectMaterialMetric } from './types'
-import { QualityPrintButton, QualityPrintSettings } from './quality-print-ui'
+import { QualityPrintButton } from './quality-print-ui'
 import { getOperationAlternative, getOperationConversion } from './domain'
 
 type Receipt = {
@@ -516,7 +518,37 @@ export function InspectionWorkspace({
   search?: string
   focusId?: string
 }) {
+  const suggestNumber = useDocumentNumber()
   const workflow = value ?? emptyQualityWorkflow()
+  const numberMaterials = useMemo(
+    () => indexInspectionMaterials(lines),
+    [lines],
+  )
+  function numberContext(rev: InspectionRevision, kind: 'zni' | 'avk') {
+    const rows =
+      kind === 'avk'
+        ? rev.zni.rows.filter((row) => (row.accepted ?? 0) > 0)
+        : rev.zni.rows
+    return materialNumberContext(
+      rows.map((row) => {
+        const line = numberMaterials.get(row.projectLineId)
+        return {
+          cipher: row.cipher,
+          materialType: line?.materialType || line?.category,
+        }
+      }),
+    )
+  }
+  function makeAct(entry: InspectionCase) {
+    const rev = currentInspection(entry)
+    const act = createAcceptedInspectionAct(entry, rev.zni.documents)
+    if (!act.number)
+      act.number = suggestNumber('avk', {
+        date: act.date,
+        ...numberContext(rev, 'avk'),
+      })
+    return act
+  }
   const [returnCase, setReturnCase] = useState<InspectionCase | null>(null)
   const [draft, setDraft] = useState<InspectionCase | null>(null),
     [error, setError] = useState(''),
@@ -542,12 +574,46 @@ export function InspectionWorkspace({
       setError(message(cause))
     }
   }
-  const updateRevision = (revision: InspectionRevision) =>
-    setDraft(
-      draft
-        ? { ...draft, revisions: [...draft.revisions.slice(0, -1), revision] }
-        : null,
-    )
+  const updateRevision = (revision: InspectionRevision) => {
+    if (!draft) return
+    const previous = currentInspection(draft)
+    const stored = workflow.cases.find((entry) => entry.id === draft.id)
+    for (const kind of ['zni', 'avk'] as const) {
+      const old = previous[kind],
+        next = revision[kind]
+      // Date tokens follow an unsaved, automatically suggested number only.
+      if (
+        !old ||
+        !next ||
+        old.date === next.date ||
+        old.number !== next.number ||
+        stored?.revisions.some((rev) => rev[kind])
+      )
+        continue
+      if (
+        old.number ===
+        suggestNumber(kind, {
+          date: old.date,
+          ...numberContext(previous, kind),
+        })
+      ) {
+        revision = {
+          ...revision,
+          [kind]: {
+            ...next,
+            number: suggestNumber(kind, {
+              date: next.date,
+              ...numberContext(revision, kind),
+            }),
+          },
+        }
+      }
+    }
+    setDraft({
+      ...draft,
+      revisions: [...draft.revisions.slice(0, -1), revision],
+    })
+  }
   const revision = draft && currentInspection(draft)
   useEffect(() => {
     const entry = value?.cases.find((item) =>
@@ -587,11 +653,6 @@ export function InspectionWorkspace({
           Создать ЗНИ
         </Button>
       </div>
-      <p className="text-sm text-slate-500">
-        Выберите АПП или М-15, затем все или отдельные позиции документа и
-        предъявляемое количество. К выдаче допускается принятое количество по
-        подписанным АВК.
-      </p>
       {error && (
         <p role="alert" className="text-red-700">
           {error}
@@ -604,7 +665,6 @@ export function InspectionWorkspace({
             : 'ЗНИ ещё нет. Создайте её по полученным материалам.'}
         </p>
       )}
-      <OperationPagination pagination={pagination} label="Входной контроль" />
       {pagination.items.map((entry) => {
         const rev = currentInspection(entry),
           active = activeInspection(entry)
@@ -694,12 +754,7 @@ export function InspectionWorkspace({
                     onClick={() =>
                       run(() => {
                         const next = structuredClone(entry)
-                        currentInspection(next).avk =
-                          createAcceptedInspectionAct(
-                            next,
-                            currentInspection(next).zni.documents,
-                          )
-                        save(next)
+                        currentInspection(next).avk = makeAct(next)
                         setDraft(next)
                       })
                     }
@@ -817,7 +872,7 @@ export function InspectionWorkspace({
           </article>
         )
       })}
-      {pagination.pageCount > 1 && (
+      {pagination.total > 0 && (
         <OperationPagination pagination={pagination} label="Входной контроль" />
       )}
       {returnCase && (
@@ -841,16 +896,20 @@ export function InspectionWorkspace({
           lines={lines}
           onClose={() => setChoosingMaterials(false)}
           onCreate={(selection, basisId) => {
-            setDraft(
-              newInspection(
-                workflow,
-                selection,
-                receipts,
-                lines,
-                basisId,
-                requests,
-              ),
+            const created = newInspection(
+              workflow,
+              selection,
+              receipts,
+              lines,
+              basisId,
+              requests,
             )
+            const zni = currentInspection(created).zni
+            zni.number = suggestNumber('zni', {
+              date: zni.date,
+              ...numberContext(currentInspection(created), 'zni'),
+            })
+            setDraft(created)
             setChoosingMaterials(false)
           }}
         />
@@ -1051,10 +1110,7 @@ export function InspectionWorkspace({
                 onClick={() =>
                   updateRevision({
                     ...revision,
-                    avk: createAcceptedInspectionAct(
-                      draft,
-                      currentInspection(draft).zni.documents,
-                    ),
+                    avk: makeAct(draft),
                   })
                 }
               >
@@ -1415,8 +1471,6 @@ export function QualitySettings({
         </Button>
       </div>
       <p role="status">{notice}</p>
-      <QualityPrintSettings kind="zni" />
-      <QualityPrintSettings kind="avk" />
     </div>
   )
 }
