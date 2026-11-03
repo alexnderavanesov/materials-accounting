@@ -12,16 +12,31 @@ export type ReceiptReference = {
   documents: Array<ReceiptDocument>
 }
 
+type ReceiptReturnReference = {
+  id: string
+  receiptId: string
+  date: string
+  quantity: string
+  reason: string
+  request: string
+  receiptDate: string
+  zni?: string
+  documentNumber: string
+  note: string
+}
+
 export function ReceiptReferencesDialog({
   kind,
   material,
   receipts,
+  returns,
   onClose,
   onOpenReceipt,
 }: {
-  kind: 'receipts' | 'documents'
+  kind: 'receipts' | 'documents' | 'returns'
   material: string
   receipts: Array<ReceiptReference>
+  returns: Array<ReceiptReturnReference>
   onClose: () => void
   onOpenReceipt: (id: string) => void
 }) {
@@ -48,8 +63,11 @@ export function ReceiptReferencesDialog({
     }
     return [...byId.values()]
   }, [receipts])
-  const title =
-    kind === 'receipts' ? 'Получения материала' : 'Документы получения'
+  const title = {
+    receipts: 'Получения материала',
+    documents: 'Документы получения',
+    returns: 'Возвраты материала',
+  }[kind]
 
   function receiptLink(receipt: ReceiptReference, showDocuments: boolean) {
     return (
@@ -130,30 +148,72 @@ export function ReceiptReferencesDialog({
           </button>
         </div>
         <div className="min-h-0 overflow-y-auto p-2">
-          {kind === 'receipts'
-            ? receipts.map((receipt) => receiptLink(receipt, true))
-            : documents.map(({ document, receipts: linked }) => (
-                <details
-                  key={document.id}
-                  className="group rounded-lg border border-slate-200 mb-2 last:mb-0"
-                >
-                  <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-3 text-sm hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
-                    <ChevronDown
-                      size={16}
-                      className="shrink-0 text-slate-400 transition-transform group-open:rotate-180"
-                    />
-                    <span className="min-w-0 flex-1 break-words font-medium text-slate-800">
-                      {receiptDocumentLabel(document)}
+          {kind === 'returns' &&
+            returns.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                title="Открыть исходное получение"
+                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-500"
+                onClick={() => onOpenReceipt(item.receiptId)}
+              >
+                <span className="grid min-w-0 gap-1 text-sm">
+                  <span className="font-medium text-blue-700">
+                    Возврат от {item.date}
+                  </span>
+                  <span className="break-words text-slate-700">
+                    {item.reason}
+                    {item.zni && ` · ЗНИ ${item.zni}`}
+                  </span>
+                  <span className="break-words text-xs text-slate-500">
+                    {item.request} · Получение от {item.receiptDate}
+                  </span>
+                  {item.documentNumber && (
+                    <span className="break-words text-xs text-slate-500">
+                      Документ возврата: {item.documentNumber}
                     </span>
-                    <span className="shrink-0 text-xs text-slate-500">
-                      Получений: {linked.length}
+                  )}
+                  {item.note && (
+                    <span className="whitespace-pre-wrap break-words text-xs text-slate-500">
+                      {item.note}
                     </span>
-                  </summary>
-                  <div className="border-t border-slate-100 p-1">
-                    {linked.map((receipt) => receiptLink(receipt, false))}
-                  </div>
-                </details>
-              ))}
+                  )}
+                </span>
+                <span className="rounded-md bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-700">
+                  {item.quantity}
+                </span>
+              </button>
+            ))}
+          {kind === 'returns' && !returns.length && (
+            <p className="p-3 text-sm text-slate-500">
+              По этому материалу возвратов пока нет.
+            </p>
+          )}
+          {kind === 'receipts' &&
+            receipts.map((receipt) => receiptLink(receipt, true))}
+          {kind === 'documents' &&
+            documents.map(({ document, receipts: linked }) => (
+              <details
+                key={document.id}
+                className="group rounded-lg border border-slate-200 mb-2 last:mb-0"
+              >
+                <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-3 text-sm hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                  <ChevronDown
+                    size={16}
+                    className="shrink-0 text-slate-400 transition-transform group-open:rotate-180"
+                  />
+                  <span className="min-w-0 flex-1 break-words font-medium text-slate-800">
+                    {receiptDocumentLabel(document)}
+                  </span>
+                  <span className="shrink-0 text-xs text-slate-500">
+                    Получений: {linked.length}
+                  </span>
+                </summary>
+                <div className="border-t border-slate-100 p-1">
+                  {linked.map((receipt) => receiptLink(receipt, false))}
+                </div>
+              </details>
+            ))}
           {kind === 'documents' && !documents.length && (
             <p className="p-3 text-sm text-slate-500">Документы не указаны.</p>
           )}

@@ -4587,7 +4587,7 @@ function ReceiptsTable({
   >('receipts.expanded', {}, isViewExpanded)
   const [references, setReferences] = useState<{
     groupKey: string
-    kind: 'receipts' | 'documents'
+    kind: 'receipts' | 'documents' | 'returns'
   } | null>(null)
   const [selectedReceiptId, setSelectedReceiptId] = useState<string>()
   const returnedByReceipt = useMemo(
@@ -4655,6 +4655,40 @@ function ReceiptsTable({
     () => new Map(requests.map((request) => [request.id, request])),
     [requests],
   )
+  const referenceReturns = useMemo(() => {
+    if (references?.kind !== 'returns' || !referenceGroup) return []
+    const receiptById = new Map(
+      referenceGroup.entries.map((entry) => [entry.id, entry]),
+    )
+    const caseById = new Map(workflow?.cases.map((entry) => [entry.id, entry]))
+    return [...(workflow?.customerReturns ?? [])]
+      .reverse()
+      .filter((item) => receiptById.has(item.receiptId))
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((item) => {
+        const receipt = receiptById.get(item.receiptId)!
+        return {
+          id: item.id,
+          receiptId: item.receiptId,
+          date: formatDate(item.date),
+          quantity: `${formatQuantity(item.quantity)} ${receipt.projectUnit}`,
+          reason:
+            item.kind === 'surplus' ? 'Лишний материал' : 'Не принято по ЗНИ',
+          request:
+            requestById.get(receipt.requestId)?.number ?? 'Заявка удалена',
+          receiptDate: formatDate(receipt.date),
+          zni: item.caseId
+            ? caseById
+                .get(item.caseId)
+                ?.revisions.find(
+                  (revision) => revision.revision === item.revision,
+                )?.zni.number
+            : undefined,
+          documentNumber: item.documentNumber,
+          note: item.note,
+        }
+      })
+  }, [referenceGroup, references?.kind, requestById, workflow])
   const normalizedSearch = normalizeSearchValue(search)
   const visibleGroups = prioritizeReceiptRows(
     receiptGroupMeta.filter((item) =>
@@ -4760,6 +4794,11 @@ function ReceiptsTable({
                       unit: entry.projectUnit,
                     })),
                   )}
+                  title="Показать возвраты материала"
+                  onClick={() => {
+                    setSelectedReceiptId(undefined)
+                    setReferences({ groupKey: group.key, kind: 'returns' })
+                  }}
                 />
                 <RequestGroupMetric
                   label="Получений"
@@ -5080,6 +5119,7 @@ function ReceiptsTable({
         <ReceiptReferencesDialog
           kind={references.kind}
           material={referenceGroup.actualName}
+          returns={referenceReturns}
           receipts={referenceGroup.entries.map((entry) => ({
             id: entry.id,
             date: formatDate(entry.date),

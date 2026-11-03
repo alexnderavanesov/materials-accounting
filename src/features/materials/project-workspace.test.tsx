@@ -1297,7 +1297,7 @@ describe('cipher reference removal', () => {
 })
 
 describe('receipts grouped by material', () => {
-  it('shows only actual rejected and surplus returns in the receipt card instead of alternative totals', () => {
+  it('shows actual returns and opens only the selected material history, including partial rejected and surplus returns', async () => {
     const workspace = returnScenarioWorkspace()
     let view = mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
@@ -1311,6 +1311,12 @@ describe('receipts grouped by material', () => {
       '0 шт',
     )
     expect(card().queryByText('Альтернативно')).toBeNull()
+    fireEvent.click(card().getByRole('button', { name: 'Возвращено: 0 шт' }))
+    let dialog = screen.getByRole('dialog', { name: 'Возвраты материала' })
+    expect(
+      within(dialog).getByText('По этому материалу возвратов пока нет.'),
+    ).toBeTruthy()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
     view.unmount()
     const caseId = workspace.qualityWorkflow.cases[0]!.id
     for (const quantity of [0.25, 0.75]) {
@@ -1319,8 +1325,29 @@ describe('receipts grouped by material', () => {
         caseId,
         [{ receiptId: 'receipt', quantity }],
         localToday(),
+        `ВОЗ-${quantity}`,
+        'Брак возвращён частями',
       )
     }
+    workspace.lines.push({
+      ...workspace.lines[0]!,
+      id: 'other-line',
+      projectMaterialName: 'Тройник',
+    })
+    workspace.materialRequests.push({
+      ...workspace.materialRequests[0]!,
+      id: 'other-request',
+      projectLineId: 'other-line',
+      projectMaterialName: 'Тройник',
+      number: 'ДРУГАЯ-ЗАЯВКА',
+    })
+    workspace.materialReceipts.push({
+      ...workspace.materialReceipts[0]!,
+      id: 'other-receipt',
+      projectLineId: 'other-line',
+      requestId: 'other-request',
+      actualName: 'Тройник',
+    })
     workspace.qualityWorkflow = recordSurplusReturn(
       workspace.qualityWorkflow,
       workspace.materialReceipts.map((receipt) => ({
@@ -1329,8 +1356,13 @@ describe('receipts grouped by material', () => {
         date: String(receipt.date),
       })),
       [],
-      [{ receiptId: 'receipt', quantity: 0.5 }],
+      [
+        { receiptId: 'receipt', quantity: 0.5 },
+        { receiptId: 'other-receipt', quantity: 2 },
+      ],
       localToday(),
+      'ВОЗ-ИЗЛИШЕК',
+      'Вернули лишнее',
     )
     validateQualityWorkspace(workspace)
     const before = structuredClone(workspace)
@@ -1342,6 +1374,33 @@ describe('receipts grouped by material', () => {
     expect(card().getByText('Получено').nextElementSibling?.textContent).toBe(
       '4 шт',
     )
+    const returnButton = card().getByRole('button', {
+      name: 'Возвращено: 1,5 шт',
+    })
+    returnButton.focus()
+    fireEvent.click(returnButton)
+    dialog = screen.getByRole('dialog', { name: 'Возвраты материала' })
+    const history = within(dialog)
+    expect(history.getAllByRole('button', { name: /Возврат от/ })).toHaveLength(
+      3,
+    )
+    for (const quantity of ['0,25 шт', '0,75 шт', '0,5 шт'])
+      expect(history.getByText(quantity)).toBeTruthy()
+    expect(history.getAllByText(/Не принято по ЗНИ/)).toHaveLength(2)
+    expect(history.getByText(/Лишний материал/)).toBeTruthy()
+    expect(history.getByText('Документ возврата: ВОЗ-ИЗЛИШЕК')).toBeTruthy()
+    expect(history.getByText('Вернули лишнее')).toBeTruthy()
+    expect(history.queryByText(/ДРУГАЯ-ЗАЯВКА|Тройник/)).toBeNull()
+    expect(history.queryByText('2 шт')).toBeNull()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(document.activeElement).toBe(returnButton)
+    fireEvent.click(returnButton)
+    dialog = screen.getByRole('dialog', { name: 'Возвраты материала' })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Вернули лишнее/ }),
+    )
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(await card().findByRole('grid')).toBeTruthy()
     expect(workspace).toEqual(before)
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     view.unmount()
