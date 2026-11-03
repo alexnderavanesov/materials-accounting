@@ -56,6 +56,7 @@ import type {
 import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
+import { ReceiptReferencesDialog } from './receipt-references-dialog'
 import {
   groupReceiptDeliveries,
   updateReceiptDeliveryDocuments,
@@ -4475,12 +4476,32 @@ function RequestGroupMetric({
   value,
   title,
   wrap = false,
+  onClick,
 }: {
   label: string
   value: string
   title?: string
   wrap?: boolean
+  onClick?: () => void
 }) {
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={`${label}: ${value}`}
+        title={title}
+        className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-sm shadow-slate-200/40 transition-colors hover:border-blue-200 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-500"
+      >
+        <span className="block truncate text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-400">
+          {label}
+        </span>
+        <span className="mt-0.5 block text-sm leading-5 text-slate-900">
+          {value}
+        </span>
+      </button>
+    )
+  }
   return (
     <HoverTooltip
       text={title}
@@ -4564,6 +4585,23 @@ function ReceiptsTable({
   const [expandedGroups, setExpandedGroups] = useWorkspaceViewState<
     Record<string, boolean>
   >('receipts.expanded', {}, isViewExpanded)
+  const [references, setReferences] = useState<{
+    groupKey: string
+    kind: 'receipts' | 'documents'
+  } | null>(null)
+  const [selectedReceiptId, setSelectedReceiptId] = useState<string>()
+  const returnedByReceipt = useMemo(
+    () => customerReturnTotals(workflow),
+    [workflow],
+  )
+  const documentById = useMemo(
+    () => indexReceiptDocuments(workflow),
+    [workflow],
+  )
+  const referenceGroup = references
+    ? receiptGroupMeta.find(({ group }) => group.key === references.groupKey)
+        ?.group
+    : undefined
   const focusedGroup = useMemo(() => {
     if (!focusEntryId) {
       return null
@@ -4613,7 +4651,10 @@ function ReceiptsTable({
     return () => window.cancelAnimationFrame(frame)
   }, [focusEntryId, focusedGroupKey, focusedReceiptId, setExpandedGroups])
 
-  const requestById = new Map(requests.map((request) => [request.id, request]))
+  const requestById = useMemo(
+    () => new Map(requests.map((request) => [request.id, request])),
+    [requests],
+  )
   const normalizedSearch = normalizeSearchValue(search)
   const visibleGroups = prioritizeReceiptRows(
     receiptGroupMeta.filter((item) =>
@@ -4712,24 +4753,41 @@ function ReceiptsTable({
                   )}
                 />
                 <RequestGroupMetric
-                  label="Альтернативно"
-                  value={formatAlternativeTotals(group.entries)}
+                  label="Возвращено"
+                  value={formatUnitTotals(
+                    group.entries.map((entry) => ({
+                      quantity: returnedByReceipt.get(entry.id) ?? 0,
+                      unit: entry.projectUnit,
+                    })),
+                  )}
                 />
                 <RequestGroupMetric
                   label="Получений"
                   value={String(group.entries.length)}
+                  title="Показать получения материала"
+                  onClick={() => {
+                    setSelectedReceiptId(undefined)
+                    setReferences({ groupKey: group.key, kind: 'receipts' })
+                  }}
                 />
                 <RequestGroupMetric
                   label="Документы"
                   value={String(
                     new Set(
                       group.entries.flatMap((entry) => [
-                        ...documentsForReceipt(entry, workflow).map(
-                          (doc) => doc.id,
-                        ),
+                        ...documentsForReceipt(
+                          entry,
+                          workflow,
+                          documentById,
+                        ).map((doc) => doc.id),
                       ]),
                     ).size,
                   )}
+                  title="Показать АПП и М-15"
+                  onClick={() => {
+                    setSelectedReceiptId(undefined)
+                    setReferences({ groupKey: group.key, kind: 'documents' })
+                  }}
                 />
               </div>
             </div>
@@ -4934,9 +4992,7 @@ function ReceiptsTable({
                         id: 'returned',
                         title: 'Возвращено заказчику',
                         value: ({ entry }) =>
-                          (workflow?.customerReturns ?? [])
-                            .filter((item) => item.receiptId === entry.id)
-                            .reduce((sum, item) => sum + item.quantity, 0),
+                          returnedByReceipt.get(entry.id) ?? 0,
                       },
                       {
                         id: 'factoryNumber',
@@ -4997,14 +5053,18 @@ function ReceiptsTable({
                       entryIsDeletedProjectMaterial
                     }
                     focusRowId={
-                      group.entries.find(
-                        (entry) =>
-                          entry.id === focusEntryId ||
-                          getReceiptGroupKey(
-                            entry,
-                            lineById.get(entry.projectLineId),
-                          ) === focusEntryId,
-                      )?.id
+                      group.entries.some(
+                        (entry) => entry.id === selectedReceiptId,
+                      )
+                        ? selectedReceiptId
+                        : group.entries.find(
+                            (entry) =>
+                              entry.id === focusEntryId ||
+                              getReceiptGroupKey(
+                                entry,
+                                lineById.get(entry.projectLineId),
+                              ) === focusEntryId,
+                          )?.id
                     }
                   />
                 </div>
@@ -5015,6 +5075,36 @@ function ReceiptsTable({
       })}
       {pagination.total > 0 && (
         <OperationPagination pagination={pagination} label="Получение" />
+      )}
+      {references && referenceGroup && (
+        <ReceiptReferencesDialog
+          kind={references.kind}
+          material={referenceGroup.actualName}
+          receipts={referenceGroup.entries.map((entry) => ({
+            id: entry.id,
+            date: formatDate(entry.date),
+            quantity: `${formatQuantity(entry.quantity)} ${entry.projectUnit}`,
+            request:
+              requestById.get(entry.requestId)?.number ?? 'Заявка удалена',
+            documents: documentsForReceipt(entry, workflow, documentById),
+          }))}
+          onClose={() => setReferences(null)}
+          onOpenReceipt={(id) => {
+            setSelectedReceiptId(id)
+            setExpandedGroups((current) => ({
+              ...current,
+              [referenceGroup.key]: true,
+            }))
+            setReferences(null)
+            window.requestAnimationFrame(() =>
+              document
+                .getElementById(
+                  operationAnchorId('receipts', referenceGroup.key),
+                )
+                ?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+            )
+          }}
+        />
       )}
     </div>
   )
@@ -10390,24 +10480,6 @@ function buildRequestGroupMeta(
       ),
     }
   })
-}
-
-function formatAlternativeTotals(entries: Array<MaterialReceiptEntry>) {
-  const totals = new Map<string, number>()
-  for (const entry of entries) {
-    if (entry.altQuantity === null || !Number.isFinite(entry.altQuantity))
-      continue
-    const unit = entry.altUnit.trim()
-    totals.set(unit, (totals.get(unit) ?? 0) + entry.altQuantity)
-  }
-  return (
-    [...totals]
-      .map(
-        ([unit, quantity]) =>
-          `${formatAlternativeQuantity(quantity)} ${unit || '(единица не указана)'}`,
-      )
-      .join(' · ') || '-'
-  )
 }
 
 function groupReceiptDocuments(

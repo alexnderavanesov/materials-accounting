@@ -37,6 +37,7 @@ import {
   localToday,
   validateQualityWorkspace,
   recordCustomerReturn,
+  recordSurplusReturn,
 } from './quality-workflow'
 import { documentInspectionFixture } from './quality-workflow.fixtures'
 
@@ -1296,6 +1297,164 @@ describe('cipher reference removal', () => {
 })
 
 describe('receipts grouped by material', () => {
+  it('shows only actual rejected and surplus returns in the receipt card instead of alternative totals', () => {
+    const workspace = returnScenarioWorkspace()
+    let view = mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+    const card = () =>
+      within(
+        screen
+          .getByRole('button', { name: /^Отвод 23х7/ })
+          .closest('[id^="operation-receipts-"]') as HTMLElement,
+      )
+    expect(card().getByText('Возвращено').nextElementSibling?.textContent).toBe(
+      '0 шт',
+    )
+    expect(card().queryByText('Альтернативно')).toBeNull()
+    view.unmount()
+    const caseId = workspace.qualityWorkflow.cases[0]!.id
+    for (const quantity of [0.25, 0.75]) {
+      workspace.qualityWorkflow = recordCustomerReturn(
+        workspace.qualityWorkflow,
+        caseId,
+        [{ receiptId: 'receipt', quantity }],
+        localToday(),
+      )
+    }
+    workspace.qualityWorkflow = recordSurplusReturn(
+      workspace.qualityWorkflow,
+      workspace.materialReceipts.map((receipt) => ({
+        id: String(receipt.id),
+        quantity: Number(receipt.quantity),
+        date: String(receipt.date),
+      })),
+      [],
+      [{ receiptId: 'receipt', quantity: 0.5 }],
+      localToday(),
+    )
+    validateQualityWorkspace(workspace)
+    const before = structuredClone(workspace)
+    view = mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+    expect(card().getByText('Возвращено').nextElementSibling?.textContent).toBe(
+      '1,5 шт',
+    )
+    expect(card().getByText('Получено').nextElementSibling?.textContent).toBe(
+      '4 шт',
+    )
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
+  it('opens receipt and unique document lists, then reveals the selected receipt even behind a table filter', async () => {
+    const workspace = conversionWorkspace()
+    workspace.lines.push(base().lines[1]!)
+    workspace.materialRequests.push(
+      {
+        ...workspace.materialRequests[0]!,
+        id: 'other-request',
+        number: 'OTHER',
+      },
+      {
+        ...workspace.materialRequests[0]!,
+        id: 'beta-request',
+        projectLineId: 'line-1',
+        projectMaterialName: 'Бета',
+      },
+    )
+    workspace.qualityWorkflow = emptyQualityWorkflow()
+    workspace.qualityWorkflow.receiptDocuments = [
+      { id: 'app-shared', kind: 'app', number: 'ОБЩИЙ', date: '2026-10-14' },
+      { id: 'm15-shared', kind: 'm15', number: 'М15-1', date: '2026-10-20' },
+    ]
+    workspace.materialReceipts = [1, 2, 3].map((quantity, i) => ({
+      ...legacyReceipt(),
+      id: `receipt-${i}`,
+      quantity,
+      date: `2026-10-${14 + i}`,
+      requestId: i === 1 ? 'other-request' : 'request-conversion',
+      appDocumentId: 'app-shared',
+      m15DocumentId: 'm15-shared',
+    }))
+    workspace.materialReceipts.push({
+      ...workspace.materialReceipts[0]!,
+      id: 'receipt-beta',
+      actualName: 'Бета',
+      projectLineId: 'line-1',
+      requestId: 'beta-request',
+    })
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+    const toggle = screen.getByRole('button', {
+      name: /^Альфа/,
+      expanded: false,
+    })
+    const card = within(
+      toggle.closest('[id^="operation-receipts-"]') as HTMLElement,
+    )
+    const receiptButton = card.getByRole('button', { name: 'Получений: 3' })
+    receiptButton.focus()
+    fireEvent.click(receiptButton)
+    let dialog = screen.getByRole('dialog', { name: 'Получения материала' })
+    expect(
+      within(dialog).getAllByRole('button', { name: /Получение от/ }),
+    ).toHaveLength(3)
+    expect(within(dialog).queryByText('Бета')).toBeNull()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(receiptButton)
+    fireEvent.click(receiptButton)
+    dialog = screen.getByRole('dialog', { name: 'Получения материала' })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Получение от 16.10.2026/ }),
+    )
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const gridElement = await card.findByRole('grid')
+    // Receipt group IDs contain JSON; resolve the API by element, not a CSS selector.
+    const gridRoot = gridElement.closest('[grid-id]')!.parentElement!
+    await waitFor(() => expect(getGridApi(gridRoot)).toBeTruthy())
+    const api = getGridApi(gridRoot)!
+    await waitFor(() =>
+      expect(
+        gridElement
+          .querySelector('[row-id="receipt-2"]')
+          ?.classList.contains('operations-grid-focused'),
+      ).toBe(true),
+    )
+    act(() =>
+      api.setFilterModel({
+        quantity: { filterType: 'number', type: 'lessThan', filter: 2 },
+      }),
+    )
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+    fireEvent.click(card.getByRole('button', { name: 'Документы: 2' }))
+    dialog = screen.getByRole('dialog', { name: 'Документы получения' })
+    expect(within(dialog).getAllByText(/АПП №ОБЩИЙ/)).toHaveLength(1)
+    expect(within(dialog).getAllByText(/М-15 №М15-1/)).toHaveLength(1)
+    expect(within(dialog).queryByText('Бета')).toBeNull()
+    const appSummary = within(dialog).getByText(/АПП №ОБЩИЙ/)
+    fireEvent.click(appSummary)
+    fireEvent.click(
+      within(appSummary.closest('details')!).getByRole('button', {
+        name: /Получение от 15.10.2026.*OTHER/,
+      }),
+    )
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(3))
+    await waitFor(() =>
+      expect(
+        gridElement
+          .querySelector('[row-id="receipt-1"]')
+          ?.classList.contains('operations-grid-focused'),
+      ).toBe(true),
+    )
+    fireEvent.click(toggle)
+    expect(card.queryByRole('grid')).toBeNull()
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
   it('offers only requests with an outstanding item in the new receipt picker, including search', () => {
     const workspace = conversionWorkspace()
     workspace.lines.push(base().lines[1]!)
@@ -1530,10 +1689,9 @@ describe('receipts grouped by material', () => {
     ).toBeNull()
     expect(screen.queryByRole('grid')).toBeNull()
     expect(screen.getByText('4 м')).toBeTruthy()
-    expect(screen.getByText('10 кг')).toBeTruthy()
+    expect(screen.queryByText('Альтернативно')).toBeNull()
     expect(screen.getByText(/14.10.2026 — 22.10.2026/)).toBeTruthy()
     expect(screen.getByText('2 шт')).toBeTruthy()
-    expect(screen.getByText('0,2 т')).toBeTruthy()
     fireEvent.click(
       screen.getByRole('button', { name: /^Альфа/, expanded: false }),
     )
