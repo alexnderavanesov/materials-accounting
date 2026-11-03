@@ -37,6 +37,11 @@ import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
 import {
+  groupReceiptDeliveries,
+  updateReceiptDeliveryDocuments,
+} from './receipt-deliveries'
+import type { ReceiptDelivery } from './receipt-deliveries'
+import {
   bindReceiptDocuments,
   documentsForReceipt,
   indexReceiptDocuments,
@@ -2280,6 +2285,8 @@ function OperationsSection({
     useState<RequestDocumentGroup | null>(null)
   const [editingReceipt, setEditingReceipt] =
     useState<ReceiptDocumentGroup | null>(null)
+  const [editingDelivery, setEditingDelivery] =
+    useState<ReceiptDelivery<MaterialReceiptEntry> | null>(null)
   const [requestSearch, setRequestSearch] = useWorkspaceViewState(
     'requests.search',
     '',
@@ -2644,10 +2651,7 @@ function OperationsSection({
             <RequestsTable
               receipts={materialReceipts}
               workflow={qualityWorkflow}
-              onEditReceipt={(group) => {
-                setEditingReceipt(group)
-                setModal('receipts')
-              }}
+              onEditDelivery={setEditingDelivery}
               prepareRequestPrint={prepareRequestPrint}
               entries={materialRequests}
               focusDocumentNumber={
@@ -2829,6 +2833,21 @@ function OperationsSection({
           setActiveTab('requests')
         }}
       />
+      {editingDelivery ? (
+        <ReceiptDeliveryModal
+          delivery={editingDelivery}
+          workflow={qualityWorkflow}
+          onClose={() => setEditingDelivery(null)}
+          onSubmit={(entries, documents) => {
+            onUpdateReceipts(
+              editingDelivery.entries.map((entry) => entry.id),
+              entries,
+              documents,
+            )
+            setEditingDelivery(null)
+          }}
+        />
+      ) : null}
       <ReceiptModal
         workflow={qualityWorkflow}
         editingReceipt={editingReceipt}
@@ -3690,7 +3709,7 @@ function OperationTabs({
 function RequestsTable({
   receipts,
   workflow,
-  onEditReceipt,
+  onEditDelivery,
   prepareRequestPrint,
   entries,
   focusDocumentNumber,
@@ -3703,7 +3722,7 @@ function RequestsTable({
 }: {
   receipts: Array<MaterialReceiptEntry>
   workflow?: QualityWorkflow
-  onEditReceipt: (group: ReceiptDocumentGroup) => void
+  onEditDelivery: (delivery: ReceiptDelivery<MaterialReceiptEntry>) => void
   prepareRequestPrint: () => Promise<string>
   entries: Array<MaterialRequestEntry>
   focusDocumentNumber?: string
@@ -3779,6 +3798,13 @@ function RequestsTable({
 
       {pagination.items.map(({ group, materialType: requestMaterialType }) => {
         const isExpanded = expandedGroups[group.number] ?? false
+        const requestById = new Map(
+          group.entries.map((entry) => [entry.id, entry]),
+        )
+        const linkedReceipts = isExpanded
+          ? receipts.filter((receipt) => requestById.has(receipt.requestId))
+          : []
+        const deliveries = groupReceiptDeliveries(linkedReceipts)
         const lineIds = Array.from(
           new Set(group.entries.map((entry) => entry.projectLineId)),
         )
@@ -3942,51 +3968,6 @@ function RequestsTable({
               </p>
             ) : null}
 
-            {isExpanded && (
-              <div className="grid gap-2 border-t p-4">
-                <h3 className="font-medium">Связанные поступления</h3>
-                {receipts
-                  .filter((receipt) =>
-                    group.entries.some(
-                      (request) => request.id === receipt.requestId,
-                    ),
-                  )
-                  .map((receipt) => (
-                    <div
-                      key={receipt.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-sm"
-                    >
-                      <span>
-                        {formatDate(receipt.date)} · {receipt.actualName} ·{' '}
-                        {formatQuantity(receipt.quantity)} {receipt.projectUnit}
-                        <span className="block text-slate-500">
-                          {documentsForReceipt(receipt, workflow)
-                            .map(receiptDocumentLabel)
-                            .join('; ') || 'Документ не указан'}
-                        </span>
-                      </span>
-                      <Button
-                        variant="outline"
-                        onClick={() =>
-                          onEditReceipt(
-                            receiptEditGroup(
-                              receipt,
-                              group.entries.find(
-                                (request) => request.id === receipt.requestId,
-                              ),
-                            ),
-                          )
-                        }
-                      >
-                        Редактировать реквизиты
-                      </Button>
-                    </div>
-                  ))}
-                <p className="text-sm text-slate-600">
-                  Осталось получить: {remainingTotals}
-                </p>
-              </div>
-            )}
             {isExpanded ? (
               <div className="border-t border-blue-100 bg-blue-50/20">
                 <div
@@ -4183,6 +4164,36 @@ function RequestsTable({
                     }
                   />
                 </div>
+                <details className="group border-t border-slate-200 bg-white">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-slate-500 [&::-webkit-details-marker]:hidden">
+                    <ChevronDown
+                      size={16}
+                      className="shrink-0 transition-transform group-open:rotate-180"
+                      aria-hidden="true"
+                    />
+                    Связанные поступления
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-normal tabular-nums text-slate-500">
+                      {deliveries.length}
+                    </span>
+                  </summary>
+                  <div className="grid gap-2 px-4 pb-4">
+                    {linkedReceipts.length === 0 ? (
+                      <p className="text-sm text-slate-500">
+                        Поступлений пока нет.
+                      </p>
+                    ) : (
+                      deliveries.map((delivery) => (
+                        <ReceiptDeliveryCard
+                          key={delivery.key}
+                          delivery={delivery}
+                          requestNumber={group.number}
+                          workflow={workflow}
+                          onEdit={() => onEditDelivery(delivery)}
+                        />
+                      ))
+                    )}
+                  </div>
+                </details>
               </div>
             ) : null}
           </div>
@@ -4192,6 +4203,185 @@ function RequestsTable({
         <OperationPagination pagination={pagination} label="Заявки" />
       )}
     </div>
+  )
+}
+
+function ReceiptDeliveryCard({
+  delivery,
+  requestNumber,
+  workflow,
+  onEdit,
+}: {
+  delivery: ReceiptDelivery<MaterialReceiptEntry>
+  requestNumber: string
+  workflow?: QualityWorkflow
+  onEdit: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const documents = documentsForReceipt(delivery.entries[0]!, workflow)
+  return (
+    <div className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 p-3">
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-3 text-left"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <ChevronDown
+            size={16}
+            className={`shrink-0 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          />
+          <span className="grid min-w-0 gap-1 text-sm">
+            <span className="flex flex-wrap gap-x-4 gap-y-1 font-medium text-slate-800">
+              {documents.length
+                ? documents.map((document) => (
+                    <span key={document.id} className="min-w-0 break-words">
+                      {receiptDocumentLabel(document)}
+                    </span>
+                  ))
+                : 'Документы не указаны'}
+            </span>
+            <span className="text-slate-500">
+              Получение {formatDate(delivery.date)} · Позиций:{' '}
+              {delivery.entries.length} ·{' '}
+              {formatUnitTotals(
+                delivery.entries.map((entry) => ({
+                  quantity: entry.quantity,
+                  unit: entry.projectUnit,
+                })),
+              )}
+            </span>
+          </span>
+        </button>
+        <HoverTooltip text="Редактировать реквизиты поставки">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="shrink-0 justify-self-end"
+            aria-label="Редактировать реквизиты поставки"
+            onClick={onEdit}
+          >
+            <Pencil size={16} />
+          </Button>
+        </HoverTooltip>
+      </div>
+      {expanded ? (
+        <div className="border-t border-slate-200">
+          <OperationsGrid
+            id={`request-delivery:${requestNumber}:${delivery.key}`}
+            label={`Материалы поставки от ${formatDate(delivery.date)}`}
+            rows={delivery.entries}
+            rowId={(entry) => entry.id}
+            columns={[
+              {
+                id: 'material',
+                title: 'Материал',
+                width: 500,
+                value: (entry) => entry.actualName,
+              },
+              {
+                id: 'quantity',
+                title: 'Получено',
+                width: 150,
+                numeric: true,
+                centered: true,
+                value: (entry) => entry.quantity,
+              },
+              {
+                id: 'unit',
+                title: 'Единица измерения',
+                width: 140,
+                centered: true,
+                value: (entry) => entry.projectUnit,
+              },
+            ]}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ReceiptDeliveryModal({
+  delivery,
+  workflow,
+  onClose,
+  onSubmit,
+}: {
+  delivery: ReceiptDelivery<MaterialReceiptEntry>
+  workflow?: QualityWorkflow
+  onClose: () => void
+  onSubmit: (
+    entries: Array<MaterialReceiptEntry>,
+    documents: Array<ReceiptDocument>,
+  ) => void
+}) {
+  const [fields, setFields] = useState(() =>
+    receiptDocumentFields(delivery.entries[0]!, workflow),
+  )
+  const [date, setDate] = useState(delivery.date)
+  const [error, setError] = useState('')
+  const submitting = useRef(false)
+  function submit() {
+    if (submitting.current) return
+    submitting.current = true
+    try {
+      const update = updateReceiptDeliveryDocuments(
+        delivery.entries,
+        { ...fields, date },
+        receiptDocuments(workflow),
+      )
+      onSubmit(update.entries, update.documents)
+    } catch (cause) {
+      submitting.current = false
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : 'Не удалось изменить реквизиты поставки.',
+      )
+    }
+  }
+  return (
+    <Modal
+      open
+      title="Реквизиты поставки"
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <Button variant="outline" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button onClick={submit}>Сохранить реквизиты</Button>
+        </div>
+      }
+    >
+      <div className="grid gap-4">
+        <p className="text-sm text-slate-500">
+          Для всех позиций этой поставки в заявке: {delivery.entries.length}.
+        </p>
+        <label className="grid gap-1 text-sm">
+          Дата получения
+          <Input
+            type="date"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+          />
+        </label>
+        <ReceiptDocumentInputs
+          fields={fields}
+          documents={receiptDocuments(workflow)}
+          onChange={setFields}
+        />
+        {error ? (
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </Modal>
   )
 }
 
@@ -4344,41 +4534,38 @@ function ReceiptsTable({
       )?.group ?? null
     )
   }, [focusEntryId, receiptGroupMeta, lineById])
+  const focusedGroupKey = focusedGroup?.key
+  const focusedReceiptId =
+    focusedGroup?.entries.find(
+      (entry) =>
+        entry.id === focusEntryId ||
+        getReceiptGroupKey(entry, lineById.get(entry.projectLineId)) ===
+          focusEntryId,
+    )?.id ?? focusEntryId
 
   useEffect(() => {
-    if (!focusedGroup || expandedGroups[focusedGroup.key]) {
+    if (!focusEntryId || !focusedGroupKey || !focusedReceiptId) {
       return
     }
 
-    setExpandedGroups((current) => ({
-      ...current,
-      [focusedGroup.key]: true,
-    }))
-  }, [expandedGroups, focusedGroup])
+    // Reveal the navigation target once; subsequent toggles belong to the user.
+    setExpandedGroups((current) =>
+      current[focusedGroupKey]
+        ? current
+        : { ...current, [focusedGroupKey]: true },
+    )
 
-  useEffect(() => {
-    if (!focusEntryId || !focusedGroup || !expandedGroups[focusedGroup.key]) {
-      return
-    }
-
-    const focusedEntryId =
-      focusedGroup.entries.find(
-        (entry) =>
-          entry.id === focusEntryId ||
-          getReceiptGroupKey(entry, lineById.get(entry.projectLineId)) ===
-            focusEntryId,
-      )?.id ?? focusEntryId
-
-    window.requestAnimationFrame(() => {
+    const frame = window.requestAnimationFrame(() => {
       const target =
         document.getElementById(
-          operationAnchorId('receipts', focusedEntryId),
+          operationAnchorId('receipts', focusedReceiptId),
         ) ??
-        document.getElementById(operationAnchorId('receipts', focusedGroup.key))
+        document.getElementById(operationAnchorId('receipts', focusedGroupKey))
 
       target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     })
-  }, [expandedGroups, focusEntryId, focusedGroup, lineById])
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusEntryId, focusedGroupKey, focusedReceiptId, setExpandedGroups])
 
   const requestById = new Map(requests.map((request) => [request.id, request]))
   const normalizedSearch = normalizeSearchValue(search)
@@ -5023,9 +5210,9 @@ function RequestModal({
   const [requestNote, setRequestNote] = useState('')
   const [scopeError, setScopeError] = useState('')
   const [requestSearch, setRequestSearch] = useState('')
-  const [requestListMode, setRequestListMode] = useState<'all' | 'filled'>(
-    'all',
-  )
+  const [requestListMode, setRequestListMode] = useState<
+    'all' | 'filled' | 'request' | 'add'
+  >('all')
   const [drafts, setDrafts] = useState<Record<string, RequestDraft>>({})
   const [requestImportOpen, setRequestImportOpen] = useState(false)
   const [requestImportDraft, setRequestImportDraft] =
@@ -5146,6 +5333,17 @@ function RequestModal({
       parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0,
   ).length
   const requestListModeLines = useMemo(() => {
+    if (requestListMode === 'request') {
+      // Keep a line visible while its quantity is cleared or retyped.
+      return filteredRequestLines.filter((line) =>
+        Object.hasOwn(drafts, getProjectLineId(line)),
+      )
+    }
+    if (requestListMode === 'add') {
+      return filteredRequestLines.filter(
+        (line) => !editingEntryByLineId.has(getProjectLineId(line)),
+      )
+    }
     if (requestListMode !== 'filled') {
       return filteredRequestLines
     }
@@ -5154,7 +5352,7 @@ function RequestModal({
       (line) =>
         parsePositiveNumber(drafts[getProjectLineId(line)]?.quantity ?? '') > 0,
     )
-  }, [drafts, filteredRequestLines, requestListMode])
+  }, [drafts, editingEntryByLineId, filteredRequestLines, requestListMode])
   const visibleRequestLines = requestListModeLines.slice(0, 160)
   const hiddenFilteredCount =
     requestListModeLines.length - visibleRequestLines.length
@@ -5214,6 +5412,7 @@ function RequestModal({
     }
 
     initializationKeyRef.current = initializationKey
+    setRequestListMode(editingRequest ? 'request' : 'all')
 
     if (editingRequest) {
       const firstEntry = editingRequest.entries[0]
@@ -5694,132 +5893,149 @@ function RequestModal({
             количество и настройки пересчёта материала в проектной базе.
           </p>
         ) : null}
-        <div className="grid min-h-[min(70vh,760px)] gap-4 xl:grid-cols-[330px_minmax(0,1fr)]">
+        <div
+          className={
+            editingRequest
+              ? 'grid gap-4'
+              : 'grid min-h-[min(70vh,760px)] gap-4 xl:grid-cols-[330px_minmax(0,1fr)]'
+          }
+        >
           <aside className="grid content-start gap-3">
-            <div className="rounded-xl border border-blue-100 bg-blue-50/55 p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <span className="grid h-7 w-7 place-items-center rounded-lg bg-blue-600 text-xs font-medium text-white">
-                  1
-                </span>
-                <div>
-                  <div className="text-sm font-medium text-slate-950">
-                    Область заявки
-                  </div>
-                  <div className="text-xs leading-5 text-slate-500">
-                    Сначала выберите шифр и типы
+            {!editingRequest || requestListMode === 'add' ? (
+              <div className="rounded-xl border border-blue-100 bg-blue-50/55 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-blue-600 text-xs font-medium text-white">
+                    1
+                  </span>
+                  <div>
+                    <div className="text-sm font-medium text-slate-950">
+                      Область заявки
+                    </div>
+                    <div className="text-xs leading-5 text-slate-500">
+                      Сначала выберите шифр и типы
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="grid gap-3">
-                <Field label="Шифр проекта">
-                  <NativeSelect
-                    value={cipher}
-                    onChange={(value) => {
-                      if (
-                        value !== cipher &&
-                        Object.values(drafts).some(
-                          (draft) => parsePositiveNumber(draft.quantity) > 0,
-                        )
-                      ) {
-                        setScopeError(
-                          'Сначала очистите заполненные позиции перед сменой шифра.',
-                        )
-                        return
-                      }
-                      setScopeError('')
-                      setCipher(value)
-                      setRequestSearch('')
-                      if (!value) {
-                        setMaterialTypes([])
-                        setRequestNote('')
-                      }
-                    }}
-                    options={buildSelectOptions(
-                      'Выберите шифр',
-                      ciphers,
-                      cipher,
-                    )}
-                  />
-                </Field>
-                <fieldset className="grid gap-2 text-sm">
-                  <legend className="mb-2 text-slate-500">
-                    Типы материала
-                  </legend>
-                  {materialTypesForCipher.map((type) => (
-                    <label
-                      key={type}
-                      className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white p-2"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={materialTypes.includes(type)}
-                        onChange={(event) => {
-                          if (
-                            !event.target.checked &&
-                            requestScopeLines.some(
-                              (line) =>
-                                getRequestLineMaterialType(line) === type &&
-                                parsePositiveNumber(
-                                  drafts[getProjectLineId(line)]?.quantity ??
-                                    '',
-                                ) > 0,
-                            )
-                          ) {
-                            setScopeError(
-                              'Сначала очистите количества позиций этого типа.',
-                            )
-                            return
-                          }
-                          setScopeError('')
-                          setMaterialTypes((current) =>
-                            event.target.checked
-                              ? [...current, type]
-                              : current.filter((value) => value !== type),
+                <div className="grid gap-3">
+                  <Field label="Шифр проекта">
+                    <NativeSelect
+                      value={cipher}
+                      onChange={(value) => {
+                        if (
+                          value !== cipher &&
+                          Object.values(drafts).some(
+                            (draft) => parsePositiveNumber(draft.quantity) > 0,
                           )
-                          setRequestSearch('')
-                        }}
-                      />
-                      {type}
-                    </label>
-                  ))}
-                  {scopeError && (
-                    <p role="alert" className="text-amber-800">
-                      {scopeError}
-                    </p>
-                  )}
-                </fieldset>
+                        ) {
+                          setScopeError(
+                            'Сначала очистите заполненные позиции перед сменой шифра.',
+                          )
+                          return
+                        }
+                        setScopeError('')
+                        setCipher(value)
+                        setRequestSearch('')
+                        if (!value) {
+                          setMaterialTypes([])
+                          setRequestNote('')
+                        }
+                      }}
+                      options={buildSelectOptions(
+                        'Выберите шифр',
+                        ciphers,
+                        cipher,
+                      )}
+                    />
+                  </Field>
+                  <fieldset className="grid gap-2 text-sm">
+                    <legend className="mb-2 text-slate-500">
+                      Типы материала
+                    </legend>
+                    {materialTypesForCipher.map((type) => (
+                      <label
+                        key={type}
+                        className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white p-2"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={materialTypes.includes(type)}
+                          onChange={(event) => {
+                            if (
+                              !event.target.checked &&
+                              requestScopeLines.some(
+                                (line) =>
+                                  getRequestLineMaterialType(line) === type &&
+                                  parsePositiveNumber(
+                                    drafts[getProjectLineId(line)]?.quantity ??
+                                      '',
+                                  ) > 0,
+                              )
+                            ) {
+                              setScopeError(
+                                'Сначала очистите количества позиций этого типа.',
+                              )
+                              return
+                            }
+                            setScopeError('')
+                            setMaterialTypes((current) =>
+                              event.target.checked
+                                ? [...current, type]
+                                : current.filter((value) => value !== type),
+                            )
+                            setRequestSearch('')
+                          }}
+                        />
+                        {type}
+                      </label>
+                    ))}
+                    {scopeError && (
+                      <p role="alert" className="text-amber-800">
+                        {scopeError}
+                      </p>
+                    )}
+                  </fieldset>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <RequestSidebarMetric
+                    label="Позиции"
+                    value={formatQuantity(requestScopeLines.length)}
+                  />
+                  <RequestSidebarMetric
+                    label="Заполнено"
+                    value={formatQuantity(filledRowsCount)}
+                  />
+                </div>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <RequestSidebarMetric
-                  label="Позиции"
-                  value={formatQuantity(requestScopeLines.length)}
-                />
-                <RequestSidebarMetric
-                  label="Заполнено"
-                  value={formatQuantity(filledRowsCount)}
-                />
-              </div>
-            </div>
-
+            ) : null}
             <div
               className={`rounded-xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50 transition-opacity ${
                 requestScopeSelected ? '' : 'opacity-75'
-              }`}
+              } ${editingRequest ? '-order-1' : ''}`}
             >
               <div className="mb-3 flex items-center gap-2">
-                <span className="grid h-7 w-7 place-items-center rounded-lg bg-slate-100 text-xs font-medium text-slate-600">
-                  2
-                </span>
+                {!editingRequest && (
+                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-slate-100 text-xs font-medium text-slate-600">
+                    2
+                  </span>
+                )}
                 <div>
                   <div className="text-sm font-medium text-slate-950">
                     Реквизиты заявки
                   </div>
-                  <div className="text-xs leading-5 text-slate-500">
-                    После выбора области заполните номер, дату и заявителя
-                  </div>
+                  {!editingRequest && (
+                    <div className="text-xs leading-5 text-slate-500">
+                      После выбора области заполните номер, дату и заявителя
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="grid gap-3">
+              <div
+                className={
+                  editingRequest
+                    ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3'
+                    : 'grid gap-3'
+                }
+              >
                 <Field label="Номер заявки">
                   <Input
                     value={number}
@@ -5839,19 +6055,25 @@ function RequestModal({
                     onChange={(event) => setRequester(event.target.value)}
                   />
                 </Field>
-                <Field label="Примечание к заявке">
-                  <textarea
-                    aria-label="Примечание к заявке"
-                    className="min-h-20 w-full rounded-md border bg-white p-2 text-sm"
-                    value={requestNote}
-                    onChange={(event) => setRequestNote(event.target.value)}
-                  />
-                </Field>
+                <div
+                  className={
+                    editingRequest ? 'sm:col-span-2 xl:col-span-3' : undefined
+                  }
+                >
+                  <Field label="Примечание к заявке">
+                    <textarea
+                      aria-label="Примечание к заявке"
+                      className="min-h-20 w-full rounded-md border bg-white p-2 text-sm"
+                      value={requestNote}
+                      onChange={(event) => setRequestNote(event.target.value)}
+                    />
+                  </Field>
+                </div>
               </div>
             </div>
 
             <Button
-              className="w-full justify-center bg-white"
+              className={`justify-center bg-white ${editingRequest ? 'justify-self-end' : 'w-full'}`}
               disabled={
                 !cipher || !materialType || requestScopeLines.length === 0
               }
@@ -5867,21 +6089,55 @@ function RequestModal({
             <div className="grid gap-3 border-b border-slate-200 bg-slate-50/70 px-4 py-3 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-center">
               <div className="grid gap-1">
                 <div className="text-sm font-medium text-slate-900">
-                  {requestScopeSelected
-                    ? 'Материалы выбранной области'
-                    : 'Поиск материала по всей базе'}
+                  {editingRequest
+                    ? requestListMode === 'add'
+                      ? 'Добавление материалов'
+                      : 'Материалы заявки'
+                    : requestScopeSelected
+                      ? 'Материалы выбранной области'
+                      : 'Поиск материала по всей базе'}
                 </div>
                 <div className="text-xs leading-5 text-slate-500">
-                  Найдено {filteredRequestLines.length} из{' '}
-                  {requestCandidateLines.length} позиций. Заполнено:{' '}
-                  {filledRowsCount}.
+                  {editingRequest ? (
+                    <>
+                      Найдено: {requestListModeLines.length}. В заявке:{' '}
+                      {filledRowsCount}.
+                    </>
+                  ) : (
+                    <>
+                      Найдено {filteredRequestLines.length} из{' '}
+                      {requestCandidateLines.length} позиций. Заполнено:{' '}
+                      {filledRowsCount}.
+                    </>
+                  )}
                 </div>
               </div>
-              <div className="rounded-full bg-white px-3 py-1 text-xs font-normal text-slate-500 ring-1 ring-slate-200">
-                {cipher && materialType
-                  ? `${cipher} · ${materialType}`
-                  : 'Поиск по всей базе'}
-              </div>
+              {editingRequest ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setRequestListMode(
+                      requestListMode === 'add' ? 'request' : 'add',
+                    )
+                    setRequestSearch('')
+                  }}
+                >
+                  {requestListMode === 'add' ? (
+                    'К материалам заявки'
+                  ) : (
+                    <>
+                      <Plus size={16} />
+                      Добавить материалы
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <div className="rounded-full bg-white px-3 py-1 text-xs font-normal text-slate-500 ring-1 ring-slate-200">
+                  {cipher && materialType
+                    ? `${cipher} · ${materialType}`
+                    : 'Поиск по всей базе'}
+                </div>
+              )}
             </div>
 
             <div className="border-b border-slate-200 bg-white px-4 py-3">
@@ -5897,20 +6153,22 @@ function RequestModal({
                   onChange={(event) => setRequestSearch(event.target.value)}
                 />
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <ReceiptListModeButton
-                  active={requestListMode === 'all'}
-                  count={filteredRequestLines.length}
-                  label="Все"
-                  onClick={() => setRequestListMode('all')}
-                />
-                <ReceiptListModeButton
-                  active={requestListMode === 'filled'}
-                  count={filteredFilledRowsCount}
-                  label="Заполненные"
-                  onClick={() => setRequestListMode('filled')}
-                />
-              </div>
+              {!editingRequest && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <ReceiptListModeButton
+                    active={requestListMode === 'all'}
+                    count={filteredRequestLines.length}
+                    label="Все"
+                    onClick={() => setRequestListMode('all')}
+                  />
+                  <ReceiptListModeButton
+                    active={requestListMode === 'filled'}
+                    count={filteredFilledRowsCount}
+                    label="Заполненные"
+                    onClick={() => setRequestListMode('filled')}
+                  />
+                </div>
+              )}
             </div>
 
             {hiddenFilteredCount > 0 ? (

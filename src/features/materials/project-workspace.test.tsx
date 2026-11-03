@@ -283,11 +283,6 @@ it('saves and reopens a mixed request with its common note and protects populate
   dialog = screen.getByRole('dialog')
   expect(
     within(dialog)
-      .getAllByRole<HTMLInputElement>('checkbox')
-      .every((input) => input.checked),
-  ).toBe(true)
-  expect(
-    within(dialog)
       .getAllByPlaceholderText<HTMLInputElement>('Количество по заявке, м')
       .map((input) => input.value)
       .sort(),
@@ -296,6 +291,87 @@ it('saves and reopens a mixed request with its common note and protects populate
     within(dialog).getByLabelText<HTMLTextAreaElement>('Примечание к заявке')
       .value,
   ).toContain('Разгрузка утром.')
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Добавить материалы' }),
+  )
+  expect(
+    within(dialog)
+      .getAllByRole<HTMLInputElement>('checkbox')
+      .every((input) => input.checked),
+  ).toBe(true)
+})
+
+it('opens only saved request materials and preserves edits while adding and reopening a request', async () => {
+  const workspace = conversionWorkspace()
+  workspace.lines = base().lines
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
+  let dialog = screen.getByRole('dialog')
+  const quantities = () =>
+    within(dialog).getAllByPlaceholderText<HTMLInputElement>(
+      'Количество по заявке, м',
+    )
+  expect(quantities()).toHaveLength(1)
+  expect(quantities()[0]!.value).toBe('8')
+  expect(within(dialog).queryByText('Бета', { exact: true })).toBeNull()
+  fireEvent.change(quantities()[0]!, { target: { value: '' } })
+  expect(quantities()).toHaveLength(1)
+  fireEvent.change(quantities()[0]!, { target: { value: '7' } })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Добавить материалы' }),
+  )
+  expect(within(dialog).queryByText('Альфа', { exact: true })).toBeNull()
+  expect(within(dialog).getByText('Бета', { exact: true })).toBeTruthy()
+  expect(quantities()).toHaveLength(1)
+  fireEvent.change(quantities()[0]!, { target: { value: '3' } })
+  expect(quantities()[0]!.value).toBe('3')
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'К материалам заявки' }),
+  )
+  expect(
+    quantities()
+      .map((input) => input.value)
+      .sort(),
+  ).toEqual(['3', '7'])
+  fireEvent.change(
+    within(dialog).getByPlaceholderText(
+      'Поиск по наименованию, нормативному документу, составу или массе',
+    ),
+    { target: { value: 'Бета' } },
+  )
+  expect(quantities()).toHaveLength(1)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(lastSaved().materialRequests).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: 'request-conversion',
+        projectLineId: 'line-0',
+        quantity: 7,
+      }),
+      expect.objectContaining({ projectLineId: 'line-1', quantity: 3 }),
+    ]),
+  )
+  expect(lastSaved().materialRequests).toHaveLength(2)
+  fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
+  dialog = screen.getByRole('dialog')
+  expect(quantities()).toHaveLength(2)
+  expect(
+    within(dialog).queryByRole('button', { name: 'К материалам заявки' }),
+  ).toBeNull()
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Добавить материалы' }),
+  )
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
+  dialog = screen.getByRole('dialog')
+  expect(quantities()).toHaveLength(2)
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
 })
 
 it('adds M-15 to an existing receipt without another delivery and preserves its original APP', async () => {
@@ -337,6 +413,177 @@ it('adds M-15 to an existing receipt without another delivery and preserves its 
   })
   expect(lastSaved().qualityWorkflow!.receiptDocuments).toHaveLength(2)
 })
+function deliveryWorkspace() {
+  const workspace = conversionWorkspace()
+  workspace.lines = base().lines
+  const request = workspace.materialRequests[0]!
+  workspace.materialRequests.push(
+    {
+      ...request,
+      id: 'beta',
+      projectLineId: 'line-1',
+      projectMaterialName: 'Бета',
+    },
+    { ...request, id: 'other-request', number: 'OTHER' },
+  )
+  workspace.qualityWorkflow = emptyQualityWorkflow()
+  workspace.qualityWorkflow.receiptDocuments = [
+    { id: 'shared-app', kind: 'app', number: '1', date: '2026-10-14' },
+  ]
+  const receipt = {
+    ...legacyReceipt(),
+    appDocumentId: 'shared-app',
+    altQuantity: null,
+    altUnit: '',
+  }
+  workspace.materialReceipts = [
+    receipt,
+    {
+      ...receipt,
+      id: 'beta-receipt',
+      requestId: 'beta',
+      projectLineId: 'line-1',
+      actualName: 'Бета',
+      quantity: 3,
+    },
+    { ...receipt, id: 'repeat', date: '2026-10-15', quantity: 1 },
+    { ...receipt, id: 'elsewhere', requestId: 'other-request', quantity: 1 },
+  ]
+  return workspace
+}
+
+function openFirstDelivery() {
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^CONVERSION/ }))
+  fireEvent.click(screen.getByText('Связанные поступления').closest('summary')!)
+  const heading = screen.getByRole('button', {
+    name: /АПП №1.*Получение 14.10.2026/,
+  })
+  return { heading, card: heading.parentElement!.parentElement! }
+}
+
+it('edits common delivery documents once for all its rows, keeps other deliveries and requests unchanged, and restores the combined card after reload', async () => {
+  const workspace = deliveryWorkspace()
+  const original = structuredClone(workspace.materialReceipts)
+  const view = mount(workspace)
+  const { heading, card } = openFirstDelivery()
+  expect(
+    screen.getAllByRole('button', { name: 'Редактировать реквизиты поставки' }),
+  ).toHaveLength(2)
+  expect(heading.textContent).toContain('Позиций: 2')
+  expect(heading.textContent).toContain('5 м')
+  fireEvent.click(heading)
+  await waitFor(() => {
+    expect(within(card).getByText('Альфа')).toBeTruthy()
+    expect(within(card).getByText('Бета')).toBeTruthy()
+  })
+  fireEvent.click(
+    within(card).getByRole('button', {
+      name: 'Редактировать реквизиты поставки',
+    }),
+  )
+  let dialog = screen.getByRole('dialog')
+  fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
+    target: { value: '15' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain('дату М-15')
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
+    target: { value: '2026-10-20' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const saved = lastSaved()
+  expect(saved.materialReceipts).toHaveLength(4)
+  const edited = saved.materialReceipts.filter((entry) =>
+    ['receipt-legacy', 'beta-receipt'].includes(String(entry.id)),
+  )
+  expect(new Set(edited.map((entry) => entry.m15DocumentId)).size).toBe(1)
+  expect(edited[0]!.m15DocumentId).toBeTruthy()
+  for (const previous of original) {
+    const current = saved.materialReceipts.find(
+      (entry) => entry.id === previous.id,
+    )!
+    expect(current).toMatchObject({
+      quantity: previous.quantity,
+      requestId: previous.requestId,
+      date: previous.date,
+      appDocumentId: previous.appDocumentId,
+    })
+    if (['repeat', 'elsewhere'].includes(String(previous.id)))
+      expect(current.m15DocumentId).toBeUndefined()
+  }
+  expect(saved.qualityWorkflow!.receiptDocuments).toHaveLength(2)
+  view.unmount()
+  mount(saved)
+  const reloaded = openFirstDelivery()
+  expect(reloaded.heading.textContent).toContain('М-15 №15 от 20.10.2026')
+  expect(
+    screen.getAllByRole('button', { name: 'Редактировать реквизиты поставки' }),
+  ).toHaveLength(2)
+  fireEvent.click(
+    within(reloaded.card).getByRole('button', {
+      name: 'Редактировать реквизиты поставки',
+    }),
+  )
+  dialog = screen.getByRole('dialog')
+  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+    target: { value: 'отменённая правка' },
+  })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+})
+
+it('keeps the delivery dialog open on a protected ZNI basis change and saves no partial document catalog', async () => {
+  const workspace = deliveryWorkspace()
+  approveReceipts(workspace)
+  const previous = structuredClone(workspace)
+  mount(workspace)
+  const { card } = openFirstDelivery()
+  fireEvent.click(
+    within(card).getByRole('button', {
+      name: 'Редактировать реквизиты поставки',
+    }),
+  )
+  const dialog = screen.getByRole('dialog')
+  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+    target: { value: 'замена-основания' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'основанию ЗНИ',
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+    target: { value: '1' },
+  })
+  fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
+    target: { value: '15' },
+  })
+  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
+    target: { value: '2026-10-20' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(lastSaved().qualityWorkflow!.cases).toEqual(
+    previous.qualityWorkflow!.cases,
+  )
+  expect(lastSaved().qualityWorkflow!.receiptDocuments).toHaveLength(2)
+})
+
 function legacyReceipt() {
   return {
     id: 'receipt-legacy',
@@ -2779,9 +3026,6 @@ describe('workspace user workflows', () => {
         within(card).getByRole('button', { name: 'Редактировать' }),
       )
       const modal = screen.getByRole('dialog')
-      fireEvent.click(
-        within(modal).getByRole('button', { name: /^Заполненные/ }),
-      )
       return modal
     }
     dialog = editCreatedRequest()
@@ -3699,7 +3943,6 @@ it('returns the rejected fourth elbow from the new tab, reopens one request unit
   )
   expect(screen.queryByText(/Получена полностью/)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
-  expect(screen.getByText(/Осталось получить: 1 шт/)).toBeTruthy()
   const requestsGrid = await operationGridApi('request:ЗП-42-Материалы')
   expect(
     ['quantity', 'received', 'remaining'].map((colKey) =>
@@ -3777,7 +4020,6 @@ it('returns excess from the stock tab, validates the remaining quantity and leav
   )
   expect(screen.getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
-  expect(screen.getByText(/Осталось получить: 0 шт/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
   await operationGridApi('returns-stock')
   fireEvent.click(screen.getByRole('button', { name: 'Вернуть лишнее' }))
@@ -3806,6 +4048,47 @@ it('does not mark replacement delivery after a rejected return as excess', async
   const card = screen.getByText('Отвод 23х7').closest('div.border-2')
   expect(card?.classList.contains('border-emerald-200')).toBe(true)
   expect(card?.classList.contains('border-rose-300')).toBe(false)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+
+it('lets users collapse and reopen a receipt reached from overview without forcing it open again', async () => {
+  const workspace = conversionWorkspace()
+  workspace.materialReceipts = [legacyReceipt()]
+  mount(workspace)
+
+  async function openReceiptFromOverview() {
+    fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+    const material = screen.getByRole('button', { name: /^Альфа/ })
+    const card = material.closest('[id^="operation-overview-"]') as HTMLElement
+    if (!within(card).queryByRole('grid')) fireEvent.click(material)
+    fireEvent.click(
+      (await within(card).findAllByRole('button', { name: '1 документ' }))[0]!,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Дата получения:/ }))
+    return await screen.findByRole('button', { name: /^Альфа.*Заявки:/ })
+  }
+
+  let toggle = await openReceiptFromOverview()
+  const card = toggle.closest('[id^="operation-receipts-"]') as HTMLElement
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  await within(card).findByRole('grid')
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  expect(within(card).queryByRole('grid')).toBeNull()
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+    target: { value: 'Альфа' },
+  })
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  await within(card).findByRole('grid')
+  fireEvent.click(toggle)
+
+  toggle = await openReceiptFromOverview()
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 })
 
