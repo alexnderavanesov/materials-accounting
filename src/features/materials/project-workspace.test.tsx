@@ -2718,7 +2718,8 @@ describe('workspace user workflows', () => {
       screen.getByRole('textbox', { name: 'Поиск входного контроля' }),
       { target: { value: 'ШИФР-Б' } },
     )
-    expect(screen.getAllByText(/Фактическая Бета/).length).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Материалы ЗНИ/ }))
+    expect((await screen.findAllByText(/Фактическая Бета/)).length).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
     let input = screen.getByRole('textbox', { name: 'Поиск выдач' })
     for (const query of [
@@ -2754,6 +2755,7 @@ describe('workspace user workflows', () => {
         name: 'Поиск входного контроля',
       }).value,
     ).toBe('ШИФР-Б')
+    fireEvent.click(screen.getByRole('button', { name: /^Материалы ЗНИ/ }))
     expect((await screen.findAllByText(/Фактическая Бета/))[0]).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     view.unmount()
@@ -2799,6 +2801,9 @@ describe('workspace user workflows', () => {
       })
       fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
       fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
+      fireEvent.click(
+        screen.getByRole('radio', { name: withApp ? 'АПП' : 'М-15' }),
+      )
       fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
         target: {
           value: lastSaved().qualityWorkflow!.receiptDocuments![0]!.id,
@@ -2828,13 +2833,19 @@ describe('workspace user workflows', () => {
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Сохранить документы' }),
       )
-      fireEvent.click(screen.getByRole('button', { name: 'Подписать ЗНИ' }))
+      fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Подписать ЗНИ' }))
       fireEvent.click(
         within(screen.getByRole('dialog')).getByRole('button', {
           name: 'Подтвердить подписание',
         }),
       )
       fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
+      fireEvent.click(
+        within(screen.getByRole('dialog')).getByRole('button', {
+          name: /^ЗНИ №/,
+        }),
+      )
       dialog = screen.getByRole('dialog')
       expect(
         within(dialog).getByLabelText<HTMLInputElement>('Номер АВК').value,
@@ -2867,8 +2878,9 @@ describe('workspace user workflows', () => {
         expect(lastSaved().qualityWorkflow?.cases).toHaveLength(1),
       )
       for (const kind of ['АВК']) {
+        fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
         fireEvent.click(
-          await screen.findByRole('button', { name: `Подписать ${kind}` }),
+          await screen.findByRole('menuitem', { name: `Подписать ${kind}` }),
         )
         fireEvent.click(
           within(screen.getByRole('dialog')).getByRole('button', {
@@ -3035,7 +3047,7 @@ describe('workspace user workflows', () => {
       note: 'Уточнение',
     })
   })
-  it('keeps alternative receipt totals in different units separate', async () => {
+  it('keeps alternative receipt quantities and their units in the expanded rows', async () => {
     const workspace = conversionWorkspace()
     delete workspace.lines[0]!.alternativeUnitFactor
     workspace.materialReceipts = [
@@ -3044,7 +3056,27 @@ describe('workspace user workflows', () => {
     ]
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    expect(screen.getByText('111 кг · 0,2 т')).toBeTruthy()
+    expandReceiptGroups()
+    await screen.findByRole('columnheader', {
+      name: 'Альтернативная единица измерения',
+    })
+    const gridRoot = document.querySelector(
+      '[grid-id^="receipt:"]',
+    )!.parentElement!
+    await waitFor(() => expect(getGridApi(gridRoot)).toBeTruthy())
+    const api = getGridApi(gridRoot)!
+    expect(
+      ['receipt-legacy', 'receipt-2'].map((id) => {
+        const rowNode = api.getRowNode(id)!
+        return [
+          api.getCellValue({ rowNode, colKey: 'altQuantity' }),
+          api.getCellValue({ rowNode, colKey: 'altUnit' }),
+        ]
+      }),
+    ).toEqual([
+      [111, 'кг'],
+      [0.2, 'т'],
+    ])
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
   it('recalculates receipt Excel values and never accepts manual alternatives from the file', async () => {

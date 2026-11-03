@@ -1,6 +1,6 @@
 import { readPrintBundle } from './print-output'
 import type { PrintBundle } from './print-output'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Printer } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
@@ -51,21 +51,20 @@ const post = async (body: unknown) =>
       body: JSON.stringify(body),
     }),
   )
-export function QualityPrintButton({
-  kind,
-  caseId,
-  revision,
-  prepare,
-}: {
+type QualityPrintTarget = {
   kind: QualityPrintKind
   caseId: string
   revision: number
-  prepare: () => Promise<string>
-}) {
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState(''),
-    [bundle, setBundle] = useState<PrintBundle | null>(null)
-  async function print() {
+}
+
+export function useQualityPrint(prepare: () => Promise<string>) {
+  const pending = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [bundle, setBundle] = useState<PrintBundle | null>(null)
+  async function print({ kind, caseId, revision }: QualityPrintTarget) {
+    if (pending.current) return
+    pending.current = true
     setBusy(true)
     setError('')
     try {
@@ -87,29 +86,54 @@ export function QualityPrintButton({
     } catch (cause) {
       setError(message(cause))
     } finally {
+      pending.current = false
       setBusy(false)
     }
   }
+  return {
+    busy,
+    print,
+    output: (
+      <>
+        {error && (
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+        )}
+        {bundle && (
+          <PdfPreview
+            pdf={bundle.pdf}
+            excel={bundle.excel}
+            pdfError={bundle.pdfError}
+            name={bundle.name}
+            onClose={() => setBundle(null)}
+          />
+        )}
+      </>
+    ),
+  }
+}
+
+export function QualityPrintButton({
+  prepare,
+  ...target
+}: QualityPrintTarget & {
+  prepare: () => Promise<string>
+}) {
+  const printing = useQualityPrint(prepare)
   return (
     <div className="grid gap-1">
-      <Button variant="outline" disabled={busy} onClick={() => void print()}>
+      <Button
+        variant="outline"
+        disabled={printing.busy}
+        onClick={() => void printing.print(target)}
+      >
         <Printer size={15} />
-        {busy ? 'Формирование…' : `Печать ${kind === 'zni' ? 'ЗНИ' : 'АВК'}`}
+        {printing.busy
+          ? 'Формирование…'
+          : `Печать ${target.kind === 'zni' ? 'ЗНИ' : 'АВК'}`}
       </Button>
-      {error && (
-        <p role="alert" className="max-w-sm text-sm text-red-700">
-          {error}
-        </p>
-      )}
-      {bundle && (
-        <PdfPreview
-          pdf={bundle.pdf}
-          excel={bundle.excel}
-          pdfError={bundle.pdfError}
-          name={bundle.name}
-          onClose={() => setBundle(null)}
-        />
-      )}
+      {printing.output}
     </div>
   )
 }
