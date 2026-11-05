@@ -67,6 +67,11 @@ it('prioritizes only positive receipt balances stably across a 10000-row list', 
 it('rejects invalid saved criteria without accepting unknown tabs or indicators', () => {
   expect(
     isOperationListViews({
+      requests: { ...emptyOperationListView, sort: 'remaining' },
+    }),
+  ).toBe(true)
+  expect(
+    isOperationListViews({
       requests: { ...emptyOperationListView, sort: 'returned' },
     }),
   ).toBe(true)
@@ -77,4 +82,29 @@ it('rejects invalid saved criteria without accepting unknown tabs or indicators'
   ).toBe(false)
   expect(isOperationListViews({ unknown: emptyOperationListView })).toBe(false)
   expect(isOperationListViews(null)).toBe(false)
+})
+
+it('prioritizes receipts linked to requests with an outstanding balance', () => {
+  const receipts = [
+    { id: 'received', requestId: 'complete', quantity: 4 },
+    { id: 'partial', requestId: 'incomplete', quantity: 3 },
+  ]
+  const priority = receiptPriority(
+    'remaining',
+    receiptBalances(receipts, undefined, [], []),
+    {
+      receipts,
+      byRequest: new Map([
+        ['complete', 0],
+        ['incomplete', 1],
+        ['not-delivered', 4],
+      ]),
+    },
+  )
+  expect([...priority.ids]).toEqual(['partial'])
+  expect(
+    prioritizeReceiptRows(receipts, priority, (receipt) => [receipt.id]).map(
+      (receipt) => receipt.id,
+    ),
+  ).toEqual(['partial', 'received'])
 })

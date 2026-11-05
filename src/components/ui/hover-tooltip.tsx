@@ -6,10 +6,12 @@ import type { ReactNode } from 'react'
 export function HoverTooltip({
   text,
   className,
+  focusable = true,
   children,
 }: {
   text?: string
   className?: string
+  focusable?: boolean
   children: ReactNode
 }) {
   const id = useId()
@@ -57,7 +59,7 @@ export function HoverTooltip({
       <span
         ref={anchor}
         className={className}
-        tabIndex={text ? 0 : undefined}
+        tabIndex={text && focusable ? 0 : undefined}
         aria-describedby={visible ? id : undefined}
         onPointerEnter={() => setOpen(Boolean(text))}
         onPointerLeave={() => setOpen(false)}

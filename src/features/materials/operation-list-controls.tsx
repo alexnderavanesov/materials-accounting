@@ -1,46 +1,48 @@
 import { useState } from 'react'
 import { ArrowUpWideNarrow, Search, X } from 'lucide-react'
 import { Input } from '#/components/ui/input'
+import { HoverTooltip } from '#/components/ui/hover-tooltip'
 import type { OperationListView } from './operation-list-view'
 import { normalizeOperationSearch } from './operation-list-view'
 
 export function OperationIndicatorBadge({
   label,
   value,
+  details,
   active,
   onClick,
 }: {
   label: string
   value: string
+  details: string
   active: boolean
   onClick: () => void
 }) {
+  const description = `${details}\n${active ? 'Вернуть обычный порядок' : `Сначала материалы: ${label.toLocaleLowerCase('ru')}`}`
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      title={
-        active
-          ? 'Вернуть обычный порядок'
-          : `Сначала материалы: ${label.toLocaleLowerCase('ru')}`
-      }
-      className={`min-w-0 rounded-lg border px-3 py-2 text-left shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 ${active ? 'border-slate-500 bg-slate-100' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
-    >
-      <span className="flex items-center justify-between gap-1 text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-500">
-        {label}
-        {active && (
-          <ArrowUpWideNarrow
-            size={14}
-            className="shrink-0 text-slate-700"
-            aria-hidden="true"
-          />
-        )}
-      </span>
-      <span className="mt-0.5 block break-words text-sm leading-5 text-slate-900">
-        {value}
-      </span>
-    </button>
+    <HoverTooltip text={description} className="flex min-w-0" focusable={false}>
+      <button
+        type="button"
+        aria-pressed={active}
+        onClick={onClick}
+        aria-description={description}
+        className={`w-full min-w-0 rounded-lg border px-3 py-2 text-left shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 ${active ? 'border-slate-500 bg-slate-100' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+      >
+        <span className="flex items-center justify-between gap-1 text-[10px] font-medium uppercase leading-4 tracking-wide text-slate-500">
+          {label}
+          {active && (
+            <ArrowUpWideNarrow
+              size={14}
+              className="shrink-0 text-slate-700"
+              aria-hidden="true"
+            />
+          )}
+        </span>
+        <span className="mt-0.5 block break-words text-sm leading-5 text-slate-900">
+          {value}
+        </span>
+      </button>
+    </HoverTooltip>
   )
 }
 

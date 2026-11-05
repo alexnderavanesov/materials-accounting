@@ -9,6 +9,8 @@ import {
   overviewIndicatorKeys,
   prioritizeOverviewRows,
   receiptIndicatorsByLine,
+  requestRemainingQuantities,
+  summarizeOverviewIndicators,
 } from './operation-overview-indicators'
 import { receiptBalances } from './receipt-balances'
 
@@ -49,7 +51,14 @@ describe('overview priorities', () => {
   it('rejects obsolete or malformed persisted sort values', () => {
     expect(isOverviewSort('remaining')).toBe(true)
     expect(isOverviewSort('')).toBe(true)
-    for (const value of ['approved', 'constructor', null, {}, 0])
+    for (const value of [
+      'withoutRequests',
+      'approved',
+      'constructor',
+      null,
+      {},
+      0,
+    ])
       expect(isOverviewSort(value)).toBe(false)
   })
 
@@ -73,6 +82,71 @@ describe('overview priorities', () => {
       awaitingInspection: 4,
     })
   })
+})
+
+it('counts positions per stage without mixing units or counting unrelated project demand', () => {
+  const rows = ['м', 'шт', 'компл', 'м²'].map((unit, index) => ({
+    unit,
+    indicators: {
+      ...emptyOverviewIndicators(),
+      received: [30, 12, 10, 30][index]!,
+      remaining: index === 0 ? 5 : 0,
+    },
+  }))
+  rows.push({ unit: 'м', indicators: emptyOverviewIndicators() })
+  const receipts = rows.slice(0, 4).map((row, index) => ({
+    id: String(index),
+    requestId: String(index),
+    projectUnit: row.unit,
+    quantity: row.indicators.received,
+  }))
+  const requests = receipts.map((receipt) => ({
+    id: receipt.requestId,
+    projectUnit: receipt.projectUnit,
+  }))
+  const remainingByRequest = new Map([['0', 5]])
+  // A later edit to the project unit must not reinterpret saved receipt/request units.
+  rows[0]!.unit = 'кг'
+  const summary = summarizeOverviewIndicators({
+    rows,
+    receipts,
+    requests,
+    balances: receiptBalances(receipts, undefined, [], []),
+    remainingByRequest,
+  })
+  expect(summary.received).toEqual({
+    count: 4,
+    quantities: [
+      { unit: 'м', quantity: 30 },
+      { unit: 'шт', quantity: 12 },
+      { unit: 'компл', quantity: 10 },
+      { unit: 'м²', quantity: 30 },
+    ],
+  })
+  expect(summary.remaining).toEqual({
+    count: 1,
+    quantities: [{ unit: 'м', quantity: 5 }],
+  })
+  expect(summary.returned).toEqual({ count: 0, quantities: [] })
+})
+
+it('keeps outstanding requests separate even for the same material and rounds floating point noise', () => {
+  const remaining = requestRemainingQuantities(
+    [
+      { id: 'surplus', quantity: 5 },
+      { id: 'unreceived', quantity: 5 },
+      { id: 'fraction', quantity: 0.3 },
+    ],
+    new Map([
+      ['surplus', 10],
+      ['fraction', 0.1 + 0.2],
+    ]),
+  )
+  expect([...remaining]).toEqual([
+    ['surplus', 0],
+    ['unreceived', 5],
+    ['fraction', 0],
+  ])
 })
 
 it('treats only positive, fully received project quantities as complete, tolerating floating-point sums', () => {

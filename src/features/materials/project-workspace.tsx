@@ -1,4 +1,12 @@
 import { RequestMaterialTypeSelect } from './request-material-type-select'
+import {
+  WorkspaceNavigationProvider,
+  useWorkspaceNavigation,
+} from './workspace-navigation'
+import type {
+  OperationDocumentTab,
+  WorkspaceNavigation,
+} from './workspace-navigation'
 import { DocumentNumberingSettings } from './document-numbering-settings'
 import { QualityPrintSettings } from './quality-print-ui'
 import {
@@ -28,8 +36,9 @@ import {
   overviewIndicatorLabels,
   prioritizeOverviewRows,
   receiptIndicatorKeys,
-  receiptIndicatorLabels,
   receiptIndicatorsByLine,
+  requestRemainingQuantities,
+  summarizeOverviewIndicators,
 } from './operation-overview-indicators'
 import {
   FilterAutocompleteInput,
@@ -174,14 +183,6 @@ import type {
 } from './types'
 
 type InspectionApproval = ReturnType<typeof inspectionApprovals>[number]
-type Section = 'database' | 'operations' | 'settings'
-type OperationDocumentTab =
-  | 'overview'
-  | 'requests'
-  | 'receipts'
-  | 'quality'
-  | 'issues'
-  | 'returns'
 type OperationActionTab = Exclude<OperationDocumentTab, 'overview' | 'returns'>
 type OperationDeletion = {
   title: string
@@ -538,6 +539,20 @@ type MaterialImportDraft = {
 }
 
 export function ProjectWorkspace({
+  navigation,
+  initialStoredData,
+}: {
+  initialStoredData: LoadedWorkspace
+  navigation?: WorkspaceNavigation
+}) {
+  return (
+    <WorkspaceNavigationProvider navigation={navigation}>
+      <ProjectWorkspaceContent initialStoredData={initialStoredData} />
+    </WorkspaceNavigationProvider>
+  )
+}
+
+function ProjectWorkspaceContent({
   initialStoredData,
 }: {
   initialStoredData: LoadedWorkspace
@@ -565,12 +580,9 @@ export function ProjectWorkspace({
   const [storedWorkspace] = useState(() =>
     normalizeStoredProjectWorkspace(loadedWorkspace.workspace),
   )
-  const [section, setSection] = useWorkspaceViewState<Section>(
-    'section',
-    'operations',
-    (value): value is Section =>
-      value === 'operations' || value === 'database' || value === 'settings',
-  )
+  const { view, navigate } = useWorkspaceNavigation()
+  const section = view.section
+  const setSection = (next: typeof section) => navigate({ section: next })
   const [sidebarCollapsed, setSidebarCollapsed] = useWorkspaceViewState(
     'sidebarCollapsed',
     false,
@@ -606,6 +618,12 @@ export function ProjectWorkspace({
     useState<MaterialImportDraft | null>(null)
   const [pendingDeleteMaterial, setPendingDeleteMaterial] =
     useState<PendingDeleteMaterial | null>(null)
+  useEffect(() => {
+    setMaterialModalOpen(false)
+    setMaterialImportOpen(false)
+    setPendingDeleteMaterial(null)
+    setExcelMenuOpen(false)
+  }, [section])
   const [documentNumbering, setDocumentNumbering] = useState<
     DocumentNumbering | undefined
   >(() => storedWorkspace.documentNumbering)
@@ -2272,20 +2290,9 @@ function OperationsSection({
     entries: Array<MaterialRequestEntry>,
   ) => void
 }) {
-  const [activeTab, setActiveTab] = useWorkspaceViewState<OperationDocumentTab>(
-    'operations.tab',
-    'overview',
-    (value): value is OperationDocumentTab =>
-      typeof value === 'string' &&
-      [
-        'overview',
-        'requests',
-        'receipts',
-        'quality',
-        'issues',
-        'returns',
-      ].includes(value),
-  )
+  const { view, navigate } = useWorkspaceNavigation()
+  const activeTab = view.tab
+  const setActiveTab = (tab: OperationDocumentTab) => navigate({ tab })
   const viewScrollRef = useWorkspaceViewScroll(`operations:${activeTab}`)
   const [modal, setModal] = useState<OperationActionTab | null>(null)
   const [pendingDelete, setPendingDelete] = useState<OperationDeletion | null>(
@@ -2310,6 +2317,14 @@ function OperationsSection({
     useState<ReceiptDocumentGroup | null>(null)
   const [editingDelivery, setEditingDelivery] =
     useState<ReceiptDelivery<MaterialReceiptEntry> | null>(null)
+  useEffect(() => {
+    // History navigation must not leave an editor from another tab over the list.
+    setModal(null)
+    setEditingRequest(null)
+    setEditingReceipt(null)
+    setEditingDelivery(null)
+    setPendingDelete(null)
+  }, [activeTab])
   const [requestSearch, setRequestSearch] = useWorkspaceViewState(
     'requests.search',
     '',
@@ -2361,11 +2376,11 @@ function OperationsSection({
       ),
     [lines, materialRequests],
   )
-  const [focusTarget, setFocusTarget] = useState<{
-    tab: OperationActionTab
-    targetId: string
-  } | null>(null)
-  const [overviewFocusKey, setOverviewFocusKey] = useState<string | null>(null)
+  const focusTarget = view.focus
+    ? { tab: activeTab, targetId: view.focus }
+    : null
+  const overviewFocusKey =
+    activeTab === 'overview' ? (view.focus ?? null) : null
   const lineById = useMemo(() => {
     const map = new Map<string, SubobjectMaterialMetric>()
 
@@ -2385,9 +2400,21 @@ function OperationsSection({
       ),
     [materialReceipts, qualityWorkflow, qualityControls, materialIssues],
   )
+  const remainingByRequest = useMemo(
+    () =>
+      requestRemainingQuantities(
+        materialRequests,
+        receivedByRequest(materialReceipts, qualityWorkflow),
+      ),
+    [materialRequests, materialReceipts, qualityWorkflow],
+  )
   const priority = useMemo(
-    () => receiptPriority(listView.sort, balancesByReceipt),
-    [listView.sort, balancesByReceipt],
+    () =>
+      receiptPriority(listView.sort, balancesByReceipt, {
+        byRequest: remainingByRequest,
+        receipts: materialReceipts,
+      }),
+    [listView.sort, balancesByReceipt, remainingByRequest, materialReceipts],
   )
   const operationSummary = useMemo(
     () =>
@@ -2502,6 +2529,7 @@ function OperationsSection({
     () =>
       buildOperationOverviewRows({
         summaryByLine: operationSummary.byLine,
+        remainingByRequest,
         balancesByReceipt,
         workflow: qualityWorkflow,
         lines,
@@ -2519,6 +2547,25 @@ function OperationsSection({
       operationSummary,
       qualityWorkflow,
       balancesByReceipt,
+      remainingByRequest,
+    ],
+  )
+
+  const indicatorSummaries = useMemo(
+    () =>
+      summarizeOverviewIndicators({
+        rows: overviewRows,
+        requests: materialRequests,
+        receipts: materialReceipts,
+        balances: balancesByReceipt,
+        remainingByRequest,
+      }),
+    [
+      overviewRows,
+      materialRequests,
+      materialReceipts,
+      balancesByReceipt,
+      remainingByRequest,
     ],
   )
 
@@ -2539,7 +2586,6 @@ function OperationsSection({
   }, [modal])
 
   function changeActiveTab(tab: OperationDocumentTab) {
-    setFocusTarget(null)
     setActiveTab(tab)
   }
 
@@ -2597,31 +2643,12 @@ function OperationsSection({
         ) : null}
         <CardContent className="p-0">
           {activeTab !== 'overview' && (
-            <div
-              className="grid grid-cols-2 gap-2 border-b p-4 lg:grid-cols-3 xl:grid-cols-6"
-              role="group"
-              aria-label={`Сортировка: ${tabMeta.label}`}
-            >
-              {receiptIndicatorKeys.map((key) => (
-                <OperationIndicatorBadge
-                  key={key}
-                  label={receiptIndicatorLabels[key]}
-                  active={listView.sort === key}
-                  onClick={() =>
-                    updateListView({
-                      ...listView,
-                      sort: listView.sort === key ? '' : key,
-                    })
-                  }
-                  value={formatUnitTotals(
-                    materialReceipts.map((receipt) => ({
-                      unit: receipt.projectUnit,
-                      quantity: balancesByReceipt.get(receipt.id)?.[key] ?? 0,
-                    })),
-                  )}
-                />
-              ))}
-            </div>
+            <OperationIndicatorBar
+              label={`Сортировка: ${tabMeta.label}`}
+              summaries={indicatorSummaries}
+              sort={listView.sort}
+              onSort={(sort) => updateListView({ ...listView, sort })}
+            />
           )}
           {activeTab === 'returns' && (
             <ReturnsWorkspace
@@ -2660,8 +2687,8 @@ function OperationsSection({
             <OperationOverview
               focusRowKey={overviewFocusKey}
               rows={overviewRows}
+              indicatorSummaries={indicatorSummaries}
               onOpenDocument={(tab, targetId) => {
-                setFocusTarget({ tab, targetId })
                 setListViews((current) => ({
                   ...current,
                   [tab]: {
@@ -2682,10 +2709,9 @@ function OperationsSection({
                 if (tab === 'issues') {
                   setIssueSearch('')
                 }
-                setActiveTab(tab)
+                navigate({ tab, focus: targetId })
               }}
               onOpenStage={(tab) => {
-                setFocusTarget(null)
                 setActiveTab(tab)
               }}
             />
@@ -2713,9 +2739,10 @@ function OperationsSection({
                 setModal('requests')
               }}
               onOpenOverviewLine={(line) => {
-                setOverviewFocusKey(getMaterialIdentityKey(line))
-                setFocusTarget(null)
-                setActiveTab('overview')
+                navigate({
+                  tab: 'overview',
+                  focus: getMaterialIdentityKey(line),
+                })
               }}
             />
           ) : null}
@@ -2747,9 +2774,10 @@ function OperationsSection({
                 })
               }
               onOpenOverviewLine={(line) => {
-                setOverviewFocusKey(getMaterialIdentityKey(line))
-                setFocusTarget(null)
-                setActiveTab('overview')
+                navigate({
+                  tab: 'overview',
+                  focus: getMaterialIdentityKey(line),
+                })
               }}
             />
           ) : null}
@@ -2975,14 +3003,47 @@ function OperationEmptyState({
   )
 }
 
+function OperationIndicatorBar({
+  label,
+  summaries,
+  sort,
+  onSort,
+}: {
+  label: string
+  summaries: ReturnType<typeof summarizeOverviewIndicators>
+  sort: OverviewSort
+  onSort: (sort: OverviewSort) => void
+}) {
+  return (
+    <div
+      className="grid grid-cols-2 gap-2 border-b bg-white p-4 lg:grid-cols-4 2xl:grid-cols-7"
+      role="group"
+      aria-label={label}
+    >
+      {overviewIndicatorKeys.map((key) => (
+        <OperationIndicatorBadge
+          key={key}
+          label={overviewIndicatorLabels[key]}
+          value={`${summaries[key].count.toLocaleString('ru-RU')} поз.`}
+          details={`${key === 'remaining' ? 'Осталось получить по существующим заявкам' : overviewIndicatorLabels[key]}: ${summaries[key].count ? formatUnitTotals(summaries[key].quantities) : 'нет позиций'}`}
+          active={sort === key}
+          onClick={() => onSort(sort === key ? '' : key)}
+        />
+      ))}
+    </div>
+  )
+}
+
 function OperationOverview({
   focusRowKey,
   rows,
+  indicatorSummaries,
   onOpenDocument,
   onOpenStage,
 }: {
   focusRowKey?: string | null
   rows: Array<OperationOverviewRow>
+  indicatorSummaries: ReturnType<typeof summarizeOverviewIndicators>
   onOpenDocument: (tab: OperationActionTab, targetId: string) => void
   onOpenStage: (tab: OperationActionTab) => void
 }) {
@@ -2993,29 +3054,6 @@ function OperationOverview({
     'overview.sort',
     '',
     isOverviewSort,
-  )
-  const indicatorValues = useMemo(
-    () =>
-      Object.fromEntries(
-        overviewIndicatorKeys.map((key) => [
-          key,
-          key === 'withoutRequests'
-            ? `${rows.reduce((total, row) => total + row.indicators.withoutRequests, 0)} поз.`
-            : formatUnitTotals(
-                rows
-                  .filter((row) =>
-                    key === 'remaining'
-                      ? !row.deleted && row.totalProjectQuantity > 0
-                      : row.totals.receipts.documents.length > 0,
-                  )
-                  .map((row) => ({
-                    unit: row.unit,
-                    quantity: row.indicators[key],
-                  })),
-              ),
-        ]),
-      ) as Record<keyof OverviewIndicators, string>,
-    [rows],
   )
   const [search, setSearch] = useWorkspaceViewState(
     'overview.search',
@@ -3107,21 +3145,12 @@ function OperationOverview({
 
   return (
     <div className="bg-stone-50/60">
-      <div
-        className="grid grid-cols-2 gap-2 border-b bg-white p-4 lg:grid-cols-4 2xl:grid-cols-8"
-        role="group"
-        aria-label="Сортировка материалов"
-      >
-        {overviewIndicatorKeys.map((key) => (
-          <OperationIndicatorBadge
-            key={key}
-            label={overviewIndicatorLabels[key]}
-            active={sort === key}
-            value={indicatorValues[key]}
-            onClick={() => setSort((current) => (current === key ? '' : key))}
-          />
-        ))}
-      </div>
+      <OperationIndicatorBar
+        label="Сортировка материалов"
+        summaries={indicatorSummaries}
+        sort={sort}
+        onSort={setSort}
+      />
       <div className="border-b border-stone-200 bg-white px-4 py-3">
         <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-[minmax(240px,1fr)_200px_240px_auto] 2xl:items-center">
           <div className="relative min-w-0">
@@ -3777,12 +3806,18 @@ function RequestsTable({
   const normalizedSearch = normalizeSearchValue(search)
   const priorityRequestIds = useMemo(
     () =>
-      new Set(
-        receipts
-          .filter((receipt) => priority.ids.has(receipt.id))
-          .map((receipt) => receipt.requestId),
-      ),
-    [receipts, priority],
+      priority.key === 'remaining'
+        ? new Set(
+            [...requestRemainingQuantities(entries, netReceived)]
+              .filter(([, quantity]) => quantity > 0)
+              .map(([id]) => id),
+          )
+        : new Set(
+            receipts
+              .filter((receipt) => priority.ids.has(receipt.id))
+              .map((receipt) => receipt.requestId),
+          ),
+    [receipts, priority, entries, netReceived],
   )
   const filteredGroupMeta = prioritizeReceiptRows(
     requestGroupMeta.filter((item) =>
@@ -10072,6 +10107,7 @@ type OperationOverviewRow = {
   normativeDocument: string
   projectMaterialName: string
   totalProjectQuantity: number
+  remainingProjectQuantity: number
   totals: OperationOverviewMetrics
   unit: string
   unitWeight: number | null
@@ -10170,6 +10206,7 @@ function buildOperationSummary({
 }
 
 function buildOperationOverviewRows({
+  remainingByRequest,
   workflow,
   summaryByLine,
   balancesByReceipt,
@@ -10186,12 +10223,21 @@ function buildOperationOverviewRows({
   qualityControls: Array<InspectionApproval>
   workflow?: QualityWorkflow
   summaryByLine: Map<string, OperationLineSummary>
+  remainingByRequest: ReadonlyMap<string, number>
   balancesByReceipt: ReturnType<typeof receiptBalances>
 }): Array<OperationOverviewRow> {
   const balancesByLine = receiptIndicatorsByLine(
     materialReceipts,
     balancesByReceipt,
   )
+  const remainingByLine = new Map<string, number>()
+  for (const request of materialRequests) {
+    remainingByLine.set(
+      request.projectLineId,
+      (remainingByLine.get(request.projectLineId) ?? 0) +
+        (remainingByRequest.get(request.id) ?? 0),
+    )
+  }
   const documentById = indexReceiptDocuments(workflow)
   const requestById = new Map(
     materialRequests.map((request) => [request.id, request]),
@@ -10270,6 +10316,7 @@ function buildOperationOverviewRows({
         normativeDocument: line.normativeDocument ?? '',
         projectMaterialName: line.projectMaterialName ?? '',
         totalProjectQuantity: 0,
+        remainingProjectQuantity: 0,
         totals: createEmptyOverviewMetrics(),
         unit: line.unit,
         unitWeight: line.unitWeight ?? null,
@@ -10294,10 +10341,11 @@ function buildOperationOverviewRows({
     })
     current.totalProjectQuantity += line.plannedQuantity
     // A surplus under one cipher must not cover an unreceived quantity under another.
-    current.indicators.remaining += remainingMaterialQuantity({
+    current.remainingProjectQuantity += remainingMaterialQuantity({
       projectQuantity: line.plannedQuantity,
       receivedQuantity: summaryByLine.get(lineId)?.receivedQuantity ?? 0,
     })
+    current.indicators.remaining += remainingByLine.get(lineId) ?? 0
     for (const field of receiptIndicatorKeys)
       current.indicators[field] += balancesByLine.get(lineId)?.[field] ?? 0
     current.totals = addOverviewMetrics(current.totals, metrics)
@@ -10341,6 +10389,7 @@ function buildOperationOverviewRows({
         projectMaterialName:
           descriptor.projectMaterialName || 'Удаленный материал',
         totalProjectQuantity: 0,
+        remainingProjectQuantity: 0,
         totals: createEmptyOverviewMetrics(),
         unit: descriptor.unit,
         unitWeight: null,
@@ -10357,18 +10406,11 @@ function buildOperationOverviewRows({
       metrics,
       projectQuantity: 0,
     })
+    current.indicators.remaining += remainingByLine.get(lineId) ?? 0
     for (const field of receiptIndicatorKeys)
       current.indicators[field] += balancesByLine.get(lineId)?.[field] ?? 0
     current.totals = addOverviewMetrics(current.totals, metrics)
     rowMap.set(key, current)
-  }
-
-  for (const row of rowMap.values()) {
-    row.indicators.withoutRequests = Number(
-      !row.deleted &&
-        row.totalProjectQuantity > 0 &&
-        row.totals.requests.documents.length === 0,
-    )
   }
 
   return Array.from(rowMap.values()).sort((left, right) => {
@@ -11211,7 +11253,7 @@ function getOperationOverviewRowTone(row: OperationOverviewRow) {
   if (
     !row.deleted &&
     row.totalProjectQuantity > 0 &&
-    row.indicators.remaining === 0
+    row.remainingProjectQuantity === 0
   ) {
     return {
       card: 'border-emerald-200 bg-emerald-50/45 shadow-emerald-100/60',
@@ -12258,12 +12300,11 @@ function SettingsPanel({
   onDiscard: () => void
   onSave: () => void
 }) {
-  const [activeTab, setActiveTab] = useState<
-    ReferenceSettingsKey | 'print' | 'quality' | 'numbering'
-  >('numbering')
-  const [printKind, setPrintKind] = useState<'request' | 'zni' | 'avk'>(
-    'request',
-  )
+  const { view, navigate } = useWorkspaceNavigation()
+  const activeTab = view.settings
+  const setActiveTab = (settings: typeof activeTab) => navigate({ settings })
+  const printKind = view.template
+  const setPrintKind = (template: typeof printKind) => navigate({ template })
   const [saved, setSaved] = useState(false)
   const sections: Array<{
     key: ReferenceSettingsKey

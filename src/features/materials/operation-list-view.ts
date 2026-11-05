@@ -1,7 +1,8 @@
-import { receiptIndicatorLabels } from './operation-overview-indicators'
+import { isOverviewSort } from './operation-overview-indicators'
+import type { OverviewSort } from './operation-overview-indicators'
 import type { receiptBalances } from './receipt-balances'
 
-export type ReceiptSort = keyof typeof receiptIndicatorLabels | ''
+export type ReceiptSort = OverviewSort
 export type OperationListView = {
   cipher: string
   materialType: string
@@ -32,8 +33,7 @@ export function isOperationListViews(
         typeof item === 'object' &&
         typeof item.cipher === 'string' &&
         typeof item.materialType === 'string' &&
-        typeof item.sort === 'string' &&
-        (item.sort === '' || Object.hasOwn(receiptIndicatorLabels, item.sort)),
+        isOverviewSort(item.sort),
     )
   )
 }
@@ -77,7 +77,23 @@ export function matchesOperationMaterial(
 export function receiptPriority(
   key: ReceiptSort,
   balances: ReturnType<typeof receiptBalances>,
+  remaining?: {
+    byRequest: ReadonlyMap<string, number>
+    receipts: ReadonlyArray<{ id: string; requestId: string }>
+  },
 ): ReceiptPriority {
+  if (key === 'remaining') {
+    return {
+      key,
+      ids: new Set(
+        remaining?.receipts
+          .filter(
+            (receipt) => (remaining.byRequest.get(receipt.requestId) ?? 0) > 0,
+          )
+          .map((receipt) => receipt.id),
+      ),
+    }
+  }
   return {
     key,
     ids: new Set(
