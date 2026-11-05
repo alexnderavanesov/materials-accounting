@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { validateProjectUnitChanges } from './project-unit-guard'
 import {
   validateInspectionChronology,
   validateWorkspaceChronology,
@@ -472,17 +473,87 @@ export function newInspectionAct(
     documents: structuredClone(documents),
   }
 }
+const reinspectionWithActError =
+  'Повторная проверка доступна только до создания АВК. Сначала удалите АВК, если по нему ещё нет выдач или возвратов.'
+
+export function canReopenInspection(entry: InspectionCase) {
+  return (
+    !!currentInspection(entry).zni.signedOn &&
+    !entry.revisions.some((revision) => revision.avk)
+  )
+}
+
+export function deleteInspectionDocument(
+  workflow: QualityWorkflow,
+  caseId: string,
+  kind: 'zni' | 'avk',
+  issues: ReadonlyArray<{ receiptId?: unknown }> = [],
+): QualityWorkflow {
+  const entry = workflow.cases.find((item) => item.id === caseId)
+  if (!entry) fail('ЗНИ не найдена. Обновите страницу.')
+  const error = inspectionDeletionError(entry, kind, workflow, issues)
+  if (error) fail(error)
+  return {
+    ...workflow,
+    cases:
+      kind === 'zni'
+        ? workflow.cases.filter((item) => item.id !== caseId)
+        : workflow.cases.map((item) =>
+            item.id !== caseId
+              ? item
+              : {
+                  ...item,
+                  revisions: item.revisions.map((revision, index) =>
+                    index === item.revisions.length - 1
+                      ? { ...revision, avk: null }
+                      : revision,
+                  ),
+                },
+          ),
+  }
+}
+
+export function inspectionDeletionError(
+  entry: InspectionCase,
+  kind: 'zni' | 'avk',
+  workflow: QualityWorkflow,
+  issues: ReadonlyArray<{ receiptId?: unknown }> = [],
+): string | null {
+  if (kind === 'zni' && entry.revisions.some((revision) => revision.avk))
+    return 'Сначала удалите АВК этой ЗНИ.'
+  if (kind === 'avk') {
+    if (!currentInspection(entry).avk)
+      return 'АВК не найден. Обновите страницу.'
+    if (entry.revisions.slice(0, -1).some((revision) => revision.avk))
+      return 'Нельзя удалить АВК с предыдущими редакциями в истории.'
+  }
+  const receiptIds = new Set(
+    currentInspection(entry).zni.rows.map((row) => row.receiptId),
+  )
+  const label = kind === 'zni' ? 'ЗНИ' : 'АВК'
+  if (issues.some((issue) => receiptIds.has(String(issue.receiptId))))
+    return `Нельзя удалить ${label}: по связанным поступлениям уже есть выдачи в монтаж.`
+  if (
+    (workflow.customerReturns ?? []).some(
+      (item) => item.caseId === entry.id || receiptIds.has(item.receiptId),
+    )
+  )
+    return `Нельзя удалить ${label}: по связанным поступлениям уже оформлен возврат.`
+  return null
+}
+
 export function reopenInspection(entry: InspectionCase): InspectionCase {
   const last = currentInspection(entry)
   if (!last.zni.signedOn)
     throw new Error('Текущая ревизия уже находится в работе.')
+  if (!canReopenInspection(entry)) fail(reinspectionWithActError)
   // A signed ZNI without an AVK may be superseded, but is still retained in history.
   const next = structuredClone(last)
   next.revision++
   next.zni.inspectionDate = [
     localToday(),
     last.zni.inspectionDate,
-    last.avk?.signedOn ?? last.zni.signedOn,
+    last.zni.signedOn,
   ]
     .sort()
     .at(-1)!
@@ -861,6 +932,7 @@ function validateRevision(rev: InspectionRevision) {
   }
 }
 type WorkspaceLike = {
+  lines?: Array<{ id?: unknown; unit?: unknown; projectMaterialName?: unknown }>
   qualityWorkflow?: QualityWorkflow
   materialReceipts: Array<Record<string, unknown>>
   materialIssues: Array<Record<string, unknown>>
@@ -883,6 +955,7 @@ export function validateQualityWorkspace(
   next: WorkspaceLike,
   previous?: WorkspaceLike | null,
 ) {
+  validateProjectUnitChanges(next.lines, previous?.lines, next, previous)
   const workflow = next.qualityWorkflow
   const documents = receiptDocuments(workflow)
   const documentById = indexReceiptDocuments(workflow)
@@ -941,9 +1014,15 @@ export function validateQualityWorkspace(
   )
   unique(
     workflow.cases.flatMap((entry) =>
-      currentInspection(entry).avk?.number.trim()
-        ? [currentInspection(entry).avk!.number.trim()]
-        : [],
+      // Revisions belong to one document. Its number stays reserved even
+      // while the newest revision has no AVK yet.
+      [
+        ...new Set(
+          entry.revisions.flatMap((revision) =>
+            revision.avk?.number.trim() ? [revision.avk.number.trim()] : [],
+          ),
+        ),
+      ],
     ),
     'номера АВК',
   )
@@ -951,6 +1030,31 @@ export function validateQualityWorkspace(
     next.materialReceipts.map((receipt) => [receipt.id, receipt]),
   )
   const caseById = new Map(workflow.cases.map((entry) => [entry.id, entry]))
+  const previousCaseById = new Map(
+    previous?.qualityWorkflow?.cases.map((entry) => [entry.id, entry]),
+  )
+  // Validate destructive transitions against both snapshots, before balances.
+  // Removing dependent records in the same save must not bypass this check.
+  for (const old of previous?.qualityWorkflow?.cases ?? []) {
+    const current = caseById.get(old.id)
+    const deletedKind = !current
+      ? 'zni'
+      : old.revisions.length === current.revisions.length &&
+          currentInspection(old).avk &&
+          !currentInspection(current).avk
+        ? 'avk'
+        : null
+    if (!deletedKind) continue
+    for (const state of [previous!, next]) {
+      const error = inspectionDeletionError(
+        old,
+        deletedKind,
+        state.qualityWorkflow!,
+        state.materialIssues,
+      )
+      if (error) fail(error)
+    }
+  }
   const linkedDocuments = new Set([
     ...next.materialReceipts.flatMap((receipt) => [
       receipt.appDocumentId,
@@ -1001,6 +1105,13 @@ export function validateQualityWorkspace(
   const reservedByReceipt = new Map<string, number>()
   const acceptedByReceipt = new Map<string, number>()
   for (const entry of workflow.cases) {
+    const old = previousCaseById.get(entry.id)
+    if (
+      entry.revisions.length > (old?.revisions.length ?? 1) &&
+      (old?.revisions.some((revision) => revision.avk) ||
+        entry.revisions.slice(0, -1).some((revision) => revision.avk))
+    )
+      fail(reinspectionWithActError)
     if (!same(documentById.get(entry.basis.id), entry.basis))
       fail('Проверьте основание ЗНИ: выберите АПП или М-15.')
     const firstRows = entry.revisions[0]!.zni.rows
@@ -1107,9 +1218,6 @@ export function validateQualityWorkspace(
   }
   for (const old of previous?.qualityWorkflow?.cases ?? []) {
     const current = caseById.get(old.id)
-    const signed = old.revisions.some((revision) => revision.zni.signedOn)
-    if (signed && !current)
-      fail('Подписанные документы удалять нельзя. Используйте новую ревизию.')
     if (!current) continue
     if (
       !same(current.basis, old.basis) ||
@@ -1118,11 +1226,19 @@ export function validateQualityWorkspace(
       fail('Нельзя менять основание или удалять историю ЗНИ.')
     for (const [index, revision] of old.revisions.entries()) {
       const updated = current.revisions[index]!
+      const deletedAct =
+        index === old.revisions.length - 1 &&
+        current.revisions.length === old.revisions.length &&
+        !!revision.avk &&
+        !updated.avk
+      if (deletedAct && !same({ ...revision, avk: null }, updated))
+        fail('Удаление АВК не должно изменять ЗНИ или историю.')
       if (revision.zni.signedOn && !same(revision.zni, updated.zni))
         fail('Подписанную ЗНИ можно изменить только в новой ревизии.')
       if (
         (revision.avk?.signedOn || index < current.revisions.length - 1) &&
-        !same(revision, updated)
+        !same(revision, updated) &&
+        !deletedAct
       )
         fail('Историю ревизий и подписанный АВК изменять нельзя.')
     }

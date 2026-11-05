@@ -13,11 +13,14 @@ import {
 } from './workspace-snapshot'
 import type { SaveWorkspaceResult } from './workspace-snapshot'
 import {
+  acceptFixture,
+  historicalReinspection,
   documentInspectionFixture,
   materialInspectionFixture,
 } from './quality-workflow.fixtures'
 import {
   currentInspection,
+  deleteInspectionDocument,
   localToday,
   recordCustomerReturn,
 } from './quality-workflow'
@@ -68,6 +71,87 @@ function memoryStorage(): Storage {
 }
 
 describe('workspace file safety', () => {
+  it('persists AVK and ZNI deletion separately without deleting receipts, and rejects stale deletion', async () => {
+    const { dir, store } = await setup()
+    const workspace = acceptFixture()
+    await store.save(workspace, null)
+    const initial = await store.load()
+    const caseId = workspace.qualityWorkflow.cases[0]!.id
+    const withoutAct = {
+      ...workspace,
+      qualityWorkflow: deleteInspectionDocument(
+        workspace.qualityWorkflow,
+        caseId,
+        'avk',
+      ),
+    }
+    await store.save(withoutAct, initial.revision)
+    const afterAct = await createWorkspaceStore(dir).load()
+    expect(afterAct.workspace).toEqual(withoutAct)
+    const withoutZni = {
+      ...withoutAct,
+      qualityWorkflow: deleteInspectionDocument(
+        withoutAct.qualityWorkflow,
+        caseId,
+        'zni',
+      ),
+    }
+    expect((await store.save(withoutZni, initial.revision)).status).toBe(
+      'conflict',
+    )
+    expect(await store.load()).toEqual(afterAct)
+    await store.save(withoutZni, afterAct.revision)
+    expect((await createWorkspaceStore(dir).load()).workspace).toEqual(
+      withoutZni,
+    )
+    expect(withoutZni.materialReceipts).toEqual(workspace.materialReceipts)
+  })
+  it('atomically rejects reinspection after AVK and deletion with issued material', async () => {
+    const { store } = await setup()
+    const workspace = acceptFixture()
+    workspace.materialIssues = [
+      { id: 'issue', receiptId: 'receipt', quantity: 1, date: localToday() },
+    ]
+    await store.save(workspace, null)
+    const before = await store.load()
+    const reopened = structuredClone(workspace)
+    reopened.qualityWorkflow.cases[0] = historicalReinspection(
+      reopened.qualityWorkflow.cases[0]!,
+    )
+    await expect(store.save(reopened, before.revision)).rejects.toThrow(
+      /до создания АВК/,
+    )
+    const removed = structuredClone(workspace)
+    currentInspection(removed.qualityWorkflow.cases[0]!).avk = null
+    removed.materialIssues = []
+    await expect(store.save(removed, before.revision)).rejects.toThrow(/выдачи/)
+    expect(await store.load()).toEqual(before)
+  })
+  it('atomically rejects a used primary unit change, even when its request is removed in the same save', async () => {
+    const { store } = await setup()
+    const workspace = fixture()
+    workspace.lines[0]!.unit = 'м'
+    workspace.materialRequests = [
+      {
+        id: 'request',
+        projectLineId: 'line-1',
+        projectUnit: 'м',
+        quantity: 1,
+        date: '2026-11-05',
+      },
+    ]
+    await store.save(workspace, null)
+    const before = await store.load()
+    const changed = structuredClone(workspace)
+    changed.lines[0]!.unit = 'шт'
+    for (const requests of [workspace.materialRequests, []]) {
+      changed.materialRequests = requests
+      await expect(store.save(changed, before.revision)).rejects.toThrow(
+        'основную единицу',
+      )
+      expect(await store.load()).toEqual(before)
+    }
+  })
   it('persists a document-based ZNI, rejects overbooking and protects the source receipt', async () => {
     const { dir, store } = await setup()
     const initial = materialInspectionFixture(4)

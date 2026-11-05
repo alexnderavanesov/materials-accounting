@@ -3,6 +3,7 @@ import {
   emptyNumberHistory,
   initialNumbering,
   suggestDocumentNumber,
+  DocumentNumberExhaustedError,
 } from './document-numbering'
 import type {
   DocumentKind,
@@ -22,8 +23,16 @@ export function useDocumentNumber() {
     [settings, history],
   )
   return useCallback(
-    (kind: DocumentKind, context: NumberContext = {}) =>
-      suggestDocumentNumber(rules, history, kind, context).number,
+    (kind: DocumentKind, context: NumberContext = {}) => {
+      try {
+        return suggestDocumentNumber(rules, history, kind, context).number
+      } catch (error) {
+        // A numbering limit must not crash mounted forms or prevent opening
+        // settings. Leave the field editable; never invent a duplicate number.
+        if (error instanceof DocumentNumberExhaustedError) return ''
+        throw error
+      }
+    },
     [rules, history],
   )
 }

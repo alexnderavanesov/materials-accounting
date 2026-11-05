@@ -79,6 +79,11 @@ const defaults: DocumentNumbering = {
   issue: { pattern: 'ПМ-{год}-{номер}', padding: 4, lastValue: 0 },
   return: { pattern: 'ВОЗ-{год}-{номер}', padding: 4, lastValue: 0 },
 }
+export class DocumentNumberExhaustedError extends Error {
+  constructor() {
+    super('Счётчик исчерпан. Измените его в настройках нумерации.')
+  }
+}
 const escapeRegex = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 export function numberSequence(pattern: string, value: string): number | null {
@@ -145,8 +150,7 @@ export function suggestDocumentNumber(
     used = new Set(history[kind])
   let sequence = rule.lastValue
   for (let i = 0; i <= used.size; i++) {
-    if (++sequence > 999999999)
-      throw new Error('Счётчик исчерпан. Измените его в настройках нумерации.')
+    if (++sequence > 999999999) throw new DocumentNumberExhaustedError()
     const number = formatDocumentNumber(rule, sequence, context)
     if (!used.has(number)) return { number, sequence }
   }

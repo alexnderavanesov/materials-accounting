@@ -239,16 +239,16 @@ describe('operation calendar chronology', () => {
     Object.assign(next.avk!, { date: '2026-10-31', signedOn: '2026-10-31' })
     entry.revisions.push(next)
     issue(w, '2026-10-29', 6)
-    expect(() => validateQualityWorkspace(w)).not.toThrow()
+    const previous = structuredClone(w)
+    expect(() => validateQualityWorkspace(w, previous)).not.toThrow()
     w.materialIssues[0]!.quantity = 7
-    expect(() => validateQualityWorkspace(w)).toThrow(/по подписанным АВК 6/)
+    expect(() => validateQualityWorkspace(w, previous)).toThrow(
+      /по подписанным АВК 6/,
+    )
     w.materialIssues[0]!.quantity = 6
     next.zni.inspectionDate = '2026-10-28'
-    expect(() => validateQualityWorkspace(w)).toThrow(/повторная инспекция/)
-    const reopened = reopenInspection(entry)
-    expect(currentInspection(reopened).zni.inspectionDate >= '2026-10-31').toBe(
-      true,
-    )
+    expect(() => validateWorkspaceChronology(w)).toThrow(/повторная инспекция/)
+    expect(() => reopenInspection(entry)).toThrow(/до создания АВК/)
   })
 
   it('uses the accounting precision for fractional issue capacity', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   acceptFixture,
+  historicalReinspection,
   inspectionFixture,
   materialInspectionFixture,
 } from './quality-workflow.fixtures'
@@ -139,40 +140,40 @@ describe('document → ZNI → AVK accounting', () => {
         ).toThrow('Нет принятого')
     },
   )
-  it('keeps the effective signed AVK while reinspection is pending, then replaces it once', () => {
-    const previous = acceptFixture(),
-      next = structuredClone(previous)
+  it('preserves an already saved reinspection history and replaces its effective AVK once', () => {
+    const previous = acceptFixture()
+    previous.qualityWorkflow.cases[0] = historicalReinspection(
+      previous.qualityWorkflow.cases[0]!,
+    )
+    const next = structuredClone(previous)
     next.materialIssues.push({
       id: 'issue',
       receiptId: 'receipt',
       quantity: 8,
       date: localToday(),
     })
-    next.qualityWorkflow.cases[0] = reopenInspection(
-      next.qualityWorkflow.cases[0]!,
-    )
     validateQualityWorkspace(next, previous)
     expect(inspectionApprovals(next.qualityWorkflow)[0]!.quantity).toBe(8)
-    expect(currentInspection(next.qualityWorkflow.cases[0]).avk).toBeNull()
-    sign(next.qualityWorkflow.cases[0], 10)
+    expect(currentInspection(next.qualityWorkflow.cases[0]!).avk).toBeNull()
+    sign(next.qualityWorkflow.cases[0]!, 10)
     validateQualityWorkspace(next, previous)
     expect(inspectionApprovals(next.qualityWorkflow)).toHaveLength(1)
     expect(inspectionApprovals(next.qualityWorkflow)[0]!.quantity).toBe(10)
-    expect(activeInspection(next.qualityWorkflow.cases[0])?.revision).toBe(2)
+    expect(activeInspection(next.qualityWorkflow.cases[0]!)?.revision).toBe(2)
   })
-  it('rejects a replacement below already issued quantity', () => {
-    const previous = acceptFixture(),
-      next = structuredClone(previous)
+  it('rejects a replacement below already issued quantity in saved history', () => {
+    const previous = acceptFixture()
+    previous.qualityWorkflow.cases[0] = historicalReinspection(
+      previous.qualityWorkflow.cases[0]!,
+    )
+    const next = structuredClone(previous)
     next.materialIssues.push({
       id: 'issue',
       receiptId: 'receipt',
       quantity: 8,
       date: localToday(),
     })
-    next.qualityWorkflow.cases[0] = reopenInspection(
-      next.qualityWorkflow.cases[0]!,
-    )
-    sign(next.qualityWorkflow.cases[0], 7)
+    sign(next.qualityWorkflow.cases[0]!, 7)
     expect(() => validateQualityWorkspace(next, previous)).toThrow(
       'меньше уже выданного',
     )
@@ -237,6 +238,7 @@ describe('document → ZNI → AVK accounting', () => {
       workspace.qualityWorkflow.cases[1]!,
     ).zni.rows[0]!.presented = 6
     sign(workspace.qualityWorkflow.cases[0]!, 4)
+    currentInspection(workspace.qualityWorkflow.cases[0]!).avk = null
     workspace.qualityWorkflow.cases[0] = reopenInspection(
       workspace.qualityWorkflow.cases[0]!,
     )
@@ -323,4 +325,17 @@ it('preserves signed content through schema serialization with reordered object 
   expect(() => validateQualityWorkspace(next, previous)).toThrow(
     'Подписанную ЗНИ',
   )
+})
+
+it('reserves an AVK number while its case has an unfinished reinspection', () => {
+  const previous = acceptFixture(10)
+  previous.materialReceipts[0]!.quantity = 20
+  previous.qualityWorkflow.cases[0] = historicalReinspection(
+    previous.qualityWorkflow.cases[0]!,
+  )
+  const next = structuredClone(previous)
+  const second = another(next, 10)
+  sign(second, 10, 'АВК-1')
+  next.qualityWorkflow.cases.push(second)
+  expect(() => validateQualityWorkspace(next, previous)).toThrow(/номера АВК/)
 })

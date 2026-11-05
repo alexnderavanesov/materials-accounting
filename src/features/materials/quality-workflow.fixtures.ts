@@ -7,6 +7,17 @@ import {
   signInspection,
 } from './quality-workflow'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
+import type { InspectionCase } from './quality-workflow'
+
+// Saved histories from before reinspection was restricted to cases without AVK.
+// Only fixtures may construct these; new revisions must use reopenInspection.
+export function historicalReinspection(entry: InspectionCase): InspectionCase {
+  const next = structuredClone(currentInspection(entry))
+  next.revision++
+  next.zni.signedOn = null
+  next.avk = null
+  return { ...entry, revisions: [...entry.revisions, next] }
+}
 
 export function inspectionFixture() {
   const receipt = {

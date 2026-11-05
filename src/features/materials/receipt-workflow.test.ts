@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { acceptFixture, inspectionFixture } from './quality-workflow.fixtures'
+import {
+  acceptFixture,
+  historicalReinspection,
+  inspectionFixture,
+} from './quality-workflow.fixtures'
 import {
   bindReceiptDocuments,
   documentsForReceipt,
@@ -15,7 +19,6 @@ import {
   newInspection,
   pendingCustomerReturns,
   recordCustomerReturn,
-  reopenInspection,
   signInspection,
   validateQualityWorkspace,
 } from './quality-workflow'
@@ -307,9 +310,9 @@ describe('document-based receipt and acceptance workflow', () => {
       ),
     ).toThrow()
     const reopened = structuredClone(workspace)
-    reopened.qualityWorkflow.cases[0] = reopenInspection(entry)
+    reopened.qualityWorkflow.cases[0] = historicalReinspection(entry)
     expect(() => validateQualityWorkspace(reopened, workspace)).toThrow(
-      /возврат/,
+      /возврат|АВК/,
     )
     const repeated = structuredClone(workspace)
     repeated.materialReceipts.push({
@@ -334,7 +337,7 @@ describe('document-based receipt and acceptance workflow', () => {
       inspectionApprovals(workspace.qualityWorkflow),
       [],
     )
-    workspace.qualityWorkflow.cases[0] = reopenInspection(
+    workspace.qualityWorkflow.cases[0] = historicalReinspection(
       workspace.qualityWorkflow.cases[0]!,
     )
     expect(

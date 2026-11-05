@@ -98,6 +98,35 @@ function mount(workspace = base(), restoreView = false) {
   )
 }
 
+it('keeps operations usable when a document counter is exhausted', async () => {
+  const workspace = base()
+  workspace.documentNumbering = initialNumbering(emptyNumberHistory())
+  workspace.documentNumbering.issue.lastValue = 999999999
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+  expect(screen.getByRole('button', { name: /^Заявки/ })).toBeTruthy()
+  expect(screen.getByText(/Счётчик.*Выдачи в монтаж.*исчерпан/)).toBeTruthy()
+})
+
+it('defaults a new request to the local calendar day around midnight', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2026, 10, 5, 0, 15))
+  try {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+    fireEvent.click(
+      screen.getAllByRole('button', { name: 'Создать заявку' })[0]!,
+    )
+    const dialog = screen.getByRole('dialog')
+    expect(
+      dialog.querySelector<HTMLInputElement>('input[type="date"]')!.value,
+    ).toBe('2026-11-05')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('restores the actual workspace with browser Back and Forward, keeping searches, expanded requests and data intact', async () => {
   sessionStorage.clear()
   const workspace = conversionWorkspace()
@@ -241,6 +270,48 @@ function requestMetricValue(number: string, label: string) {
   return within(card).getByText(label, { exact: true }).nextElementSibling
     ?.textContent
 }
+
+it('keeps the saved request unit when its project material unit has changed', async () => {
+  const workspace = conversionWorkspace()
+  workspace.configuredUnits.push('шт')
+  workspace.lines[0]!.unit = 'шт'
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  fireEvent.click(await screen.findByRole('button', { name: /Редактировать/ }))
+  const dialog = screen.getByRole('dialog')
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(
+    vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[0]![0].data.workspace
+      .materialRequests[0],
+  ).toMatchObject({ quantity: 8, projectUnit: 'м' })
+})
+
+it('shows a visible error instead of changing the primary unit of a requested material', async () => {
+  const workspace = conversionWorkspace()
+  workspace.configuredUnits.push('шт')
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+  await editGridMaterial('Альфа')
+  const dialog = screen.getByRole('dialog')
+  fireEvent.change(within(dialog).getByRole('combobox'), {
+    target: { value: 'Оборудование' },
+  })
+  fireEvent.change(
+    within(dialog).getByRole('textbox', { name: 'Единица измерения' }),
+    { target: { value: 'шт' } },
+  )
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'Нельзя изменить основную единицу',
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
 
 it('shows receipt completion per request position and remaining quantities by unit without offsetting missing materials', async () => {
   const workspace = conversionWorkspace()
@@ -1644,6 +1715,10 @@ describe('receipts grouped by material', () => {
     expect(card().getByText('Возвращено').nextElementSibling?.textContent).toBe(
       '0 шт',
     )
+    expect(
+      card().getByText('Осталось получить').nextElementSibling?.textContent,
+    ).toBe('0 шт')
+    expect(card().queryByText('Получений')).toBeNull()
     expect(card().queryByText('Альтернативно')).toBeNull()
     fireEvent.click(card().getByRole('button', { name: 'Возвращено: 0 шт' }))
     let dialog = screen.getByRole('dialog', { name: 'Возвраты материала' })
@@ -1708,6 +1783,10 @@ describe('receipts grouped by material', () => {
     expect(card().getByText('Получено').nextElementSibling?.textContent).toBe(
       '4 шт',
     )
+    // Only the rejected return reopens the request, not the surplus return.
+    expect(
+      card().getByText('Осталось получить').nextElementSibling?.textContent,
+    ).toBe('1 шт')
     const returnButton = card().getByRole('button', {
       name: 'Возвращено: 1,5 шт',
     })
@@ -1787,7 +1866,15 @@ describe('receipts grouped by material', () => {
     const card = within(
       toggle.closest('[id^="operation-receipts-"]') as HTMLElement,
     )
-    const receiptButton = card.getByRole('button', { name: 'Получений: 3' })
+    const receiptButton = card.getByRole('button', { name: 'Получено: 6 м' })
+    expect(
+      card.getByText('Осталось получить').nextElementSibling?.textContent,
+    ).toBe('10 м')
+    expect(
+      Array.from(receiptButton.parentElement!.children).map(
+        (metric) => metric.firstElementChild?.textContent,
+      ),
+    ).toEqual(['Получено', 'Осталось получить', 'Возвращено', 'Документы'])
     receiptButton.focus()
     fireEvent.click(receiptButton)
     let dialog = screen.getByRole('dialog', { name: 'Получения материала' })
@@ -2118,7 +2205,17 @@ describe('receipts grouped by material', () => {
     expect(screen.getByText('4 м')).toBeTruthy()
     expect(screen.queryByText('Альтернативно')).toBeNull()
     expect(screen.getByText(/14.10.2026 — 22.10.2026/)).toBeTruthy()
-    expect(screen.getByText('2 шт')).toBeTruthy()
+    const alphaCard = within(
+      screen
+        .getByRole('button', { name: /^Альфа/, expanded: false })
+        .closest('[id^="operation-receipts-"]') as HTMLElement,
+    )
+    // Includes another cipher and a request without receipts; repeated receipts
+    // and a replacement do not multiply the remaining request quantity.
+    expect(
+      alphaCard.getByText('Осталось получить').nextElementSibling?.textContent,
+    ).toBe('19 м')
+    expect(screen.getByRole('button', { name: 'Получено: 2 шт' })).toBeTruthy()
     fireEvent.click(
       screen.getByRole('button', { name: /^Альфа/, expanded: false }),
     )
@@ -2134,6 +2231,9 @@ describe('receipts grouped by material', () => {
       target: { value: 'Н-3' },
     })
     expect(screen.getByText('Найдено 1 из 3 материалов')).toBeTruthy()
+    expect(
+      alphaCard.getByText('Осталось получить').nextElementSibling?.textContent,
+    ).toBe('19 м')
     expect(
       table.getAllByRole('button', { name: 'Удалить получение' }),
     ).toHaveLength(3)

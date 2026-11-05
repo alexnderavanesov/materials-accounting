@@ -30,26 +30,36 @@ export function ReceiptDocumentInputs({
             className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-3"
           >
             <legend className="px-1 text-sm font-medium">{title}</legend>
-            <label className="grid gap-1 text-sm">
+            <label className="grid min-w-0 gap-1 text-sm">
               Номер {title}
-              <Input
-                aria-label={`Номер ${title}`}
-                list={`${id}-${kind}`}
-                value={fields[`${kind}Number`]}
-                onChange={(event) => {
-                  const number = event.target.value
-                  const matching = options.filter(
-                    (doc) => doc.number === number,
-                  )
-                  onChange({
-                    ...fields,
-                    [`${kind}Number`]: number,
-                    ...(matching.length === 1
-                      ? { [`${kind}Date`]: matching[0]!.date }
-                      : {}),
-                  })
-                }}
-              />
+              <span className="relative block min-w-0">
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-0 left-3 flex items-center whitespace-nowrap text-stone-400"
+                >
+                  {title} №
+                </span>
+                <Input
+                  aria-label={`Номер ${title}`}
+                  className="pl-20"
+                  placeholder="Номер"
+                  list={`${id}-${kind}`}
+                  value={fields[`${kind}Number`]}
+                  onChange={(event) => {
+                    const number = event.target.value
+                    const matching = options.filter(
+                      (doc) => doc.number === number,
+                    )
+                    onChange({
+                      ...fields,
+                      [`${kind}Number`]: number,
+                      ...(matching.length === 1
+                        ? { [`${kind}Date`]: matching[0]!.date }
+                        : {}),
+                    })
+                  }}
+                />
+              </span>
               <datalist id={`${id}-${kind}`}>
                 {options.map((doc) => (
                   <option key={doc.id} value={doc.number}>

@@ -16,6 +16,9 @@ import {
 import {
   consumeDocumentNumbers,
   documentNumberHistory,
+  documentKinds,
+  documentLabels,
+  initialNumbering,
   materialNumberContext,
 } from './document-numbering'
 import type { DocumentNumbering, NumberHistory } from './document-numbering'
@@ -68,6 +71,7 @@ import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
 import { receiptChronologyError } from './operation-chronology'
 import { ReceiptReferencesDialog } from './receipt-references-dialog'
+import { validateProjectUnitChanges } from './project-unit-guard'
 import {
   groupReceiptDeliveries,
   updateReceiptDeliveryDocuments,
@@ -614,6 +618,7 @@ function ProjectWorkspaceContent({
   const [newLine, setNewLine] = useState(emptyNewLine)
   const [editingLineId, setEditingLineId] = useState<string | null>(null)
   const [materialModalOpen, setMaterialModalOpen] = useState(false)
+  const [materialSaveError, setMaterialSaveError] = useState('')
   const [materialImportOpen, setMaterialImportOpen] = useState(false)
   const [materialImportDraft, setMaterialImportDraft] =
     useState<MaterialImportDraft | null>(null)
@@ -794,6 +799,10 @@ function ProjectWorkspaceContent({
     () => ({ settings: documentNumbering, history: numberHistory }),
     [documentNumbering, numberHistory],
   )
+  const exhaustedCounters = useMemo(() => {
+    const rules = documentNumbering ?? initialNumbering(numberHistory)
+    return documentKinds.filter((kind) => rules[kind].lastValue >= 999999999)
+  }, [documentNumbering, numberHistory])
   const [notice, setNotice] = useState(
     'Добавьте первую позицию материала или импортируйте Excel.',
   )
@@ -1009,6 +1018,7 @@ function ProjectWorkspaceContent({
     : undefined
 
   function openAddMaterialModal() {
+    setMaterialSaveError('')
     setEditingLineId(null)
     setNewLine({
       ...emptyNewLine,
@@ -1078,6 +1088,7 @@ function ProjectWorkspaceContent({
   }
 
   function openEditMaterialModal(lineId: string) {
+    setMaterialSaveError('')
     const line = lines.find((item) => item.id === lineId)
 
     if (!line) {
@@ -1267,6 +1278,22 @@ function ProjectWorkspaceContent({
         alternativeUnitFactor: optionalNumber(newLine.alternativeUnitFactor),
       })
     })
+
+    try {
+      validateProjectUnitChanges(nextLines, lines, {
+        materialRequests,
+        materialReceipts,
+        materialIssues,
+        qualityWorkflow,
+      })
+    } catch (error) {
+      setMaterialSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Не удалось изменить единицу материала.',
+      )
+      return
+    }
 
     setLines((current) =>
       editingLineId && oldGroupKey
@@ -1464,7 +1491,23 @@ function ProjectWorkspaceContent({
     )
     const firstIdentityKey = importedKeys[0] ?? null
 
-    setLines((current) => applyMaterialImportRows(current, validRows))
+    const importedLines = applyMaterialImportRows(lines, validRows)
+    try {
+      validateProjectUnitChanges(importedLines, lines, {
+        materialRequests,
+        materialReceipts,
+        materialIssues,
+        qualityWorkflow,
+      })
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : 'Не удалось изменить единицу материала.',
+      )
+      return
+    }
+    setLines(importedLines)
     setSelectedCombinationKey(null)
     setImportedCombinationKeys(importedKeys)
     setCipherFilter('all')
@@ -1711,6 +1754,17 @@ function ProjectWorkspaceContent({
       <main
         className={`bg-stone-50 text-stone-900 ${section === 'database' ? 'flex h-dvh min-h-[32rem] flex-col' : 'min-h-screen'}`}
       >
+        {exhaustedCounters.length > 0 && (
+          <div
+            role="alert"
+            className="shrink-0 border-b border-amber-300 bg-amber-50 p-3 text-sm"
+          >
+            Счётчик «
+            {exhaustedCounters.map((kind) => documentLabels[kind]).join(', ')}»
+            исчерпан. Измените его в настройках нумерации или укажите номер
+            документа вручную.
+          </div>
+        )}
         {loadedWorkspace.recovery ? (
           <div
             role="status"
@@ -1978,6 +2032,7 @@ function ProjectWorkspaceContent({
             </div>
 
             <MaterialModal
+              error={materialSaveError}
               alternativeUnits={configuredUnits}
               alloys={alloysForSelect}
               documents={documentsForSelect}
@@ -1987,7 +2042,10 @@ function ProjectWorkspaceContent({
               materialTypes={materialTypesForSelect}
               open={materialModalOpen}
               units={unitsForSelect}
-              onChange={setNewLine}
+              onChange={(value) => {
+                setMaterialSaveError('')
+                setNewLine(value)
+              }}
               onClose={() => {
                 setMaterialModalOpen(false)
                 setEditingLineId(null)
@@ -2678,6 +2736,7 @@ function OperationsSection({
           )}
           {activeTab === 'quality' && (
             <InspectionWorkspace
+              issues={materialIssues}
               listView={listView}
               priority={priority}
               requests={materialRequests}
@@ -2772,6 +2831,7 @@ function OperationsSection({
               lineById={lineById}
               receiptGroupMeta={receiptGroupMeta}
               requests={materialRequests}
+              remainingByRequest={remainingByRequest}
               search={receiptSearch}
               onEditReceipt={(group) => {
                 setEditingReceipt(group)
@@ -4612,6 +4672,7 @@ function ReceiptsTable({
   lineById,
   receiptGroupMeta,
   requests,
+  remainingByRequest,
   search,
   onEditReceipt,
   onDeleteReceipt,
@@ -4625,6 +4686,7 @@ function ReceiptsTable({
   lineById: Map<string, SubobjectMaterialMetric>
   receiptGroupMeta: Array<ReceiptGroupMeta>
   requests: Array<MaterialRequestEntry>
+  remainingByRequest: ReadonlyMap<string, number>
   search: string
   onEditReceipt: (group: ReceiptDocumentGroup) => void
   onDeleteReceipt: (group: ReceiptDocumentGroup) => void
@@ -4642,6 +4704,20 @@ function ReceiptsTable({
     () => customerReturnTotals(workflow),
     [workflow],
   )
+  const remainingByMaterial = useMemo(() => {
+    const totals = new Map<string, number>()
+    for (const request of requests) {
+      const key = getReceiptRequestMaterialKey(
+        request,
+        lineById.get(request.projectLineId),
+      )
+      totals.set(
+        key,
+        (totals.get(key) ?? 0) + (remainingByRequest.get(request.id) ?? 0),
+      )
+    }
+    return totals
+  }, [requests, remainingByRequest, lineById])
   const documentById = useMemo(
     () => indexReceiptDocuments(workflow),
     [workflow],
@@ -4769,6 +4845,13 @@ function ReceiptsTable({
       ) : null}
       {pagination.items.map(({ group }) => {
         const isExpanded = expandedGroups[group.key] ?? false
+        const firstEntry = group.entries[0]!
+        const remaining = remainingByMaterial.get(
+          getReceiptRequestMaterialKey(
+            firstEntry,
+            lineById.get(firstEntry.projectLineId),
+          ),
+        )
         const isDeletedProjectMaterial = group.entries.some(
           (entry) => !lineById.has(entry.projectLineId),
         )
@@ -4833,6 +4916,23 @@ function ReceiptsTable({
                       unit: entry.projectUnit,
                     })),
                   )}
+                  title="Показать получения материала"
+                  onClick={() => {
+                    setSelectedReceiptId(undefined)
+                    setReferences({ groupKey: group.key, kind: 'receipts' })
+                  }}
+                />
+                <RequestGroupMetric
+                  label="Осталось получить"
+                  wrap
+                  value={
+                    remaining === undefined
+                      ? '—'
+                      : formatUnitTotals([
+                          { quantity: remaining, unit: firstEntry.projectUnit },
+                        ])
+                  }
+                  title="По существующим заявкам на материал"
                 />
                 <RequestGroupMetric
                   label="Возвращено"
@@ -4846,15 +4946,6 @@ function ReceiptsTable({
                   onClick={() => {
                     setSelectedReceiptId(undefined)
                     setReferences({ groupKey: group.key, kind: 'returns' })
-                  }}
-                />
-                <RequestGroupMetric
-                  label="Получений"
-                  value={String(group.entries.length)}
-                  title="Показать получения материала"
-                  onClick={() => {
-                    setSelectedReceiptId(undefined)
-                    setReferences({ groupKey: group.key, kind: 'receipts' })
                   }}
                 />
                 <RequestGroupMetric
@@ -5469,22 +5560,34 @@ function RequestModal({
       }),
     [editingRequest, lineById, materialType],
   )
+  const editingEntryByLineId = useMemo(
+    () =>
+      new Map(
+        editingRequest?.entries.map((entry) => [entry.projectLineId, entry]) ??
+          [],
+      ),
+    [editingRequest],
+  )
   const requestSourceLines = useMemo(() => {
     const allowedCiphers = new Set(ciphers)
     return [
       ...lines
         .filter((line) => allowedCiphers.has(line.cipher))
         .map((line) => {
-          const previous = editingRequest?.entries.find(
-            (entry) => entry.projectLineId === getProjectLineId(line),
-          )
-          return previous?.materialType
-            ? { ...line, materialType: previous.materialType }
+          const previous = editingEntryByLineId.get(getProjectLineId(line))
+          return previous
+            ? {
+                ...line,
+                materialType: previous.materialType || line.materialType,
+                // Editing a note must not reinterpret saved quantities in a
+                // different unit after a project catalogue change.
+                unit: previous.projectUnit,
+              }
             : line
         }),
       ...deletedRequestLines,
     ]
-  }, [ciphers, deletedRequestLines, lines, editingRequest])
+  }, [ciphers, deletedRequestLines, lines, editingEntryByLineId])
 
   const materialTypesForCipher = useMemo(
     () =>
@@ -5513,14 +5616,6 @@ function RequestModal({
           materialTypes.includes(getRequestLineMaterialType(line)),
       ),
     [cipher, materialType, requestCandidateLines],
-  )
-  const editingEntryByLineId = useMemo(
-    () =>
-      new Map(
-        editingRequest?.entries.map((entry) => [entry.projectLineId, entry]) ??
-          [],
-      ),
-    [editingRequest],
   )
   const filteredRequestLines = useMemo(() => {
     if (!cipher && !materialType && requestSearch.trim().length === 0) {
@@ -5981,6 +6076,12 @@ function RequestModal({
 
   function submit() {
     if (hasInvalidConvertedQuantities) return
+    if (!number.trim()) {
+      setRequestSaveError(
+        'Укажите номер заявки или измените счётчик в настройках нумерации.',
+      )
+      return
+    }
 
     const exceededLine = requestScopeLines
       .map((line) => {
@@ -11045,6 +11146,16 @@ function buildReceiptGroupMeta(
   })
 }
 
+function getReceiptRequestMaterialKey(
+  entry: { projectLineId: string; projectUnit: string },
+  line?: SubobjectMaterialMetric,
+) {
+  return JSON.stringify([
+    line ? getMaterialIdentityKey(line) : `deleted:${entry.projectLineId}`,
+    normalizeSearchValue(entry.projectUnit),
+  ])
+}
+
 function getReceiptGroupKey(
   entry: MaterialReceiptEntry,
   line?: SubobjectMaterialMetric,
@@ -11484,7 +11595,7 @@ function parseDocumentDate(dateValue: string) {
 }
 
 function todayInputValue() {
-  return new Date().toISOString().slice(0, 10)
+  return localDateInputValue()
 }
 
 function formatDate(value: string) {
@@ -11522,6 +11633,7 @@ function formatOptionalQuantity(value: number | null) {
 }
 
 function MaterialModal({
+  error,
   alternativeUnits,
   alloys,
   documents,
@@ -11538,6 +11650,7 @@ function MaterialModal({
   onSubmit,
   onUseExisting,
 }: {
+  error: string
   alternativeUnits: Array<string>
   alloys: Array<string>
   documents: Array<string>
@@ -11595,6 +11708,14 @@ function MaterialModal({
       onClose={onClose}
     >
       <div className="grid gap-4">
+        {error ? (
+          <div
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+          >
+            {error}
+          </div>
+        ) : null}
         <div
           className={`grid gap-4 ${
             editing || isCreatePassportOnly
@@ -11839,6 +11960,7 @@ function MaterialModal({
                       <div className="grid grid-cols-2 gap-3">
                         <Field label="Единица измерения">
                           <AutocompleteInput
+                            ariaLabel="Единица измерения"
                             options={units}
                             placeholder="Например: м"
                             value={form.unit}

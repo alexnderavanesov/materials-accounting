@@ -16,15 +16,12 @@ import { DocumentNumberingContext } from './document-numbering-context'
 import { emptyNumberHistory, initialNumbering } from './document-numbering'
 import {
   acceptFixture,
+  historicalReinspection,
   documentInspectionFixture,
   inspectionFixture,
   materialInspectionFixture,
 } from './quality-workflow.fixtures'
-import {
-  currentInspection,
-  reopenInspection,
-  validateQualityWorkspace,
-} from './quality-workflow'
+import { currentInspection, validateQualityWorkspace } from './quality-workflow'
 import type { SubobjectMaterialMetric } from './types'
 
 vi.setConfig({ testTimeout: 15000 })
@@ -35,6 +32,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 const receiptsOf = (value: ReturnType<typeof inspectionFixture>) =>
@@ -43,6 +41,78 @@ const receiptsOf = (value: ReturnType<typeof inspectionFixture>) =>
   >[0]['receipts']
 const linesOf = (value: ReturnType<typeof inspectionFixture>) =>
   value.lines as unknown as Array<SubobjectMaterialMetric>
+
+it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', () => {
+  const fixture = acceptFixture()
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const saved = vi.fn()
+  function Harness() {
+    const [workspace, setWorkspace] = useState(fixture)
+    return (
+      <InspectionWorkspace
+        value={workspace.qualityWorkflow}
+        receipts={receiptsOf(workspace)}
+        lines={linesOf(workspace)}
+        issues={workspace.materialIssues}
+        prepare={async () => 'revision'}
+        onChange={(qualityWorkflow) => {
+          const next = { ...workspace, qualityWorkflow }
+          validateQualityWorkspace(next, workspace)
+          saved(next)
+          setWorkspace(next)
+        }}
+      />
+    )
+  }
+  render(<Harness />)
+  const openMenu = () =>
+    fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
+  openMenu()
+  expect(
+    screen.queryByRole('menuitem', { name: 'Повторная проверка' }),
+  ).toBeNull()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить АВК' }))
+  expect(confirm).toHaveBeenCalledTimes(1)
+  expect(saved).not.toHaveBeenCalled()
+  confirm.mockReturnValue(true)
+  openMenu()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить АВК' }))
+  expect(
+    currentInspection(saved.mock.calls[0]![0].qualityWorkflow.cases[0]).avk,
+  ).toBeNull()
+  openMenu()
+  expect(
+    screen.getByRole('menuitem', { name: 'Повторная проверка' }),
+  ).toBeTruthy()
+  expect(screen.queryByRole('menuitem', { name: 'Удалить АВК' })).toBeNull()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить ЗНИ' }))
+  expect(saved.mock.calls[1]![0].qualityWorkflow.cases).toEqual([])
+  expect(saved.mock.calls[1]![0].materialReceipts).toEqual(
+    fixture.materialReceipts,
+  )
+  expect(screen.queryByRole('button', { name: /^Действия ЗНИ/ })).toBeNull()
+})
+
+it('explains why AVK deletion is blocked by an issue instead of changing data', () => {
+  const fixture = acceptFixture()
+  const onChange = vi.fn()
+  const confirm = vi.spyOn(window, 'confirm')
+  render(
+    <InspectionWorkspace
+      value={fixture.qualityWorkflow}
+      receipts={receiptsOf(fixture)}
+      lines={linesOf(fixture)}
+      issues={[{ receiptId: 'receipt' }]}
+      prepare={async () => 'revision'}
+      onChange={onChange}
+    />,
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить АВК' }))
+  expect(screen.getByRole('alert').textContent).toContain('выдачи в монтаж')
+  expect(confirm).not.toHaveBeenCalled()
+  expect(onChange).not.toHaveBeenCalled()
+})
 it('paginates 1001 inspection candidates while preserving selection across pages and search', () => {
   const fixture = inspectionFixture()
   fixture.qualityWorkflow.cases = []
@@ -96,7 +166,7 @@ it('paginates 1001 inspection candidates while preserving selection across pages
 it('shows the effective signed revision during reinspection and keeps history read-only', async () => {
   const fixture = acceptFixture(),
     onChange = vi.fn()
-  fixture.qualityWorkflow.cases[0] = reopenInspection(
+  fixture.qualityWorkflow.cases[0] = historicalReinspection(
     fixture.qualityWorkflow.cases[0]!,
   )
   const revision = currentInspection(fixture.qualityWorkflow.cases[0])
@@ -657,8 +727,8 @@ it('keeps actions in a keyboard-accessible menu and opens print preview after th
     within(menu).queryByRole('menuitem', { name: 'Подписать ЗНИ' }),
   ).toBeNull()
   expect(
-    within(menu).queryByRole('menuitem', { name: 'Удалить черновик' }),
-  ).toBeNull()
+    within(menu).queryByRole('menuitem', { name: 'Удалить АВК' }),
+  ).toBeTruthy()
   fireEvent.keyDown(menu, { key: 'ArrowDown' })
   expect(document.activeElement).toBe(
     within(menu).getByRole('menuitem', { name: 'Печать ЗНИ' }),

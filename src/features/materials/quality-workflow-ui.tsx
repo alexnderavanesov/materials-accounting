@@ -22,6 +22,9 @@ import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import {
   activeInspection,
+  canReopenInspection,
+  deleteInspectionDocument,
+  inspectionDeletionError,
   currentInspection,
   emptyQualityDefaults,
   emptyQualityWorkflow,
@@ -655,7 +658,9 @@ export function InspectionWorkspace({
   focusId,
   listView = emptyOperationListView,
   priority = emptyReceiptPriority,
+  issues = [],
 }: Props & {
+  issues?: ReadonlyArray<{ receiptId?: unknown }>
   prepare: () => Promise<string>
   search?: string
   focusId?: string
@@ -944,7 +949,7 @@ export function InspectionWorkspace({
           })
         actions.push({ label: 'История', onSelect: () => setHistory(entry) })
         if (
-          rev.zni.signedOn &&
+          canReopenInspection(entry) &&
           !(workflow.customerReturns ?? []).some(
             (item) => item.caseId === entry.id,
           )
@@ -959,23 +964,29 @@ export function InspectionWorkspace({
                 setDraft(next)
               }),
           })
-        if (!entry.revisions.some((item) => item.zni.signedOn))
+        for (const kind of rev.avk
+          ? (['avk', 'zni'] as const)
+          : (['zni'] as const))
           actions.push({
-            label: 'Удалить черновик',
+            label: kind === 'avk' ? 'Удалить АВК' : 'Удалить ЗНИ',
             destructive: true,
             onSelect: () =>
               run(() => {
-                if (
-                  window.confirm(
-                    `Удалить черновик ЗНИ №${rev.zni.number}? Документы получения и материалы сохранятся.`,
-                  )
+                const blocked = inspectionDeletionError(
+                  entry,
+                  kind,
+                  workflow,
+                  issues,
                 )
-                  onChange({
-                    ...workflow,
-                    cases: workflow.cases.filter(
-                      (item) => item.id !== entry.id,
-                    ),
-                  })
+                if (blocked) throw new Error(blocked)
+                const description =
+                  kind === 'avk'
+                    ? `Удалить АВК №${rev.avk!.number}? ЗНИ останется подписанной. Материал будет ожидать нового АВК.`
+                    : `Удалить ЗНИ №${rev.zni.number}? Получение сохранится, материал снова будет доступен для инспекции.`
+                if (window.confirm(description))
+                  onChange(
+                    deleteInspectionDocument(workflow, entry.id, kind, issues),
+                  )
               }),
           })
         return (
