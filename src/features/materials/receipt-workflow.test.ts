@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { acceptFixture, inspectionFixture } from './quality-workflow.fixtures'
 import {
   bindReceiptDocuments,
@@ -26,6 +26,12 @@ import {
 } from './receipt-balances'
 import { buildQualityPrintData } from './quality-print-data'
 
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-22T12:00:00Z'))
+})
+afterEach(() => vi.useRealTimers())
+
 function fixture() {
   const workspace = inspectionFixture()
   workspace.qualityWorkflow.receiptDocuments = []
@@ -40,7 +46,9 @@ function fixture() {
     quantity: 4,
     altQuantity: 10,
   })
-  workspace.materialRequests = [{ id: 'request', quantity: 4, number: 'ЗП-1' }]
+  workspace.materialRequests = [
+    { id: 'request', quantity: 4, number: 'ЗП-1', date: '2026-10-22' },
+  ]
   return workspace
 }
 const receiptsOf = (workspace: ReturnType<typeof fixture>) =>
@@ -159,6 +167,7 @@ describe('document-based receipt and acceptance workflow', () => {
     })
     workspace.materialRequests.push({
       id: 'second-request',
+      date: '2026-10-22',
       number: 'ЗП-2',
       quantity: 2,
     })

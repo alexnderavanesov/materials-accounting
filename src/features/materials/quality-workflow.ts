@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import {
+  validateInspectionChronology,
+  validateWorkspaceChronology,
+} from './operation-chronology'
+import {
   documentsForReceipt,
   indexReceiptDocuments,
   receiptDocuments,
@@ -234,6 +238,7 @@ export function inspectionMatches(entry: InspectionCase, search: string) {
 
 type Receipt = {
   id: string
+  date?: string
   appDocumentId?: string
   m15DocumentId?: string
   projectLineId: string
@@ -384,6 +389,13 @@ export function newInspection(
       appDate: basis.kind === 'app' ? basis.date : '',
     }
   })
+  const initialDate = [
+    localToday(),
+    basis.date,
+    ...selection.map((item) => receiptById.get(item.receiptId)?.date ?? ''),
+  ]
+    .sort()
+    .at(-1)!
   return {
     id: crypto.randomUUID(),
     processVersion: 2,
@@ -393,8 +405,8 @@ export function newInspection(
         revision: 1,
         zni: {
           number: String(number),
-          date: localToday(),
-          inspectionDate: localToday(),
+          date: initialDate,
+          inspectionDate: initialDate,
           inspectionTime: '',
           signedOn: null,
           details: { ...workflow.defaults },
@@ -467,6 +479,13 @@ export function reopenInspection(entry: InspectionCase): InspectionCase {
   // A signed ZNI without an AVK may be superseded, but is still retained in history.
   const next = structuredClone(last)
   next.revision++
+  next.zni.inspectionDate = [
+    localToday(),
+    last.zni.inspectionDate,
+    last.avk?.signedOn ?? last.zni.signedOn,
+  ]
+    .sort()
+    .at(-1)!
   next.zni.signedOn = null
   next.avk = null
   return { ...entry, revisions: [...entry.revisions, next] }
@@ -480,6 +499,7 @@ export function createAcceptedInspectionAct(
   if (!revision.zni.rows.some((row) => (row.accepted ?? 0) > 0))
     fail('Нет принятого количества для АВК.')
   const act = newInspectionAct(documents)
+  act.date = [act.date, revision.zni.signedOn].sort().at(-1)!
   act.number =
     entry.revisions.find((item) => item.avk?.number)?.avk?.number ?? ''
   return act
@@ -795,6 +815,7 @@ export function signInspection(
     next.avk.signedOn = signedOn
   }
   validateRevision(next)
+  validateInspectionChronology(next)
   return next
 }
 function fail(message: string): never {
@@ -903,6 +924,7 @@ export function validateQualityWorkspace(
       fail('Выдача возможна только по подписанному АВК.')
     if (previous?.qualityWorkflow)
       fail('Нельзя удалить весь учёт АПП, ЗНИ и АВК устаревшей вкладкой.')
+    validateWorkspaceChronology(next, previous)
     return
   }
   if (!qualityWorkflowSchema.safeParse(workflow).success)
@@ -1260,6 +1282,7 @@ export function validateQualityWorkspace(
       }
     }
   }
+  validateWorkspaceChronology(next, previous)
 }
 
 /** Only the effective signed AVK revision contributes to material approvals. */

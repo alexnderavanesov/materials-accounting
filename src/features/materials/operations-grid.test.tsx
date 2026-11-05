@@ -133,7 +133,11 @@ it('filters from a header popup and only offers reset while a filter is active',
     await screen.findByRole('button', { name: 'Сбросить фильтры' }),
   )
   await waitFor(() => expect(api.getDisplayedRowCount()).toBe(3))
-  expect(screen.queryByRole('button', { name: 'Сбросить фильтры' })).toBeNull()
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: 'Сбросить фильтры' }),
+    ).toBeNull(),
+  )
 })
 
 it('sorts and filters numeric quantities and calls the action for the displayed record', async () => {

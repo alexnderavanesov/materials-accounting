@@ -55,6 +55,7 @@ function scaledWorkspace(count: number) {
     workspace.lines.push({ ...seed.lines[0], id: lineId })
     workspace.materialRequests.push({
       id: requestId,
+      date: revision.zni.date,
       projectLineId: lineId,
       quantity: 10,
     })
@@ -67,6 +68,7 @@ function scaledWorkspace(count: number) {
     })
     workspace.materialIssues.push({
       id: `issue-${index}`,
+      date: revision.avk!.signedOn!,
       receiptId,
       projectLineId: lineId,
       quantity: 1,

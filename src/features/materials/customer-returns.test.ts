@@ -143,7 +143,7 @@ describe('surplus and rejected customer returns', () => {
       ),
     ).toBe(3)
     workspace.materialIssues = [
-      { id: 'issue', receiptId: 'receipt', quantity: 2 },
+      { id: 'issue', receiptId: 'receipt', quantity: 2, date },
     ]
     validateQualityWorkspace(workspace, previous)
     expect(balance(workspace)).toMatchObject({ stock: 0, availableToIssue: 0 })
@@ -174,7 +174,7 @@ describe('surplus and rejected customer returns', () => {
     const workspace = fixture()
     signAct(workspace)
     workspace.materialIssues = [
-      { id: 'issue', receiptId: 'receipt', quantity: 2.6 },
+      { id: 'issue', receiptId: 'receipt', quantity: 2.6, date },
     ]
     expect(() => surplus(workspace, 0.5)).toThrow(/остаток/)
     surplus(workspace, 0.4)

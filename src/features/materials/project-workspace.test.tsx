@@ -823,6 +823,58 @@ function qualityWorkspace() {
   approveReceipts(workspace)
   return workspace
 }
+it('rejects moving a request past an existing receipt and keeps the editor open', async () => {
+  const workspace = conversionWorkspace()
+  workspace.materialReceipts = [legacyReceipt()]
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
+  const dialog = screen.getByRole('dialog')
+  fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+    target: { value: '2026-10-15' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'раньше заявки',
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+    target: { value: '2026-10-14' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+  )
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+})
+
+it('blocks an issue before the signed AVK and allows it on the signing day', async () => {
+  const workspace = qualityWorkspace()
+  mount(workspace)
+  const dialog = openIssue()
+  await operationGridApi('issue-selection')
+  await editIssue('receipt-legacy', 'quantity', '1')
+  fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+    target: { value: '2026-10-14' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'по подписанным АВК 0',
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+    target: { value: localDateInputValue() },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+})
 function openIssue() {
   fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
   fireEvent.click(
@@ -2389,7 +2441,9 @@ describe('receipt import dates and editing', () => {
       target: { files: [file] },
     })
     await waitFor(() =>
-      expect(within(dialog).getByRole('status').textContent).toBe(file.name),
+      expect(
+        within(dialog).getByText(file.name, { selector: '[role="status"]' }),
+      ).toBeTruthy(),
     )
   }
 
@@ -2432,8 +2486,65 @@ describe('receipt import dates and editing', () => {
     return input!
   }
 
+  it('blocks a receipt before its request in the form and in a corrected Excel upload', async () => {
+    const workspace = conversionWorkspace()
+    mount(workspace)
+    const dialog = openReceipt()
+    const form = within(dialog)
+    const common = within(
+      form.getByRole('group', { name: 'Общие реквизиты получения' }),
+    )
+    fireEvent.change(common.getByLabelText('Дата получения'), {
+      target: { value: '2026-10-13' },
+    })
+    fireEvent.change(common.getByLabelText('Номер АПП'), {
+      target: { value: 'АПП-1' },
+    })
+    fireEvent.change(common.getByLabelText('Дата АПП'), {
+      target: { value: '2026-10-13' },
+    })
+    fireEvent.change(form.getByPlaceholderText('Поступило, м'), {
+      target: { value: '1.2' },
+    })
+    expect(
+      form.getByRole<HTMLButtonElement>('button', {
+        name: 'Сохранить получение',
+      }).disabled,
+    ).toBe(true)
+    expect(
+      form.getByText(/Дата получения не может быть раньше даты заявки/)
+        .textContent,
+    ).toContain('14.10.2026')
+    await importReceiptDate(dialog, '13.10.2026')
+    let api = await operationGridApi('receipt-import')
+    expect(
+      api.getRowNode('6-request-conversion')!.data.row.errors.join(' '),
+    ).toContain('раньше даты заявки')
+    expect(
+      form.getByRole<HTMLButtonElement>('button', { name: 'Применить импорт' })
+        .disabled,
+    ).toBe(true)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    await uploadReceiptFile(dialog, receiptFile('14.10.2026'))
+    api = await operationGridApi('receipt-import')
+    await waitFor(() =>
+      expect(api.getRowNode('6-request-conversion')!.data.row.status).toBe(
+        'ready',
+      ),
+    )
+    fireEvent.click(form.getByRole('button', { name: 'Применить импорт' }))
+    fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().materialReceipts[0]!.date).toBe('2026-10-14')
+    expect(workspace.materialReceipts).toHaveLength(0)
+  })
+
   it('imports using common details and skips unfilled rows with prefilled documents', async () => {
-    mount(conversionWorkspace())
+    const workspace = conversionWorkspace()
+    workspace.materialRequests[0]!.date = '2026-07-01'
+    mount(workspace)
     const dialog = openReceipt()
     const common = within(
       within(dialog).getByRole('group', { name: 'Общие реквизиты получения' }),
@@ -2782,7 +2893,9 @@ describe('receipt import dates and editing', () => {
   ])(
     'retains the imported receipt date %s in the form and saved data',
     async (input, expected) => {
-      const view = mount(conversionWorkspace())
+      const workspace = conversionWorkspace()
+      workspace.materialRequests[0]!.date = '2017-01-01'
+      const view = mount(workspace)
       const dialog = openReceipt()
       await importReceiptDate(dialog, input)
       fireEvent.click(

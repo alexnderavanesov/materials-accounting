@@ -142,7 +142,12 @@ describe('document → ZNI → AVK accounting', () => {
   it('keeps the effective signed AVK while reinspection is pending, then replaces it once', () => {
     const previous = acceptFixture(),
       next = structuredClone(previous)
-    next.materialIssues.push({ id: 'issue', receiptId: 'receipt', quantity: 8 })
+    next.materialIssues.push({
+      id: 'issue',
+      receiptId: 'receipt',
+      quantity: 8,
+      date: localToday(),
+    })
     next.qualityWorkflow.cases[0] = reopenInspection(
       next.qualityWorkflow.cases[0]!,
     )
@@ -158,7 +163,12 @@ describe('document → ZNI → AVK accounting', () => {
   it('rejects a replacement below already issued quantity', () => {
     const previous = acceptFixture(),
       next = structuredClone(previous)
-    next.materialIssues.push({ id: 'issue', receiptId: 'receipt', quantity: 8 })
+    next.materialIssues.push({
+      id: 'issue',
+      receiptId: 'receipt',
+      quantity: 8,
+      date: localToday(),
+    })
     next.qualityWorkflow.cases[0] = reopenInspection(
       next.qualityWorkflow.cases[0]!,
     )
@@ -254,6 +264,7 @@ describe('document → ZNI → AVK accounting', () => {
       id: 'issue',
       receiptId: 'receipt',
       quantity: 6,
+      date: localToday(),
     })
     validateQualityWorkspace(workspace)
     workspace.materialIssues[0]!.quantity = 6.01

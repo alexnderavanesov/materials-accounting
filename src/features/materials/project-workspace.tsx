@@ -66,6 +66,7 @@ import type {
 import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
+import { receiptChronologyError } from './operation-chronology'
 import { ReceiptReferencesDialog } from './receipt-references-dialog'
 import {
   groupReceiptDeliveries,
@@ -1514,6 +1515,7 @@ function ProjectWorkspaceContent({
   function addMaterialRequestEntries(entries: Array<MaterialRequestEntry>) {
     if (materialRequests.some((item) => item.number === entries[0]?.number))
       throw new Error('Этот номер заявки уже занят. Выберите другой номер.')
+    validateRequestChange([...entries, ...materialRequests])
     setDocumentNumbering((current) =>
       consumeDocumentNumbers(
         current,
@@ -1652,6 +1654,16 @@ function ProjectWorkspaceContent({
   function addMaterialIssueEntries(entries: Array<MaterialIssueEntry>) {
     if (materialIssues.some((item) => item.document === entries[0]?.document))
       throw new Error('Этот номер выдачи уже занят. Выберите другой номер.')
+    const previous = {
+      qualityWorkflow,
+      materialReceipts,
+      materialIssues,
+      materialRequests,
+    }
+    validateQualityWorkspace(
+      { ...previous, materialIssues: [...entries, ...materialIssues] },
+      previous,
+    )
     setDocumentNumbering((current) =>
       consumeDocumentNumbers(
         current,
@@ -7616,6 +7628,13 @@ function ReceiptModal({
       return error ? [error] : []
     },
   )
+  const chronologyError = receiptWorkItems
+    .flatMap(({ key, request }) =>
+      parsePositiveNumber(drafts[key]?.quantity ?? '') > 0
+        ? [receiptChronologyError(request, getDeliveryDetails(key).date)]
+        : [],
+    )
+    .find(Boolean)
   const receiptSaveBlockedReason = !hasRows
     ? 'Укажите поступившее количество хотя бы по одной позиции.'
     : receiptWorkItems.some(
@@ -7628,7 +7647,7 @@ function ReceiptModal({
         ? `Заполните АПП или М-15: ${missingInvoiceRowsCount} поз.`
         : receiptOverRestRowsCount > 0
           ? `Поступление превышает остаток к получению: ${receiptOverRestRowsCount} поз.`
-          : (alternativeErrors[0] ?? '')
+          : chronologyError || alternativeErrors[0] || ''
   const receiptSaveDisabled = Boolean(receiptSaveBlockedReason)
   const selectedRequestGroup = requestGroups.find(
     (group) => group.number === requestNumber,
@@ -7843,6 +7862,10 @@ function ReceiptModal({
           'Некорректная дата поступления. Укажите дату в формате ДД.ММ.ГГГГ или ГГГГ-ММ-ДД.',
         )
       }
+      if (item && hasEditableData) {
+        const chronology = receiptChronologyError(item.request, date)
+        if (chronology) errors.push(chronology)
+      }
 
       if (row.quantity !== null && row.quantity < 0) {
         errors.push('Поступившее количество не может быть отрицательным.')
@@ -8002,7 +8025,7 @@ function ReceiptModal({
     }
 
     const entries: Array<MaterialReceiptEntry> = []
-    const catalog = receiptDocuments(workflow)
+    const catalog = [...receiptDocuments(workflow)]
 
     for (const { key, request, receipt } of receiptWorkItems) {
       const draft = drafts[key]
@@ -9621,12 +9644,16 @@ function IssueModal({
       } satisfies MaterialIssueEntry
     })
     try {
-      validateQualityWorkspace({
+      const previous = {
         qualityWorkflow: workflow,
         materialReceipts: receipts,
         materialRequests: requests,
-        materialIssues: [...entries, ...issues],
-      })
+        materialIssues: issues,
+      }
+      validateQualityWorkspace(
+        { ...previous, materialIssues: [...entries, ...issues] },
+        previous,
+      )
       submitting.current = true
       onSubmit(entries)
     } catch (error) {

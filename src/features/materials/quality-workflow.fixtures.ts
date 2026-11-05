@@ -123,7 +123,12 @@ export function documentInspectionFixture(kind: 'app' | 'm15' = 'app') {
     m15DocumentId: kind === 'm15' ? 'source' : '',
   })
   workspace.materialRequests = [
-    { id: 'request', number: 'ЗП-42-Материалы', quantity: 4 },
+    {
+      id: 'request',
+      number: 'ЗП-42-Материалы',
+      quantity: 4,
+      date: localToday(),
+    },
   ]
   const entry = newInspection(
     workspace.qualityWorkflow,
