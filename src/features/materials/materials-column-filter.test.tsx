@@ -60,7 +60,7 @@ async function open(title = 'Материал') {
   )
   return within(
     await screen.findByRole('region', {
-      name: `${title}: сортировка и фильтры`,
+      name: `${title}: фильтр`,
     }),
   )
 }
@@ -73,7 +73,6 @@ it('discards drafts on Cancel, Escape and close, then restores only applied filt
   for (const close of ['Отмена', 'Закрыть фильтр', 'Escape']) {
     const popup = await open()
     fireEvent.click(popup.getByRole('checkbox', { name: 'Труба 2' }))
-    fireEvent.click(popup.getByRole('button', { name: 'По убыванию' }))
     fireEvent.change(popup.getByRole('textbox', { name: 'Поиск значений' }), {
       target: { value: 'нет совпадений' },
     })
@@ -85,9 +84,7 @@ it('discards drafts on Cancel, Escape and close, then restores only applied filt
       fireEvent.keyDown(input, { key: 'Escape' })
     } else fireEvent.click(popup.getByRole('button', { name: close }))
     await waitFor(() =>
-      expect(
-        screen.queryByRole('region', { name: /сортировка и фильтры/ }),
-      ).toBeNull(),
+      expect(screen.queryByRole('region', { name: /фильтр/ })).toBeNull(),
     )
     expect(api.getFilterModel()).toEqual({})
   }
@@ -110,57 +107,34 @@ it('discards drafts on Cancel, Escape and close, then restores only applied filt
   expect(restored.getDisplayedRowCount()).toBe(1)
 })
 
-it('adds, reorders, removes and resets sort levels only on Apply', async () => {
+it('preserves existing column sorting when applying and clearing a filter', async () => {
   render(<Harness />)
   const api = await operationGridApi('filter-test')
+  const sortModel = [
+    { colId: 'group', sort: 'asc' as const },
+    { colId: 'quantity', sort: 'desc' as const },
+  ]
+  act(() => {
+    api.applyColumnState({
+      state: sortModel.map((column, sortIndex) => ({ ...column, sortIndex })),
+    })
+  })
   let popup = await open()
-  fireEvent.click(popup.getByRole('button', { name: 'Добавить уровень' }))
-  fireEvent.change(popup.getByLabelText('Столбец уровня 1'), {
-    target: { value: 'group' },
-  })
-  fireEvent.click(popup.getByRole('button', { name: 'Добавить уровень' }))
-  fireEvent.change(popup.getByLabelText('Столбец уровня 2'), {
-    target: { value: 'quantity' },
-  })
-  fireEvent.change(popup.getByLabelText('Направление уровня 2'), {
-    target: { value: 'desc' },
-  })
-  expect(api.getState().sort).toBeUndefined()
+  expect(popup.queryByRole('heading', { name: 'Сортировка' })).toBeNull()
+  expect(popup.queryByRole('combobox')).toBeNull()
+  fireEvent.change(popup.getByRole('textbox'), { target: { value: 'Труба' } })
   apply()
-  await waitFor(() =>
-    expect(api.getState().sort?.sortModel).toMatchObject([
-      { colId: 'group', sort: 'asc' },
-      { colId: 'quantity', sort: 'desc' },
-    ]),
-  )
-  expect(
-    Array.from({ length: 5 }, (_, i) => api.getDisplayedRowAtIndex(i)?.id),
-  ).toEqual(['a', 'b', 'e', 'c', 'd'])
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(2))
+  expect(api.getState().sort?.sortModel).toMatchObject(sortModel)
+  expect([
+    api.getDisplayedRowAtIndex(0)?.id,
+    api.getDisplayedRowAtIndex(1)?.id,
+  ]).toEqual(['a', 'b'])
   popup = await open()
-  fireEvent.click(popup.getByRole('button', { name: 'Поднять уровень 2' }))
+  fireEvent.click(popup.getByRole('button', { name: 'Очистить' }))
   apply()
-  expect(
-    Array.from({ length: 5 }, (_, i) => api.getDisplayedRowAtIndex(i)?.id),
-  ).toEqual(['a', 'b', 'c', 'd', 'e'])
-  popup = await open()
-  fireEvent.click(popup.getByRole('button', { name: 'Удалить уровень 1' }))
-  apply()
-  expect(api.getState().sort?.sortModel).toMatchObject([
-    { colId: 'group', sort: 'asc' },
-  ])
-  popup = await open()
-  fireEvent.change(popup.getByLabelText('Порядок строк'), {
-    target: { value: 'single' },
-  })
-  fireEvent.click(popup.getByRole('button', { name: 'По возрастанию' }))
-  apply()
-  expect(api.getState().sort?.sortModel).toMatchObject([
-    { colId: 'name', sort: 'asc' },
-  ])
-  popup = await open()
-  fireEvent.click(popup.getByRole('button', { name: 'Сбросить сортировку' }))
-  apply()
-  expect(api.getState().sort).toBeUndefined()
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(5))
+  expect(api.getState().sort?.sortModel).toMatchObject(sortModel)
 })
 
 it.each(['button', 'Enter'])(
@@ -192,7 +166,7 @@ it.each(['button', 'Enter'])(
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(2))
     expect(
       screen.queryByRole('region', {
-        name: 'Количество: сортировка и фильтры',
+        name: 'Количество: фильтр',
       }),
     ).toBeNull()
     expect([
@@ -287,7 +261,7 @@ it('keeps checkbox selections when search is cleared and combines numeric/blank 
   await waitFor(() => expect(api.getDisplayedRowCount()).toBe(3))
 })
 
-it('preserves saved text/number conditions when applying sorting and when new rows arrive', async () => {
+it('preserves saved text/number conditions when applying unchanged filters and when new rows arrive', async () => {
   const view = render(<Harness />)
   const api = await operationGridApi('filter-test')
   const filters = {
@@ -304,8 +278,7 @@ it('preserves saved text/number conditions when applying sorting and when new ro
   await act(async () => {
     api.setFilterModel(filters)
   })
-  const popup = await open()
-  fireEvent.click(popup.getByRole('button', { name: 'По возрастанию' }))
+  await open()
   apply()
   expect(api.getFilterModel()).toEqual(filters)
   view.rerender(

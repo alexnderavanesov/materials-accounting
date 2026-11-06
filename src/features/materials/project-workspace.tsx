@@ -1,3 +1,4 @@
+import { AppSelect } from '#/components/ui/app-select'
 import { RequestMaterialTypeSelect } from './request-material-type-select'
 import {
   WorkspaceNavigationProvider,
@@ -26,14 +27,18 @@ import {
   applyMaterialImportRows,
   buildIdentityLineFromImport,
   getMaterialIdentityKey,
+  previewMaterialImportRows,
   withStableId,
 } from './project-material-data'
+import type { MaterialImportPreview } from './project-material-data'
+import { MaterialImportChanges } from './material-import-changes'
 import {
   isMaterialFullyReceived,
   remainingMaterialQuantity,
 } from './material-progress'
 import {
   emptyOverviewIndicators,
+  indexOperationIndicators,
   isOverviewSort,
   overviewIndicatorKeys,
   overviewIndicatorLabels,
@@ -65,6 +70,7 @@ import type {
 } from './operation-list-view'
 import type {
   OverviewIndicators,
+  OperationIndicatorIndex,
   OverviewSort,
 } from './operation-overview-indicators'
 import type { MaterialProgress } from './material-progress'
@@ -2071,6 +2077,7 @@ function ProjectWorkspaceContent({
 
             <MaterialImportModal
               draft={materialImportDraft}
+              currentLines={lines}
               open={materialImportOpen}
               onAddMissingReferences={addMissingImportReferences}
               onApply={applyMaterialImportDraft}
@@ -2204,7 +2211,8 @@ function DatabaseSection({
               из {matrixRows.length} позиций
             </span>
             <div className="w-48">
-              <NativeSelect
+              <AppSelect
+                label="Шифр проекта"
                 value={cipherFilter}
                 onChange={onChangeCipherFilter}
                 options={[
@@ -2479,6 +2487,16 @@ function OperationsSection({
       ),
     [materialRequests, materialReceipts, qualityWorkflow],
   )
+  const indicatorIndex = useMemo(
+    () =>
+      indexOperationIndicators(
+        materialRequests,
+        materialReceipts,
+        balancesByReceipt,
+        remainingByRequest,
+      ),
+    [materialRequests, materialReceipts, balancesByReceipt, remainingByRequest],
+  )
   const priority = useMemo(
     () =>
       receiptPriority(listView.sort, balancesByReceipt, {
@@ -2599,6 +2617,7 @@ function OperationsSection({
   const overviewRows = useMemo(
     () =>
       buildOperationOverviewRows({
+        indicatorIndex,
         summaryByLine: operationSummary.byLine,
         remainingByRequest,
         balancesByReceipt,
@@ -2619,6 +2638,7 @@ function OperationsSection({
       qualityWorkflow,
       balancesByReceipt,
       remainingByRequest,
+      indicatorIndex,
     ],
   )
 
@@ -2723,6 +2743,7 @@ function OperationsSection({
           )}
           {activeTab === 'returns' && (
             <ReturnsWorkspace
+              indicatorIndex={indicatorIndex}
               search={returnSearch}
               listView={listView}
               priority={priority}
@@ -2737,6 +2758,7 @@ function OperationsSection({
           )}
           {activeTab === 'quality' && (
             <InspectionWorkspace
+              indicatorIndex={indicatorIndex}
               issues={materialIssues}
               listView={listView}
               requests={materialRequests}
@@ -2789,6 +2811,7 @@ function OperationsSection({
           ) : null}
           {activeTab === 'requests' ? (
             <RequestsTable
+              indicatorIndex={indicatorIndex}
               listView={listView}
               priority={priority}
               receipts={materialReceipts}
@@ -2819,6 +2842,7 @@ function OperationsSection({
           ) : null}
           {activeTab === 'receipts' ? (
             <ReceiptsTable
+              indicatorIndex={indicatorIndex}
               listView={listView}
               priority={priority}
               workflow={qualityWorkflow}
@@ -2856,6 +2880,7 @@ function OperationsSection({
 
           {activeTab === 'issues' ? (
             <IssuesTable
+              indicatorIndex={indicatorIndex}
               listView={listView}
               priority={priority}
               search={issueSearch}
@@ -3401,6 +3426,12 @@ function OperationOverview({
                     >
                       <OperationsGrid
                         id={`overview:${row.key}`}
+                        pageScroll
+                        indicators={{
+                          values: (item) => item.indicators,
+                          unit: (item) => item.unit,
+                          existing: { received: 'receipts' },
+                        }}
                         label={`Движение: ${row.projectMaterialName}`}
                         rows={row.ciphers.map((cipher) => ({
                           ...cipher,
@@ -3414,6 +3445,7 @@ function OperationOverview({
                             cipher: 'Всего по проекту',
                             projectQuantity: row.totalProjectQuantity,
                             metrics: row.totals,
+                            indicators: row.indicators,
                             unit: row.unit,
                             isTotal: true,
                           },
@@ -3801,7 +3833,10 @@ function OperationTabs({
   onChange: (tab: OperationDocumentTab) => void
 }) {
   return (
-    <div className="sticky top-0 z-20 rounded-lg border border-stone-200 bg-white/95 p-2 shadow-sm backdrop-blur">
+    <div
+      data-operation-tabs
+      className="sticky top-0 z-20 rounded-lg border border-stone-200 bg-white/95 p-2 shadow-sm backdrop-blur"
+    >
       <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
         {(Object.keys(operationTabMeta) as Array<OperationDocumentTab>).map(
           (tab) => (
@@ -3841,6 +3876,7 @@ function OperationTabs({
 }
 
 function RequestsTable({
+  indicatorIndex,
   listView,
   priority,
   receipts,
@@ -3856,6 +3892,7 @@ function RequestsTable({
   onOpenOverviewLine,
   summaryByLine,
 }: {
+  indicatorIndex: OperationIndicatorIndex
   listView: OperationListView
   priority: ReceiptPriority
   receipts: Array<MaterialReceiptEntry>
@@ -4130,6 +4167,16 @@ function RequestsTable({
                 >
                   <OperationsGrid
                     id={`request:${group.number}`}
+                    pageScroll
+                    indicators={{
+                      values: ({ entry }) =>
+                        indicatorIndex.byRequest.get(entry.id),
+                      unit: ({ entry }) => entry.projectUnit,
+                      existing: {
+                        received: 'received',
+                        remaining: 'remaining',
+                      },
+                    }}
                     label={`Заявка ${group.number}`}
                     rows={[
                       ...receiptProgress.map(
@@ -4338,6 +4385,7 @@ function RequestsTable({
                     ) : (
                       deliveries.map((delivery) => (
                         <ReceiptDeliveryCard
+                          indicatorIndex={indicatorIndex}
                           key={delivery.key}
                           delivery={delivery}
                           requestNumber={group.number}
@@ -4361,11 +4409,13 @@ function RequestsTable({
 }
 
 function ReceiptDeliveryCard({
+  indicatorIndex,
   delivery,
   requestNumber,
   workflow,
   onEdit,
 }: {
+  indicatorIndex: OperationIndicatorIndex
   delivery: ReceiptDelivery<MaterialReceiptEntry>
   requestNumber: string
   workflow?: QualityWorkflow
@@ -4426,6 +4476,12 @@ function ReceiptDeliveryCard({
         <div className="border-t border-slate-200">
           <OperationsGrid
             id={`request-delivery:${requestNumber}:${delivery.key}`}
+            pageScroll
+            indicators={{
+              values: (entry) => indicatorIndex.byReceipt.get(entry.id),
+              unit: (entry) => entry.projectUnit,
+              existing: { received: 'quantity' },
+            }}
             label={`Материалы поставки от ${formatDate(delivery.date)}`}
             rows={delivery.entries}
             rowId={(entry) => entry.id}
@@ -4668,6 +4724,7 @@ function TransferBadge({
 }
 
 function ReceiptsTable({
+  indicatorIndex,
   listView,
   priority,
   workflow,
@@ -4681,6 +4738,7 @@ function ReceiptsTable({
   onDeleteReceipt,
   onOpenOverviewLine,
 }: {
+  indicatorIndex: OperationIndicatorIndex
   listView: OperationListView
   priority: ReceiptPriority
   workflow?: QualityWorkflow
@@ -4980,6 +5038,13 @@ function ReceiptsTable({
                 >
                   <OperationsGrid
                     id={`receipt:${group.key}`}
+                    pageScroll
+                    indicators={{
+                      values: ({ entry }) =>
+                        indicatorIndex.byReceipt.get(entry.id),
+                      unit: ({ entry }) => entry.projectUnit,
+                      existing: { received: 'quantity', returned: 'returned' },
+                    }}
                     label={`Получения материала ${group.actualName}`}
                     firstColumnId="date"
                     rows={[
@@ -5302,6 +5367,7 @@ function ReplacementBadge() {
 }
 
 function IssuesTable({
+  indicatorIndex,
   listView,
   priority,
   search,
@@ -5311,6 +5377,7 @@ function IssuesTable({
   receipts,
   onDelete,
 }: {
+  indicatorIndex: OperationIndicatorIndex
   listView: OperationListView
   priority: ReceiptPriority
   search: string
@@ -5344,6 +5411,10 @@ function IssuesTable({
   return (
     <OperationsGrid
       id={'issues'}
+      indicators={{
+        values: ({ entry }) => indicatorIndex.byReceipt.get(entry.receiptId),
+        unit: ({ receipt }) => receipt?.projectUnit ?? '',
+      }}
       pagination
       paginationFilterKey={JSON.stringify([search, listView])}
       priorityRow={
@@ -6283,7 +6354,8 @@ function RequestModal({
                 </div>
                 <div className="grid gap-3">
                   <Field label="Шифр проекта">
-                    <NativeSelect
+                    <AppSelect
+                      label="Шифр проекта"
                       value={cipher}
                       onChange={(value) => {
                         if (
@@ -8260,7 +8332,8 @@ function ReceiptModal({
                   />
                 </Field>
                 <Field label="Тип материала">
-                  <NativeSelect
+                  <AppSelect
+                    label="Тип материала"
                     value={receiptMaterialTypeFilter}
                     onChange={(value) => {
                       setReceiptMaterialTypeFilter(value)
@@ -10226,6 +10299,7 @@ type OperationOverviewMetrics = {
   requests: OperationOverviewMetric
 }
 type OperationOverviewCipherRow = {
+  indicators: OverviewIndicators
   cipher: string
   lineId: string
   metrics: OperationOverviewMetrics
@@ -10342,6 +10416,7 @@ function buildOperationSummary({
 }
 
 function buildOperationOverviewRows({
+  indicatorIndex,
   remainingByRequest,
   workflow,
   summaryByLine,
@@ -10352,6 +10427,7 @@ function buildOperationOverviewRows({
   materialRequests,
   qualityControls,
 }: {
+  indicatorIndex: OperationIndicatorIndex
   lines: Array<SubobjectMaterialMetric>
   materialIssues: Array<MaterialIssueEntry>
   materialReceipts: Array<MaterialReceiptEntry>
@@ -10496,6 +10572,8 @@ function buildOperationOverviewRows({
 
     current.ciphers.push({
       cipher: line.cipher,
+      indicators:
+        indicatorIndex.byLine.get(lineId) ?? emptyOverviewIndicators(),
       lineId,
       metrics,
       projectQuantity: line.plannedQuantity,
@@ -10563,6 +10641,8 @@ function buildOperationOverviewRows({
 
     current.ciphers.push({
       cipher: descriptor.cipher || 'удален',
+      indicators:
+        indicatorIndex.byLine.get(lineId) ?? emptyOverviewIndicators(),
       lineId,
       metrics,
       projectQuantity: 0,
@@ -11934,7 +12014,8 @@ function MaterialModal({
 
                     <FormSection title="Основные данные">
                       <Field label="Тип материала">
-                        <NativeSelect
+                        <AppSelect
+                          label="Тип материала"
                           options={buildSelectOptions(
                             'Выберите тип',
                             materialTypes,
@@ -12089,6 +12170,7 @@ function MaterialModal({
 
 function MaterialImportModal({
   draft,
+  currentLines,
   open,
   onAddMissingReferences,
   onApply,
@@ -12097,6 +12179,7 @@ function MaterialImportModal({
   onImportFile,
 }: {
   draft: MaterialImportDraft | null
+  currentLines: Array<SubobjectMaterialMetric>
   open: boolean
   onAddMissingReferences: () => void
   onApply: () => void
@@ -12105,6 +12188,24 @@ function MaterialImportModal({
   onImportFile: (file: File) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const previews = useMemo(
+    () =>
+      previewMaterialImportRows(
+        currentLines,
+        draft?.rows.map((entry) => entry.row) ?? [],
+      ),
+    [currentLines, draft],
+  )
+  const effectivePreviews = previews.filter(
+    (preview, index) =>
+      preview.supersededBy === null && draft?.rows[index]?.errors.length === 0,
+  )
+  const changedCount = effectivePreviews.filter(
+    (preview) => preview.existing && preview.changes.length > 0,
+  ).length
+  const unchangedCount = effectivePreviews.filter(
+    (preview) => preview.existing && preview.changes.length === 0,
+  ).length
   const isEmptyDraft = draft !== null && draft.summary.totalRows === 0
   const canApply =
     draft !== null && !isEmptyDraft && draft.summary.errorRows === 0
@@ -12160,7 +12261,15 @@ function MaterialImportModal({
             <div className="grid grid-cols-2 gap-2">
               <ImportStat label="Позиций" value={draft.summary.totalRows} />
               <ImportStat label="Готово" value={draft.summary.validRows} />
-              <ImportStat label="Новые" value={draft.summary.newRows} />
+              <ImportStat
+                label="Новые"
+                value={
+                  effectivePreviews.filter((preview) => !preview.existing)
+                    .length
+                }
+              />
+              <ImportStat label="Изменятся" value={changedCount} />
+              <ImportStat label="Без изменений" value={unchangedCount} />
               <ImportStat
                 label="Ошибки"
                 value={draft.summary.errorRows}
@@ -12168,6 +12277,19 @@ function MaterialImportModal({
               />
             </div>
           ) : null}
+
+          {changedCount > 0 && (
+            <div
+              role="alert"
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-6 text-amber-950"
+            >
+              <div className="font-medium">
+                Будут изменены существующие позиции: {changedCount}.
+              </div>
+              Проверьте «Было → Станет» в списке. После нажатия «Применить»
+              указанные значения заменят текущие, количества не складываются.
+            </div>
+          )}
 
           {draft && draft.summary.unknownReferenceRows > 0 ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3">
@@ -12225,10 +12347,11 @@ function MaterialImportModal({
 
           {draft ? (
             <div className="min-h-0 overflow-auto">
-              {draft.rows.map((entry) => (
+              {draft.rows.map((entry, index) => (
                 <ImportDraftRowCard
                   key={`${entry.row.rowNumber}-${entry.identityKey}-${entry.row.cipher}`}
                   entry={entry}
+                  preview={previews[index]!}
                 />
               ))}
             </div>
@@ -12287,22 +12410,33 @@ function ImportStat({
   )
 }
 
-function ImportDraftRowCard({ entry }: { entry: MaterialImportDraftRow }) {
+function ImportDraftRowCard({
+  entry,
+  preview,
+}: {
+  entry: MaterialImportDraftRow
+  preview: MaterialImportPreview
+}) {
   const hasErrors = entry.errors.length > 0
   const toneClass = hasErrors
     ? 'border-red-100 bg-red-50/70'
-    : entry.isExistingCombination
+    : preview.existing
       ? 'border-blue-100 bg-blue-50/50'
       : 'border-emerald-100 bg-emerald-50/50'
 
   return (
-    <div className={`border-b px-4 py-3 last:border-0 ${toneClass}`}>
+    <div
+      className={`border-b px-4 py-3 last:border-0 ${toneClass}`}
+      role="group"
+      aria-label={`Позиция ${entry.row.rowNumber}: ${entry.row.projectMaterialName}, шифр ${entry.row.cipher}`}
+    >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="material-name-clamp text-sm font-medium text-slate-900">
             {entry.row.projectMaterialName || `Позиция ${entry.row.rowNumber}`}
           </div>
           <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-600">
+            <span>Позиция №{entry.row.rowNumber}</span>
             <span>Шифр: {entry.row.cipher || 'не указан'}</span>
             <span>Количество: {formatQuantity(entry.row.quantity)}</span>
             <span>Единица измерения: {entry.row.unit || 'не указана'}</span>
@@ -12312,16 +12446,22 @@ function ImportDraftRowCard({ entry }: { entry: MaterialImportDraftRow }) {
           className={`shrink-0 rounded-md border px-2 py-1 text-xs font-medium ${
             hasErrors
               ? 'border-red-200 bg-white text-red-700'
-              : entry.isExistingCombination
+              : preview.existing
                 ? 'border-blue-200 bg-white text-blue-700'
                 : 'border-emerald-200 bg-white text-emerald-700'
           }`}
         >
           {hasErrors
             ? 'Нужно исправить'
-            : entry.isExistingCombination
-              ? 'Найдена в базе'
-              : 'Новая комбинация'}
+            : preview.supersededBy !== null
+              ? 'Повтор в файле'
+              : preview.existing
+                ? preview.changes.length > 0
+                  ? 'Будет изменена'
+                  : 'Без изменений'
+                : preview.existingMaterial
+                  ? 'Новый шифр'
+                  : 'Новая комбинация'}
         </span>
       </div>
 
@@ -12348,6 +12488,10 @@ function ImportDraftRowCard({ entry }: { entry: MaterialImportDraftRow }) {
           }
         />
       </div>
+
+      {!hasErrors && (
+        <MaterialImportChanges preview={preview} row={entry.row} />
+      )}
 
       {entry.errors.length > 0 ? (
         <div className="mt-3 rounded-md border border-red-100 bg-white px-3 py-2 text-sm leading-6 text-red-700">
@@ -12544,7 +12688,7 @@ function SettingsPanel({
     <section className="mt-5" aria-label="Настройки приложения">
       <div className="grid gap-5">
         <div
-          className={`grid gap-4 ${activeTab === 'print' ? '' : 'md:grid-cols-[220px_1fr]'}`}
+          className={`grid gap-4 ${activeTab === 'print' ? '' : 'md:grid-cols-[220px_minmax(0,1fr)]'}`}
         >
           <div
             className={
@@ -12644,6 +12788,8 @@ function SettingsPanel({
             />
           ) : (
             <ReferenceSettingsSection
+              key={activeSection.key}
+              id={activeSection.key}
               description={activeSection.description}
               emptyText={activeSection.emptyText}
               label={activeSection.label}
@@ -12707,26 +12853,6 @@ function MaterialTypeSettingsSection({
   materialTypes: Array<MaterialTypeSetting>
   onChange: (materialTypes: Array<MaterialTypeSetting>) => void
 }) {
-  const [selectedTypeId, setSelectedTypeId] = useState(
-    materialTypes[0]?.id ?? '',
-  )
-  const selectedType =
-    materialTypes.find((item) => item.id === selectedTypeId) ?? materialTypes[0]
-  const selectedDefaultType = selectedType
-    ? defaultMaterialTypeSettings.find((item) => item.id === selectedType.id)
-    : undefined
-  const selectedTypeChanged =
-    selectedType &&
-    selectedDefaultType &&
-    (selectedDefaultType.name !== selectedType.name ||
-      selectedDefaultType.description !== selectedType.description)
-
-  useEffect(() => {
-    if (!materialTypes.some((item) => item.id === selectedTypeId)) {
-      setSelectedTypeId(materialTypes[0]?.id ?? '')
-    }
-  }, [materialTypes, selectedTypeId])
-
   function updateMaterialType(
     id: string,
     key: 'description' | 'name',
@@ -12741,157 +12867,87 @@ function MaterialTypeSettingsSection({
     )
   }
 
-  function resetMaterialType(id: string) {
-    const defaultItem = defaultMaterialTypeSettings.find(
-      (item) => item.id === id,
-    )
-
-    if (!defaultItem) {
-      return
-    }
-
-    onChange(materialTypes.map((item) => (item.id === id ? defaultItem : item)))
-  }
-
   return (
-    <div className="grid min-h-[520px] grid-rows-[auto_1fr] gap-4 rounded-md border border-stone-200 bg-white p-4">
+    <div className="grid min-w-0 content-start gap-4 rounded-md border border-stone-200 bg-white p-4">
       <div>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="text-base font-medium text-stone-900">
-              Тип материала
-            </div>
-            <div className="mt-1 text-xs uppercase tracking-wide text-stone-400">
-              {materialTypes.length} системных типов
-            </div>
-          </div>
-          {selectedTypeChanged ? (
-            <Button
-              className="shrink-0"
-              variant="outline"
-              onClick={() => resetMaterialType(selectedType.id)}
-            >
-              Вернуть стандарт
-            </Button>
-          ) : null}
+        <div className="text-base font-medium text-stone-900">
+          Тип материала
         </div>
-        <div className="mt-3 max-w-3xl text-sm leading-6 text-stone-500">
-          {description} Список зашит в систему: очистка базы не удаляет эти
-          типы, но название и описание можно уточнять под ваш проект.
-        </div>
+        <p className="mt-1 text-sm text-stone-500">{description}</p>
+        <p className="mt-2 text-xs text-stone-500">
+          {materialTypes.length} системных типов. Название и описание
+          редактируются двойным нажатием на ячейку.
+        </p>
       </div>
-
-      <div className="grid min-h-0 gap-4 lg:grid-cols-[310px_1fr]">
-        <div className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-stone-50/70">
-          <div className="border-b border-stone-200 px-3 py-2 text-xs font-medium uppercase tracking-wide text-stone-500">
-            Список типов
-          </div>
-          <div className="grid max-h-[520px] overflow-auto p-2">
-            {materialTypes.map((item) => {
-              const defaultItem = defaultMaterialTypeSettings.find(
-                (defaultType) => defaultType.id === item.id,
+      <OperationsGrid<MaterialTypeSetting>
+        id="settings:materialTypes"
+        label="Справочник: Тип материала"
+        rows={materialTypes}
+        rowId={(item) => item.id}
+        pagination
+        columns={[
+          {
+            id: 'name',
+            title: 'Название типа',
+            value: (item) => item.name,
+            flex: 1,
+            width: 260,
+            onEdit: (item, value) => updateMaterialType(item.id, 'name', value),
+            validateEdit: (value) =>
+              value.trim() ? null : 'Введите название типа',
+          },
+          {
+            id: 'description',
+            title: 'Описание',
+            value: (item) => item.description,
+            flex: 2,
+            width: 420,
+            multiline: true,
+            onEdit: (item, value) =>
+              updateMaterialType(item.id, 'description', value),
+          },
+          {
+            id: 'actions',
+            title: 'Действия',
+            value: () => '',
+            actions: true,
+            width: 170,
+            render: (item) => {
+              const standard = defaultMaterialTypeSettings.find(
+                (value) => value.id === item.id,
               )
-              const isChanged =
-                defaultItem &&
-                (defaultItem.name !== item.name ||
-                  defaultItem.description !== item.description)
-              const active = selectedType?.id === item.id
-
+              const changed =
+                standard &&
+                (standard.name !== item.name ||
+                  standard.description !== item.description)
               return (
-                <button
-                  key={item.id}
-                  className={`grid gap-1 rounded-md px-3 py-2.5 text-left transition-colors ${
-                    active
-                      ? 'bg-white text-stone-950 shadow-sm ring-1 ring-stone-200'
-                      : 'text-stone-600 hover:bg-white/70 hover:text-stone-950'
-                  }`}
-                  type="button"
-                  onClick={() => setSelectedTypeId(item.id)}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!changed}
+                  aria-label={`Вернуть стандарт: ${item.name}`}
+                  onClick={() => {
+                    if (standard)
+                      onChange(
+                        materialTypes.map((value) =>
+                          value.id === item.id ? standard : value,
+                        ),
+                      )
+                  }}
                 >
-                  <span className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {item.name || defaultItem?.name}
-                    </span>
-                    {isChanged ? (
-                      <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-100">
-                        изменен
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="line-clamp-2 text-xs leading-5 text-stone-500">
-                    {item.description || defaultItem?.description}
-                  </span>
-                </button>
+                  Вернуть стандарт
+                </Button>
               )
-            })}
-          </div>
-        </div>
-
-        <div className="min-h-0 rounded-md border border-stone-200 bg-stone-50/40 p-4">
-          {selectedType ? (
-            <div className="grid h-full grid-rows-[auto_1fr] gap-4">
-              <div className="rounded-md border border-stone-200 bg-white px-4 py-3">
-                <div className="text-xs font-medium uppercase tracking-wide text-stone-400">
-                  Системный тип
-                </div>
-                <div className="mt-1 text-sm leading-6 text-stone-600">
-                  {selectedDefaultType?.name ?? selectedType.name}
-                </div>
-              </div>
-
-              <div className="grid content-start gap-4">
-                <Field label="Название типа">
-                  <Input
-                    className="h-11"
-                    value={selectedType.name}
-                    onBlur={() => {
-                      if (
-                        selectedType.name.trim().length === 0 &&
-                        selectedDefaultType
-                      ) {
-                        updateMaterialType(
-                          selectedType.id,
-                          'name',
-                          selectedDefaultType.name,
-                        )
-                      }
-                    }}
-                    onChange={(event) =>
-                      updateMaterialType(
-                        selectedType.id,
-                        'name',
-                        event.target.value,
-                      )
-                    }
-                  />
-                </Field>
-                <Field label="Описание">
-                  <textarea
-                    className="min-h-32 resize-y rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm leading-6 text-stone-900 shadow-sm outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
-                    value={selectedType.description}
-                    onChange={(event) =>
-                      updateMaterialType(
-                        selectedType.id,
-                        'description',
-                        event.target.value,
-                      )
-                    }
-                  />
-                </Field>
-              </div>
-            </div>
-          ) : (
-            <div className="grid h-full place-items-center text-sm text-stone-500">
-              Типы материала не найдены.
-            </div>
-          )}
-        </div>
-      </div>
+            },
+          },
+        ]}
+      />
     </div>
   )
 }
 
 function ReferenceSettingsSection({
+  id,
   description,
   emptyText,
   label,
@@ -12900,6 +12956,7 @@ function ReferenceSettingsSection({
   value,
   onChange,
 }: {
+  id: string
   description: string
   emptyText: string
   label: string
@@ -12935,7 +12992,7 @@ function ReferenceSettingsSection({
   }
 
   return (
-    <div className="grid min-h-[520px] grid-rows-[auto_auto_auto_1fr] gap-4 rounded-md border border-stone-200 bg-white p-4">
+    <div className="grid min-w-0 content-start gap-4 rounded-md border border-stone-200 bg-white p-4">
       <div className="flex items-start gap-3">
         <div>
           <div className="text-base font-medium text-stone-900">{label}</div>
@@ -12998,32 +13055,46 @@ function ReferenceSettingsSection({
         </div>
       ) : null}
 
-      {values.length > 0 ? (
-        <div className="flex min-h-0 flex-wrap content-start gap-2 overflow-auto rounded-md border border-stone-200 bg-stone-50/60 p-3">
-          {values.map((item) => (
-            <span
-              key={item}
-              className="inline-flex max-w-full items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-normal leading-5 text-stone-800 shadow-sm"
-            >
-              <span className="break-words">{item}</span>
-              {readOnly ? null : (
-                <button
-                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-stone-500 hover:bg-stone-100 hover:text-stone-900"
-                  type="button"
-                  aria-label={`Удалить ${item}`}
-                  onClick={() => setPendingDeleteValue(item)}
-                >
-                  <X size={13} />
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <div className="grid min-h-0 place-items-center rounded-md border border-dashed border-stone-300 bg-stone-50/60 px-4 py-6 text-center text-sm text-stone-500">
-          {emptyText}
-        </div>
-      )}
+      <OperationsGrid<string>
+        id={`settings:${id}`}
+        label={`Справочник: ${label}`}
+        rows={values}
+        rowId={(item) => item}
+        pagination
+        columns={[
+          {
+            id: 'value',
+            title: 'Наименование',
+            value: (item) => item,
+            width: 600,
+            flex: 1,
+          },
+          ...(readOnly
+            ? []
+            : [
+                {
+                  id: 'actions',
+                  title: 'Действия',
+                  value: () => '',
+                  actions: true,
+                  width: 150,
+                  render: (item: string) => (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="whitespace-nowrap"
+                      aria-label={`Удалить ${item}`}
+                      onClick={() => setPendingDeleteValue(item)}
+                    >
+                      <Trash2 size={15} />
+                      Удалить
+                    </Button>
+                  ),
+                },
+              ]),
+        ]}
+      />
+      {!values.length && <p className="text-sm text-stone-500">{emptyText}</p>}
     </div>
   )
 }
@@ -13202,30 +13273,6 @@ function AutocompleteInput({
   )
 }
 
-function NativeSelect({
-  options,
-  value,
-  onChange,
-}: {
-  options: Array<{ label: string; value: string }>
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <select
-      className="h-10 min-w-0 max-w-full rounded-md border border-stone-200 bg-white px-3 text-sm text-stone-900 outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  )
-}
-
 function buildSelectOptions(
   placeholder: string,
   values: Array<string>,
@@ -13374,14 +13421,6 @@ function createMaterialImportDraft(
     const isExistingCombination = existingKeys.has(identityKey)
     const warnings = [...row.warnings]
 
-    if (errors.length === 0) {
-      warnings.push(
-        isExistingCombination
-          ? 'Такая комбинация уже есть: будет обновлено количество по указанному шифру.'
-          : 'Будет создана новая комбинация материала и заполнено количество по шифру.',
-      )
-    }
-
     return {
       errors,
       identityKey,
@@ -13408,16 +13447,6 @@ function clearMissingReferenceErrors(
   const rows = draft.rows.map((entry) => ({
     ...entry,
     errors: entry.errors.filter((error) => !error.includes('настройках')),
-    warnings:
-      entry.errors.length > 0 &&
-      entry.errors.every((error) => error.includes('настройках'))
-        ? [
-            ...entry.warnings,
-            entry.isExistingCombination
-              ? 'Такая комбинация уже есть: будет обновлено количество по указанному шифру.'
-              : 'Будет создана новая комбинация материала и заполнено количество по шифру.',
-          ]
-        : entry.warnings,
   }))
 
   return {

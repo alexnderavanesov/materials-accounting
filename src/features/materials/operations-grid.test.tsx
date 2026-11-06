@@ -13,6 +13,7 @@ import { operationGridApi } from './project-grid-test-support'
 import { OperationsGrid } from './operations-grid'
 import type { DataColumn } from './operations-grid'
 import { readDataGridState } from './project-grid-state'
+import { emptyOverviewIndicators } from './operation-overview-indicators'
 
 vi.setConfig({ testTimeout: 15000 })
 
@@ -93,6 +94,71 @@ beforeEach(() => {
   HTMLElement.prototype.scrollIntoView = vi.fn()
 })
 afterEach(cleanup)
+
+it('adds numeric indicator columns without duplicates and keeps them sortable and exportable', async () => {
+  render(
+    <OperationsGrid
+      id="indicators"
+      label="Показатели"
+      rows={rows}
+      columns={columns}
+      rowId={(row) => row.id}
+      indicators={{
+        values: (row) => ({
+          ...emptyOverviewIndicators(),
+          received: row.quantity,
+          remaining: row.quantity / 2,
+        }),
+        unit: (row) => row.unit,
+        existing: { received: 'quantity' },
+      }}
+    />,
+  )
+  const api = await operationGridApi('indicators')
+  expect(api.getColumn('indicator:received')).toBeNull()
+  expect(api.getColumn('indicator:remaining')).toBeTruthy()
+  act(() =>
+    api.applyColumnState({
+      state: [{ colId: 'indicator:remaining', sort: 'asc' }],
+    }),
+  )
+  expect(api.getDisplayedRowAtIndex(0)!.id).toBe('c')
+  const blob = api.getDataAsExcel({
+    columnKeys: ['name', 'indicator:remaining'],
+  })!
+  if (typeof blob === 'string') throw new Error('Expected workbook')
+  const buffer = await new Promise<ArrayBuffer>((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as ArrayBuffer)
+    reader.readAsArrayBuffer(blob)
+  })
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  expect(workbook.worksheets[0]!.getCell('B2').value).toBe(0.0625)
+})
+
+it('uses page scrolling for expanded tables and limits large documents to a page of rows', async () => {
+  const many = Array.from({ length: 1000 }, (_, i) => ({
+    ...rows[0]!,
+    id: `item-${i}`,
+  }))
+  render(
+    <OperationsGrid
+      id="page-scroll"
+      label="Большой документ"
+      rows={many}
+      columns={columns}
+      rowId={(row) => row.id}
+      pageScroll
+    />,
+  )
+  const api = await operationGridApi('page-scroll')
+  expect(api.getGridOption('domLayout')).toBe('autoHeight')
+  expect(api.paginationGetTotalPages()).toBe(40)
+  expect(
+    document.querySelectorAll('.ag-center-cols-container .ag-row'),
+  ).toHaveLength(25)
+})
 
 it('prioritizes badge matches while preserving column sorting and resets without losing rows', async () => {
   const props = {

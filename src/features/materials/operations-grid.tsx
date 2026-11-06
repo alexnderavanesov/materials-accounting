@@ -26,6 +26,9 @@ import {
 import { isViewString, useWorkspaceViewState } from './workspace-view'
 import './operations-grid.css'
 import { materialsColumnFilter } from './materials-column-filter'
+import { withOperationIndicatorColumns } from './operation-indicator-columns'
+import type { OperationGridIndicators } from './operation-indicator-columns'
+import { usePageGridHeader } from './use-page-grid-header'
 
 export type DataColumn<T> = {
   id: string
@@ -33,6 +36,8 @@ export type DataColumn<T> = {
   value: (row: T) => string | number | null | undefined
   render?: (row: T) => ReactNode
   width?: number
+  flex?: number
+  multiline?: boolean
   numeric?: boolean
   centered?: boolean
   actions?: boolean
@@ -70,16 +75,18 @@ export function OperationsGrid<T>({
   id,
   label,
   rows,
-  columns,
+  columns: baseColumns,
   rowId,
   totals,
   isDeleted,
   focusRowId,
-  pagination = false,
+  pagination: requestedPagination = false,
   paginationFilterKey = '',
   priorityRow,
   onReady,
   firstColumnId,
+  indicators,
+  pageScroll = false,
 }: {
   id: string
   label: string
@@ -95,10 +102,19 @@ export function OperationsGrid<T>({
   onReady?: (api: GridApi<T>) => void
   /** Keep this column first when restoring an older saved layout. */
   firstColumnId?: string
+  indicators?: OperationGridIndicators<T>
+  /** Expanded tables use page scrolling; large documents retain pagination. */
+  pageScroll?: boolean
 }) {
+  const pagination = requestedPagination || (pageScroll && rows.length > 100)
+  const columns = useMemo(
+    () => withOperationIndicatorColumns(baseColumns, indicators),
+    [baseColumns, indicators],
+  )
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
+  usePageGridHeader(container, pageScroll && ready)
   const [filtered, setFiltered] = useState(false)
   const postSortRows = useCallback(
     ({ nodes }: PostSortRowsParams<T>) => {
@@ -156,13 +172,17 @@ export function OperationsGrid<T>({
         colId: column.id,
         headerName: column.title,
         initialWidth: column.width ?? (column.numeric ? 165 : 210),
+        initialFlex: column.flex,
         initialPinned: column.actions ? 'right' : undefined,
         filter: column.actions ? false : materialsColumnFilter,
         sortable: !column.actions,
         suppressColumnsToolPanel: column.actions,
         lockVisible: column.actions,
         editable: Boolean(column.onEdit && !column.actions),
-        cellEditor: 'agTextCellEditor',
+        cellEditor: column.multiline
+          ? 'agLargeTextCellEditor'
+          : 'agTextCellEditor',
+        cellEditorPopup: column.multiline,
         cellEditorParams: {
           getValidationErrors: ({ value }) => {
             const error = column.validateEdit?.(String(value ?? ''))
@@ -242,7 +262,7 @@ export function OperationsGrid<T>({
   return (
     <div
       ref={container}
-      className="operations-grid min-w-0 max-w-full"
+      className={`operations-grid min-w-0 max-w-full${pageScroll ? ' operations-grid-page-scroll' : ''}`}
       aria-label={label}
     >
       <div className="flex flex-wrap items-center justify-end gap-2 bg-white px-3 py-1">
@@ -282,15 +302,23 @@ export function OperationsGrid<T>({
         </Button>
       </div>
       <div
-        style={{
-          height: Math.min(
-            520,
-            Math.max(260, 168 + (rows.length + (totals?.length ?? 0)) * 78),
-          ),
-        }}
+        style={
+          pageScroll
+            ? undefined
+            : {
+                height: Math.min(
+                  520,
+                  Math.max(
+                    260,
+                    168 + (rows.length + (totals?.length ?? 0)) * 78,
+                  ),
+                ),
+              }
+        }
       >
         <MaterialsGridView<T>
           gridId={id}
+          domLayout={pageScroll ? 'autoHeight' : 'normal'}
           theme={materialsGridTheme}
           localeText={projectGridLocale}
           rowData={rows}

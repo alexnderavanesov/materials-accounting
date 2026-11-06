@@ -221,12 +221,18 @@ it('restores the actual workspace with browser Back and Forward, keeping searche
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   expect(workspace).toEqual(original)
 })
+function selectAppOption(trigger: HTMLElement, label: string) {
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('option', { name: label }))
+}
 function openRequest(materialType = 'Трубопровод') {
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
   fireEvent.click(screen.getAllByRole('button', { name: 'Создать заявку' })[0]!)
   const dialog = screen.getByRole('dialog')
-  const selects = within(dialog).getAllByRole('combobox')
-  fireEvent.change(selects[0]!, { target: { value: 'ТЕСТ' } })
+  selectAppOption(
+    within(dialog).getByRole('combobox', { name: 'Шифр проекта' }),
+    'ТЕСТ',
+  )
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Типы материала' }),
   )
@@ -299,9 +305,7 @@ it('shows a visible error instead of changing the primary unit of a requested ma
   fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
   await editGridMaterial('Альфа')
   const dialog = screen.getByRole('dialog')
-  fireEvent.change(within(dialog).getByRole('combobox'), {
-    target: { value: 'Оборудование' },
-  })
+  selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
   fireEvent.change(
     within(dialog).getByRole('textbox', { name: 'Единица измерения' }),
     { target: { value: 'шт' } },
@@ -1432,6 +1436,15 @@ function openReceipt() {
 }
 beforeEach(() => {
   localStorage.clear()
+  // jsdom has no layout observer; real layout is checked in the browser.
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = vi.fn()
+      unobserve = vi.fn()
+      disconnect = vi.fn()
+    },
+  )
   vi.mocked(saveProjectWorkspaceSnapshot)
     .mockReset()
     .mockResolvedValue({ status: 'saved', revision: 'saved' })
@@ -1440,6 +1453,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 it('exports the filtered view from the Excel menu while the full export keeps every material', async () => {
@@ -1458,7 +1472,7 @@ it('exports the filtered view from the Excel menu while the full export keeps ev
     screen.getByRole('textbox', { name: 'Поиск в проектной базе' }),
     { target: { value: 'Сталь' } },
   )
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ТЕСТ' } })
+  selectAppOption(screen.getByRole('combobox'), 'ТЕСТ')
   await filterGridName('Альфа')
   await waitFor(() =>
     expect(screen.getByText('Найдено 1 из 2 позиций')).toBeTruthy(),
@@ -1534,6 +1548,146 @@ it('exports the filtered view from the Excel menu while the full export keeps ev
   }
 })
 
+describe('material import change preview', () => {
+  function openImport() {
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+    fireEvent.click(screen.getAllByRole('button', { name: /^Excel/ })[0]!)
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Импорт проектной базы' }),
+    )
+    return screen.getByRole('dialog')
+  }
+  function upload(
+    dialog: HTMLElement,
+    values: Array<Record<string, string | number>>,
+  ) {
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        values.map((value) => ({
+          'Тип материала': 'Трубопровод',
+          Состав: 'Сталь',
+          'Ед. изм.': 'м',
+          Шифр: 'ТЕСТ',
+          ...value,
+        })),
+      ),
+      'Проектная база',
+    )
+    const buffer = XLSX.write(workbook, {
+      type: 'array',
+      bookType: 'xlsx',
+    }) as ArrayBuffer
+    const file = new File([buffer], 'materials.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [file] },
+    })
+  }
+
+  it('shows old and new values before applying, distinguishing unchanged rows and new ciphers', async () => {
+    const workspace = base()
+    workspace.configuredCiphers.push('НОВЫЙ')
+    workspace.lines.forEach((line) => {
+      line.materialId = ''
+    })
+    workspace.lines[0]!.changeNumber = '1'
+    mount(workspace)
+    const dialog = openImport()
+    upload(dialog, [
+      { 'Наименование по проекту': 'Альфа', Количество: 3.5, Изменение: '2' },
+      { 'Наименование по проекту': 'Бета', Количество: 10 },
+      { 'Наименование по проекту': 'Альфа', Количество: 7, Шифр: 'НОВЫЙ' },
+      { 'Наименование по проекту': 'Гамма', Количество: 4 },
+    ])
+    await within(dialog).findByText('Будут изменены существующие позиции: 1.')
+    const changed = within(
+      within(dialog).getByRole('group', {
+        name: 'Позиция 1: Альфа, шифр ТЕСТ',
+      }),
+    )
+    const quantity = within(
+      changed.getByRole('row', { name: 'Количество по шифру 10 м 3,5 м' }),
+    )
+    expect(quantity.getByRole('cell', { name: '10 м' })).toBeTruthy()
+    expect(quantity.getByRole('cell', { name: '3,5 м' })).toBeTruthy()
+    expect(
+      changed.getByRole('row', { name: 'Номер изменения 1 2' }),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getByText(
+        'Совпадение без изменений. Количество по шифру: 10 м.',
+      ),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getByText(
+        'Материал уже есть в базе. Количество добавится в новый для него шифр.',
+      ),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getByText('Будет добавлена новая позиция материала.'),
+    ).toBeTruthy()
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Применить' }))
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().lines).toHaveLength(4)
+    expect(
+      lastSaved().lines.find((line) => line.id === 'line-0'),
+    ).toMatchObject({ plannedQuantity: 3.5, changeNumber: '2' })
+    expect(
+      lastSaved().lines.find((line) => line.id === 'line-1'),
+    ).toMatchObject({ plannedQuantity: 10 })
+    expect(
+      lastSaved().lines.find((line) => line.cipher === 'НОВЫЙ'),
+    ).toMatchObject({ plannedQuantity: 7 })
+  })
+
+  it('identifies the final repeated row, refreshes the preview for another file and cancels without saving', async () => {
+    const workspace = base()
+    workspace.lines.forEach((line) => {
+      line.materialId = ''
+    })
+    mount(workspace)
+    const dialog = openImport()
+    upload(dialog, [
+      { 'Наименование по проекту': 'Альфа', Количество: 5 },
+      { 'Наименование по проекту': 'Альфа', Количество: 12 },
+    ])
+    await within(dialog).findByText('Будут изменены существующие позиции: 1.')
+    expect(
+      within(dialog).getByText(/Будут применены значения из позиции №2/),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getAllByRole('table', {
+        name: 'Изменения существующей позиции',
+      }),
+    ).toHaveLength(1)
+    expect(
+      within(dialog).getByRole('row', {
+        name: 'Количество по шифру 10 м 12 м',
+      }),
+    ).toBeTruthy()
+    upload(dialog, [{ 'Наименование по проекту': 'Альфа', Количество: 10 }])
+    await within(dialog).findByText(
+      'Совпадение без изменений. Количество по шифру: 10 м.',
+    )
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+    expect(
+      within(dialog).queryByRole('table', {
+        name: 'Изменения существующей позиции',
+      }),
+    ).toBeNull()
+    fireEvent.click(
+      within(dialog).getAllByRole('button', { name: 'Закрыть' }).at(-1)!,
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    expect(workspace.lines[0]!.plannedQuantity).toBe(10)
+  })
+})
+
 it('explains an empty material import and accepts a corrected file with cipher quantities', async () => {
   mount()
   fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
@@ -1589,6 +1743,129 @@ it('explains an empty material import and accepts a corrected file with cipher q
   })
 })
 
+it.each([
+  ['Шифры', 'ciphers', 'configuredCiphers', 'Например: 300-ТХ-1'],
+  ['Единица измерения', 'units', 'configuredUnits', 'Например: м'],
+  [
+    'Норм. документы',
+    'documents',
+    'configuredDocuments',
+    'Например: ГОСТ 9940-81',
+  ],
+  ['Состав', 'alloys', 'configuredAlloys', 'Например: 09Г2С'],
+] as const)(
+  'uses AG Grid for %s and saves only confirmed reference drafts',
+  async (label, id, field, placeholder) => {
+    const fixture = base()
+    mount(fixture)
+    fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
+    const panel = screen.getByRole('region', { name: 'Настройки приложения' })
+    fireEvent.click(within(panel).getByRole('button', { name: label }))
+    let api = await operationGridApi(`settings:${id}`)
+    const before = api.getDisplayedRowCount()
+    fireEvent.change(within(panel).getByPlaceholderText(placeholder), {
+      target: { value: 'Новое значение' },
+    })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Добавить' }))
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(before + 1))
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(panel).getByRole('button', { name: 'Отменить изменения' }),
+    )
+    await waitFor(() =>
+      expect(api.getRowNode('Новое значение')).toBeUndefined(),
+    )
+    fireEvent.change(within(panel).getByPlaceholderText(placeholder), {
+      target: { value: 'Новое значение' },
+    })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Добавить' }))
+    await waitFor(() => expect(api.getRowNode('Новое значение')).toBeTruthy())
+    await act(async () => {
+      api.setFilterModel({
+        value: { filterType: 'set', values: ['Новое значение'] },
+      })
+    })
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+    fireEvent.click(
+      within(panel).getByRole('button', { name: 'Удалить Новое значение' }),
+    )
+    fireEvent.click(within(panel).getByRole('button', { name: 'Отмена' }))
+    expect(api.getRowNode('Новое значение')).toBeTruthy()
+    fireEvent.click(within(panel).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved()[field]).toContain('Новое значение')
+    fireEvent.click(
+      within(panel).getByRole('button', { name: 'Удалить Новое значение' }),
+    )
+    // Switching reference tabs must not carry a pending deletion to the other list.
+    fireEvent.click(
+      within(panel).getByRole('button', {
+        name: id === 'ciphers' ? 'Состав' : 'Шифры',
+      }),
+    )
+    expect(within(panel).queryByText(/Удалить из настроек/)).toBeNull()
+    fireEvent.click(within(panel).getByRole('button', { name: label }))
+    api = await operationGridApi(`settings:${id}`)
+    await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+    expect(api.getDisplayedRowAtIndex(0)?.data).toBe('Новое значение')
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+  },
+)
+
+it('edits and resets material types in AG Grid while retaining explicit settings saving', async () => {
+  mount(base())
+  fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
+  const panel = screen.getByRole('region', { name: 'Настройки приложения' })
+  fireEvent.click(within(panel).getByRole('button', { name: 'Тип материала' }))
+  const api = await operationGridApi('settings:materialTypes')
+  const original = { ...api.getDisplayedRowAtIndex(0)!.data }
+  act(() => api.startEditingCell({ rowIndex: 0, colKey: 'name' }))
+  const input = document.querySelector<HTMLInputElement>(
+    '[grid-id="settings:materialTypes"] .ag-cell-edit-wrapper input',
+  )!
+  expect(input).toBeTruthy()
+  fireEvent.input(input, { target: { value: 'Новое название типа' } })
+  act(() => api.stopEditing())
+  await waitFor(() =>
+    expect(api.getRowNode(original.id)!.data.name).toBe('Новое название типа'),
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(
+    within(panel).getByRole('button', {
+      name: 'Вернуть стандарт: Новое название типа',
+    }),
+  )
+  await waitFor(() =>
+    expect(api.getRowNode(original.id)!.data.name).toBe(original.name),
+  )
+  act(() => api.startEditingCell({ rowIndex: 0, colKey: 'description' }))
+  const textarea = document.querySelector<HTMLTextAreaElement>(
+    '.ag-large-text-input textarea',
+  )!
+  expect(textarea).toBeTruthy()
+  fireEvent.input(textarea, {
+    target: { value: 'Описание для проекта\nВторая строка' },
+  })
+  act(() => api.stopEditing())
+  await waitFor(() =>
+    expect(api.getRowNode(original.id)!.data.description).toContain(
+      'Вторая строка',
+    ),
+  )
+  fireEvent.click(within(panel).getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(
+    lastSaved().materialTypeSettings.find((item) => item.id === original.id),
+  ).toMatchObject({
+    name: original.name,
+    description: 'Описание для проекта\nВторая строка',
+  })
+})
+
 describe('cipher reference removal', () => {
   function settings() {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
@@ -1597,7 +1874,8 @@ describe('cipher reference removal', () => {
     fireEvent.click(within(page).getByRole('button', { name: 'Шифры' }))
     return page
   }
-  function remove(dialog: HTMLElement, cipher: string) {
+  async function remove(dialog: HTMLElement, cipher: string) {
+    await operationGridApi('settings:ciphers')
     fireEvent.click(
       within(dialog).getByRole('button', { name: `Удалить ${cipher}` }),
     )
@@ -1611,11 +1889,9 @@ describe('cipher reference removal', () => {
     })
     let view = mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
-    fireEvent.change(screen.getByRole('combobox'), {
-      target: { value: 'ТЕСТ' },
-    })
+    selectAppOption(screen.getByRole('combobox'), 'ТЕСТ')
     const dialog = settings()
-    remove(dialog, 'ТЕСТ')
+    await remove(dialog, 'ТЕСТ')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -1624,7 +1900,7 @@ describe('cipher reference removal', () => {
     expect(lastSaved().lines).toEqual(workspace.lines)
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(screen.queryByRole('columnheader', { name: 'ТЕСТ' })).toBeNull()
-    expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('all')
+    expect(screen.getByRole<HTMLButtonElement>('combobox').value).toBe('all')
     const saved = lastSaved()
     view.unmount()
     view = mount(saved, true)
@@ -1663,7 +1939,14 @@ describe('cipher reference removal', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Создать заявку' }))
     const create = screen.getByRole('dialog')
-    expect(within(create).queryByRole('option', { name: 'ТЕСТ' })).toBeNull()
+    fireEvent.click(
+      within(create).getByRole('combobox', { name: 'Шифр проекта' }),
+    )
+    expect(screen.queryByRole('option', { name: 'ТЕСТ' })).toBeNull()
+    fireEvent.keyDown(
+      screen.getByRole('combobox', { name: 'Поиск: Шифр проекта' }),
+      { key: 'Escape' },
+    )
     fireEvent.change(
       within(create).getByPlaceholderText(
         'Поиск по наименованию, нормативному документу, составу или массе',
@@ -1681,7 +1964,9 @@ describe('cipher reference removal', () => {
       within(edit).getByRole('button', { name: 'Добавить материалы' }),
     )
     expect(
-      within(edit).getAllByRole<HTMLSelectElement>('combobox')[0]!.value,
+      within(edit).getByRole<HTMLButtonElement>('combobox', {
+        name: 'Шифр проекта',
+      }).value,
     ).toBe('ТЕСТ')
     fireEvent.click(
       within(edit).getByRole('button', { name: 'К материалам заявки' }),
@@ -1695,7 +1980,7 @@ describe('cipher reference removal', () => {
     workspace.configuredCiphers = [] // legacy quantities are still authoritative
     mount(workspace)
     const dialog = settings()
-    remove(dialog, 'ТЕСТ')
+    await remove(dialog, 'ТЕСТ')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
     expect(within(dialog).getByRole('alert').textContent).toContain(
       'Нельзя удалить шифры с заполненным проектным количеством: ТЕСТ',
@@ -1716,7 +2001,7 @@ describe('cipher reference removal', () => {
     })
     mount(workspace)
     const dialog = settings()
-    remove(dialog, 'ТЕСТ')
+    await remove(dialog, 'ТЕСТ')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -2466,11 +2751,14 @@ describe('receipts grouped by material', () => {
         .getByRole('button', { name: /^Альфа/, expanded: false })
         .closest('[id^="operation-receipts-"]') as HTMLElement,
     )
+    const remainingBadgeQuantity = () =>
+      alphaCard
+        .getAllByText('Осталось получить')
+        .find((element) => !element.closest('[role="grid"]'))
+        ?.nextElementSibling?.textContent
     // Includes another cipher and a request without receipts; repeated receipts
     // and a replacement do not multiply the remaining request quantity.
-    expect(
-      alphaCard.getByText('Осталось получить').nextElementSibling?.textContent,
-    ).toBe('19 м')
+    expect(remainingBadgeQuantity()).toBe('19 м')
     expect(screen.getByRole('button', { name: 'Получено: 2 шт' })).toBeTruthy()
     fireEvent.click(
       screen.getByRole('button', { name: /^Альфа/, expanded: false }),
@@ -2487,9 +2775,7 @@ describe('receipts grouped by material', () => {
       target: { value: 'Н-3' },
     })
     expect(screen.getByText('Найдено 1 из 3 материалов')).toBeTruthy()
-    expect(
-      alphaCard.getByText('Осталось получить').nextElementSibling?.textContent,
-    ).toBe('19 м')
+    expect(remainingBadgeQuantity()).toBe('19 м')
     expect(
       table.getAllByRole('button', { name: 'Удалить получение' }),
     ).toHaveLength(3)
@@ -3915,9 +4201,7 @@ describe('workspace user workflows', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
       await editGridMaterial('Альфа')
       dialog = screen.getByRole('dialog')
-      fireEvent.change(within(dialog).getByRole('combobox'), {
-        target: { value: 'Оборудование' },
-      })
+      selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
       fireEvent.change(
         within(dialog).getByRole('textbox', {
           name: 'Количество альтернативных единиц на одну основную',
@@ -4557,9 +4841,7 @@ describe('workspace user workflows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     await editGridMaterial('Альфа')
     let dialog = screen.getByRole('dialog')
-    fireEvent.change(within(dialog).getByRole('combobox'), {
-      target: { value: 'Оборудование' },
-    })
+    selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
     const unit = within(dialog).getByRole('textbox', {
       name: 'Альтернативная единица измерения',
     })
@@ -4695,9 +4977,7 @@ describe('workspace user workflows', () => {
       async function editConversion(unit: string, factor: string) {
         await editGridMaterial('Альфа')
         const dialog = screen.getByRole('dialog')
-        fireEvent.change(within(dialog).getByRole('combobox'), {
-          target: { value: 'Оборудование' },
-        })
+        selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
         fireEvent.change(
           within(dialog).getByRole('textbox', {
             name: 'Альтернативная единица измерения',
@@ -4926,9 +5206,7 @@ describe('workspace user workflows', () => {
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Создать вручную' }),
       )
-      fireEvent.change(within(dialog).getByRole('combobox'), {
-        target: { value: 'Оборудование' },
-      })
+      selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
       const name = within(dialog).getByRole('textbox', {
         name: 'Наименование по проекту',
       })
@@ -5213,6 +5491,76 @@ function returnScenarioWorkspace() {
   entry.revisions[0] = signInspection(revision, 'avk', localDateInputValue())
   return workspace
 }
+
+it.each([
+  'Общие данные',
+  'Заявки',
+  'Получение',
+  'Входной контроль',
+  'Выдача',
+  'Возврат',
+])(
+  'shows live material indicators in %s after partial acceptance, return and issue without saving',
+  async (tabName) => {
+    const workspace = returnScenarioWorkspace()
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow,
+      workspace.qualityWorkflow.cases[0]!.id,
+      [{ receiptId: 'receipt', quantity: 0.5 }],
+      localToday(),
+    )
+    workspace.materialIssues = [
+      { ...savedIssue('receipt'), projectLineId: 'line', date: localToday() },
+    ]
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(
+      screen.getByRole('button', { name: new RegExp(`^${tabName}`) }),
+    )
+    if (tabName === 'Общие данные')
+      fireEvent.click(screen.getByRole('button', { name: /^Отвод 23х7/ }))
+    if (tabName === 'Заявки')
+      fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
+    if (tabName === 'Получение') expandReceiptGroups()
+    if (tabName === 'Входной контроль')
+      fireEvent.click(screen.getByRole('button', { name: /^Материалы ЗНИ/ }))
+    const grid = await screen.findByRole('grid')
+    const root = grid.closest('[grid-id]')!.parentElement!
+    await waitFor(() => expect(getGridApi(root)).toBeTruthy())
+    const api = getGridApi(root)!
+    const expected = {
+      received: 4,
+      remaining: 0.5,
+      awaitingInspection: 0,
+      awaitingAct: 0,
+      availableToIssue: 2,
+      toReturn: 0.5,
+      returned: 0.5,
+    }
+    const existing: Record<string, Record<string, string>> = {
+      'Общие данные': { received: 'receipts' },
+      Заявки: { received: 'received', remaining: 'remaining' },
+      Получение: { received: 'quantity', returned: 'returned' },
+      Возврат: { toReturn: 'quantity' },
+    }
+    for (const [key, quantity] of Object.entries(expected)) {
+      const colKey = existing[tabName]?.[key] ?? `indicator:${key}`
+      expect(api.getColumn(colKey), `${tabName}: ${colKey}`).toBeTruthy()
+      expect(
+        api.getCellValue({ rowNode: api.getDisplayedRowAtIndex(0)!, colKey }),
+      ).toBe(tabName === 'Заявки' && key === 'received' ? 3.5 : quantity)
+    }
+    if (tabName === 'Общие данные')
+      expect(
+        api.getCellValue({
+          rowNode: api.getPinnedBottomRow(0)!,
+          colKey: 'indicator:remaining',
+        }),
+      ).toBe(0.5)
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  },
+)
 
 it('returns the rejected fourth elbow from the new tab, reopens one request unit, and preserves three approved units after reload', async () => {
   const workspace = returnScenarioWorkspace()

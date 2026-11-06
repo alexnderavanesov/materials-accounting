@@ -2,6 +2,7 @@ import { materialNumberContext } from './document-numbering'
 import { useDocumentNumber } from './document-numbering-context'
 import { CustomerReturnModal } from './customer-return-modal'
 import { customerReturnAlternative } from './receipt-balances'
+import type { OperationIndicatorIndex } from './operation-overview-indicators'
 import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
 import {
@@ -647,6 +648,7 @@ function InspectionActPicker({
 }
 
 export function InspectionWorkspace({
+  indicatorIndex,
   value,
   requests = [],
   receipts,
@@ -658,6 +660,7 @@ export function InspectionWorkspace({
   listView = emptyOperationListView,
   issues = [],
 }: Props & {
+  indicatorIndex?: OperationIndicatorIndex
   issues?: ReadonlyArray<{ receiptId?: unknown }>
   prepare: () => Promise<string>
   search?: string
@@ -1099,6 +1102,8 @@ export function InspectionWorkspace({
               <>
                 <InspectionRows
                   gridId={`inspection:${entry.id}:${rev.revision}`}
+                  indicatorIndex={indicatorIndex}
+                  pageScroll
                   revision={rev}
                   lines={lines}
                   receipts={receipts}
@@ -1539,11 +1544,15 @@ export function InspectionWorkspace({
   )
 }
 function InspectionRows({
+  indicatorIndex,
+  pageScroll = false,
   gridId,
   revision,
   lines,
   receipts,
 }: {
+  indicatorIndex?: OperationIndicatorIndex
+  pageScroll?: boolean
   gridId: string
   revision: InspectionRevision
   lines: Array<SubobjectMaterialMetric>
@@ -1568,6 +1577,13 @@ function InspectionRows({
     <div className="mt-3 min-w-0">
       <OperationsGrid
         id={gridId}
+        pageScroll={pageScroll}
+        indicators={
+          indicatorIndex && {
+            values: (row) => indicatorIndex.byReceipt.get(row.receiptId),
+            unit: (row) => row.unit,
+          }
+        }
         label={`Материалы ЗНИ ${revision.zni.number}`}
         rows={rows}
         rowId={(row) => row.receiptId}

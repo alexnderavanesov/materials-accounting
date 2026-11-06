@@ -11,6 +11,7 @@ import {
   receiptDocumentLabel,
 } from './receipt-documents'
 import { receiptBalances } from './receipt-balances'
+import type { OperationIndicatorIndex } from './operation-overview-indicators'
 import {
   emptyOperationListView,
   emptyReceiptPriority,
@@ -57,6 +58,7 @@ const fmt = (quantity: number) =>
 const displayDate = (value: string) => value.split('-').reverse().join('.')
 
 export function ReturnsWorkspace({
+  indicatorIndex,
   search = '',
   listView = emptyOperationListView,
   priority = emptyReceiptPriority,
@@ -68,6 +70,7 @@ export function ReturnsWorkspace({
   lines,
   onChange,
 }: {
+  indicatorIndex?: OperationIndicatorIndex
   search?: string
   listView?: OperationListView
   priority?: ReceiptPriority
@@ -274,6 +277,14 @@ export function ReturnsWorkspace({
         (visiblePending.length ? (
           <OperationsGrid
             id="returns-pending"
+            indicators={
+              indicatorIndex && {
+                values: (row) =>
+                  indicatorIndex.byReceipt.get(row.row.receiptId),
+                unit: (row) => row.row.unit,
+                existing: { toReturn: 'quantity' },
+              }
+            }
             pagination
             paginationFilterKey={JSON.stringify([search, listView])}
             priorityRow={
@@ -347,6 +358,17 @@ export function ReturnsWorkspace({
           {visibleStock.length ? (
             <OperationsGrid
               id="returns-stock"
+              indicators={
+                indicatorIndex && {
+                  values: (row) => indicatorIndex.byReceipt.get(row.receipt.id),
+                  unit: (row) => row.receipt.projectUnit,
+                  existing: {
+                    received: 'received',
+                    returned: 'returned',
+                    toReturn: 'rejected',
+                  },
+                }
+              }
               pagination
               paginationFilterKey={JSON.stringify([search, listView])}
               priorityRow={
@@ -448,6 +470,14 @@ export function ReturnsWorkspace({
         (visibleHistory.length ? (
           <OperationsGrid
             id="returns-history"
+            indicators={
+              indicatorIndex && {
+                values: (row) =>
+                  indicatorIndex.byReceipt.get(row.item.receiptId),
+                unit: (row) => row.unit,
+                existing: { returned: 'quantity' },
+              }
+            }
             pagination
             paginationFilterKey={JSON.stringify([search, listView])}
             priorityRow={

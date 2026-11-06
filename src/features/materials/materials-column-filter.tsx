@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useGridFilterDisplay } from 'ag-grid-react'
 import type { CustomFilterDisplayProps } from 'ag-grid-react'
-import { ArrowDown, ArrowUp, Plus, Search, X } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import {
   compileMaterialsFilter,
   createMaterialsFilterHandler,
@@ -10,7 +10,6 @@ import {
 import type { MaterialsFilterModel } from './grid-filter-model'
 import './materials-column-filter.css'
 
-type SortLevel = { colId: string; sort: 'asc' | 'desc' }
 type ValueOption = { key: string | null; label: string; value: unknown }
 const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' })
 const valueHeight = 36
@@ -28,11 +27,8 @@ function MaterialsColumnFilter({
   onModelChange,
   getValue,
 }: CustomFilterDisplayProps<unknown, unknown, MaterialsFilterModel>) {
-  const colId = column.getColId()
   const title = api.getDisplayNameForColumn(column, 'header')
   const [draft, setDraft] = useState(model)
-  const [levels, setLevels] = useState<Array<SortLevel>>([])
-  const [singleColumn, setSingleColumn] = useState(false)
   const [options, setOptions] = useState<Array<ValueOption>>([])
   const [query, setQuery] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
@@ -78,14 +74,6 @@ function MaterialsColumnFilter({
       opened.current = true
       closePopup.current = params?.hidePopup
       setDraft(model)
-      setLevels(
-        api
-          .getColumnState()
-          .filter((state) => state.sort === 'asc' || state.sort === 'desc')
-          .sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
-          .map((state) => ({ colId: state.colId, sort: state.sort! })),
-      )
-      setSingleColumn(false)
       setQuery('')
       setScrollTop(0)
       setActiveIndex(0)
@@ -113,34 +101,6 @@ function MaterialsColumnFilter({
     0,
   )
   const allSelected = visible.length > 0 && selectedCount === visible.length
-  const sortableColumns = (api.getColumns() ?? []).filter(
-    (item) =>
-      item.isSortable() &&
-      (item.isVisible() ||
-        levels.some((level) => level.colId === item.getColId())),
-  )
-  const currentSort = levels.find((level) => level.colId === colId)?.sort
-  const setCurrentSort = (sort: 'asc' | 'desc') => {
-    setLevels((current) =>
-      singleColumn
-        ? [{ colId, sort }]
-        : current.some((level) => level.colId === colId)
-          ? current.map((level) =>
-              level.colId === colId ? { colId, sort } : level,
-            )
-          : [...current, { colId, sort }],
-    )
-  }
-  const moveLevel = (index: number, offset: number) => {
-    setLevels((current) => {
-      const next = [...current]
-      ;[next[index], next[index + offset]] = [
-        next[index + offset]!,
-        next[index]!,
-      ]
-      return next
-    })
-  }
   const selectValues = (values: Array<ValueOption>, checked: boolean) => {
     const selected = new Set(
       draft?.filterType === 'set'
@@ -178,21 +138,17 @@ function MaterialsColumnFilter({
           }
         : draft,
     )
-    api.applyColumnState({
-      state: levels.map((level, sortIndex) => ({ ...level, sortIndex })),
-      defaultState: { sort: null, sortIndex: null },
-    })
     close()
   }
   return (
     <section
       className="materials-column-filter"
-      aria-label={`${title}: сортировка и фильтры`}
+      aria-label={`${title}: фильтр`}
     >
       <header className="materials-filter-heading">
         <div>
           <h2>{title}</h2>
-          <p>Сортировка и фильтры</p>
+          <p>Фильтр</p>
         </div>
         <button
           type="button"
@@ -204,183 +160,6 @@ function MaterialsColumnFilter({
         </button>
       </header>
       <div className="materials-filter-body">
-        <section className="materials-filter-section">
-          <div className="materials-filter-section-title">
-            <h3>Сортировка</h3>
-            <button
-              type="button"
-              className="materials-filter-link"
-              disabled={!levels.length}
-              onClick={() => setLevels([])}
-            >
-              Сбросить сортировку
-            </button>
-          </div>
-          <label className="materials-filter-field">
-            Порядок строк
-            <select
-              value={singleColumn ? 'single' : 'multi'}
-              onChange={(event) => {
-                const single = event.target.value === 'single'
-                setSingleColumn(single)
-                if (single)
-                  setLevels((current) =>
-                    current.filter((level) => level.colId === colId),
-                  )
-              }}
-            >
-              <option value="multi">
-                По нескольким столбцам / текущий порядок
-              </option>
-              <option value="single">Только этот столбец</option>
-            </select>
-          </label>
-          <div className="materials-filter-sort-buttons">
-            <button
-              type="button"
-              disabled={!column.isSortable()}
-              aria-pressed={currentSort === 'asc'}
-              onClick={() => setCurrentSort('asc')}
-            >
-              <ArrowUp size={16} />
-              По возрастанию
-            </button>
-            <button
-              type="button"
-              disabled={!column.isSortable()}
-              aria-pressed={currentSort === 'desc'}
-              onClick={() => setCurrentSort('desc')}
-            >
-              <ArrowDown size={16} />
-              По убыванию
-            </button>
-            <button
-              type="button"
-              disabled={!currentSort}
-              onClick={() =>
-                setLevels((current) =>
-                  current.filter((level) => level.colId !== colId),
-                )
-              }
-            >
-              Убрать
-            </button>
-          </div>
-          {!singleColumn && (
-            <>
-              <div className="materials-filter-levels">
-                {levels.map((level, index) => (
-                  <div className="materials-filter-level" key={level.colId}>
-                    <span className="materials-filter-level-number">
-                      {index + 1}
-                    </span>
-                    <select
-                      className="materials-filter-level-column"
-                      aria-label={`Столбец уровня ${index + 1}`}
-                      value={level.colId}
-                      onChange={(event) =>
-                        setLevels((current) =>
-                          current.map((item, i) =>
-                            i === index
-                              ? { ...item, colId: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                    >
-                      {sortableColumns.map((item) => (
-                        <option
-                          key={item.getColId()}
-                          value={item.getColId()}
-                          disabled={levels.some(
-                            (other, i) =>
-                              i !== index && other.colId === item.getColId(),
-                          )}
-                        >
-                          {api.getDisplayNameForColumn(item, 'header')}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label={`Направление уровня ${index + 1}`}
-                      value={level.sort}
-                      onChange={(event) =>
-                        setLevels((current) =>
-                          current.map((item, i) =>
-                            i === index
-                              ? {
-                                  ...item,
-                                  sort: event.target.value as 'asc' | 'desc',
-                                }
-                              : item,
-                          ),
-                        )
-                      }
-                    >
-                      <option value="asc">↑ По возрастанию</option>
-                      <option value="desc">↓ По убыванию</option>
-                    </select>
-                    <div className="materials-filter-level-actions">
-                      <button
-                        type="button"
-                        className="materials-filter-icon"
-                        aria-label={`Поднять уровень ${index + 1}`}
-                        disabled={index === 0}
-                        onClick={() => moveLevel(index, -1)}
-                      >
-                        <ArrowUp size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className="materials-filter-icon"
-                        aria-label={`Опустить уровень ${index + 1}`}
-                        disabled={index === levels.length - 1}
-                        onClick={() => moveLevel(index, 1)}
-                      >
-                        <ArrowDown size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className="materials-filter-icon"
-                        aria-label={`Удалить уровень ${index + 1}`}
-                        onClick={() =>
-                          setLevels((current) =>
-                            current.filter((_, i) => i !== index),
-                          )
-                        }
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button
-                type="button"
-                className="materials-filter-add"
-                disabled={levels.length >= sortableColumns.length}
-                onClick={() => {
-                  const next = sortableColumns.find(
-                    (item) =>
-                      !levels.some((level) => level.colId === item.getColId()),
-                  )
-                  if (next)
-                    setLevels((current) => [
-                      ...current,
-                      { colId: next.getColId(), sort: 'asc' },
-                    ])
-                }}
-              >
-                <Plus size={16} />
-                Добавить уровень
-              </button>
-            </>
-          )}
-          <p className="materials-filter-hint">
-            Уровни применяются сверху вниз. Изменения вступят в силу после
-            «Применить».
-          </p>
-        </section>
         <section className="materials-filter-section">
           <h3>Показать значения</h3>
           <label className="materials-filter-search">

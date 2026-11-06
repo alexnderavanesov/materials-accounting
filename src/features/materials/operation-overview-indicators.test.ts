@@ -5,6 +5,7 @@ import {
 } from './material-progress'
 import {
   emptyOverviewIndicators,
+  indexOperationIndicators,
   isOverviewSort,
   overviewIndicatorKeys,
   prioritizeOverviewRows,
@@ -13,6 +14,51 @@ import {
   summarizeOverviewIndicators,
 } from './operation-overview-indicators'
 import { receiptBalances } from './receipt-balances'
+
+it('indexes receipt balances without duplicating a request remainder across deliveries or ciphers', () => {
+  const requests = [
+    { id: 'r1', projectLineId: 'line-a' },
+    { id: 'r2', projectLineId: 'line-a' },
+    { id: 'r3', projectLineId: 'line-b' },
+  ]
+  const receipts = [
+    { id: 'one', requestId: 'r1', projectLineId: 'line-a', quantity: 2.1 },
+    { id: 'two', requestId: 'r1', projectLineId: 'line-a', quantity: 1.2 },
+    { id: 'three', requestId: 'r2', projectLineId: 'line-a', quantity: 4 },
+  ]
+  const remaining = new Map([
+    ['r1', 0.7],
+    ['r2', 2],
+    ['r3', 10],
+  ])
+  const balances = receiptBalances(receipts, undefined, [], [])
+  const before = structuredClone({ requests, receipts, remaining, balances })
+  const result = indexOperationIndicators(
+    requests,
+    receipts,
+    balances,
+    remaining,
+  )
+  expect(result.byReceipt.get('one')).toMatchObject({
+    received: 2.1,
+    remaining: 0.7,
+    awaitingInspection: 2.1,
+  })
+  expect(result.byReceipt.get('two')?.remaining).toBe(0.7)
+  expect(result.byRequest.get('r1')).toMatchObject({
+    received: 3.3,
+    remaining: 0.7,
+  })
+  expect(result.byLine.get('line-a')).toMatchObject({
+    received: 7.3,
+    remaining: 2.7,
+  })
+  expect(result.byLine.get('line-b')).toMatchObject({
+    received: 0,
+    remaining: 10,
+  })
+  expect({ requests, receipts, remaining, balances }).toEqual(before)
+})
 
 describe('overview priorities', () => {
   it.each(overviewIndicatorKeys)(

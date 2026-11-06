@@ -127,6 +127,56 @@ export function receiptIndicatorsByLine(
   return result
 }
 
+export type OperationIndicatorIndex = ReturnType<
+  typeof indexOperationIndicators
+>
+
+/** Aggregate once for all tables. A receipt's remaining quantity belongs to its request. */
+export function indexOperationIndicators(
+  requests: ReadonlyArray<{ id: string; projectLineId: string }>,
+  receipts: ReadonlyArray<{
+    id: string
+    requestId: string
+    projectLineId: string
+  }>,
+  balances: ReturnType<typeof receiptBalances>,
+  remainingByRequest: ReadonlyMap<string, number>,
+) {
+  const byRequest = new Map<string, OverviewIndicators>()
+  const byReceipt = new Map<string, OverviewIndicators>()
+  const byLine = new Map<string, OverviewIndicators>()
+  const add = (
+    map: Map<string, OverviewIndicators>,
+    id: string,
+    values: OverviewIndicators,
+  ) => {
+    const total = map.get(id) ?? emptyOverviewIndicators()
+    for (const key of overviewIndicatorKeys)
+      total[key] = Number((total[key] + values[key]).toPrecision(15))
+    map.set(id, total)
+  }
+  for (const request of requests) {
+    const values = {
+      ...emptyOverviewIndicators(),
+      remaining: remainingByRequest.get(request.id) ?? 0,
+    }
+    add(byRequest, request.id, values)
+    add(byLine, request.projectLineId, values)
+  }
+  for (const receipt of receipts) {
+    const values = emptyOverviewIndicators()
+    for (const key of receiptIndicatorKeys)
+      values[key] = balances.get(receipt.id)?.[key] ?? 0
+    add(byRequest, receipt.requestId, values)
+    add(byLine, receipt.projectLineId, values)
+    byReceipt.set(receipt.id, {
+      ...values,
+      remaining: remainingByRequest.get(receipt.requestId) ?? 0,
+    })
+  }
+  return { byRequest, byReceipt, byLine }
+}
+
 /** Stable priority ordering: never compare metres with pieces or hide other rows. */
 export function prioritizeOverviewRows<
   T extends { indicators: OverviewIndicators },

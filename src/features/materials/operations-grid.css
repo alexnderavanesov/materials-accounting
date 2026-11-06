@@ -37,3 +37,13 @@
   padding-top: 0;
   padding-bottom: 0;
 }
+
+/* Translate within this table's bounds; the header keeps its filters and horizontal scroll. */
+.operations-grid-page-scroll .ag-header {
+  z-index: 10;
+  transform: translateY(var(--page-header-offset, 0px));
+}
+.operations-grid-page-scroll .ag-center-cols-viewport,
+.operations-grid-page-scroll .ag-center-cols-container {
+  min-height: 0;
+}
