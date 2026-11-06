@@ -21,6 +21,7 @@ import type {
   PendingDeleteMaterial,
 } from './project-grid-state'
 import './project-material-grid.css'
+import { materialsColumnFilter } from './materials-column-filter'
 
 const quantityText = (value: number | null | undefined) =>
   value == null
@@ -34,12 +35,11 @@ const defaultColDef: ColDef<MaterialMatrixRow> = {
   sortable: true,
   resizable: true,
   minWidth: 90,
-  filter: 'agTextColumnFilter',
+  filter: materialsColumnFilter,
   floatingFilter: false,
   suppressHeaderMenuButton: true,
   wrapHeaderText: true,
   autoHeaderHeight: true,
-  filterParams: { debounceMs: 150 },
   cellDataType: false,
 }
 export function ProjectMaterialGrid({

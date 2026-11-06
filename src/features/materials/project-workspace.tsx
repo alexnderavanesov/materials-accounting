@@ -56,6 +56,7 @@ import {
   operationMaterial,
   prioritizeReceiptRows,
   receiptPriority,
+  sortOperationsNewestFirst,
 } from './operation-list-view'
 import type {
   OperationListView,
@@ -168,6 +169,7 @@ import { createWorkspaceSaver } from './workspace-saver'
 import { RequestPrintButton, RequestPrintSettings } from './request-print-ui'
 import {
   emptyQualityWorkflow,
+  currentInspection,
   inspectionApprovals,
   customerReturnTotals,
   approvedCustomerReturnTotals,
@@ -294,7 +296,6 @@ type ReceiptDocumentGroup = {
   firstDate: string
   entries: Array<MaterialReceiptEntry>
   key: string
-  latestChangeOrder: number
   quantity: number
   requestNumbers: Array<string>
   replacement: boolean
@@ -2712,7 +2713,7 @@ function OperationsSection({
           </CardHeader>
         ) : null}
         <CardContent className="p-0">
-          {activeTab !== 'overview' && (
+          {activeTab !== 'overview' && activeTab !== 'quality' && (
             <OperationIndicatorBar
               label={`Сортировка: ${tabMeta.label}`}
               summaries={indicatorSummaries}
@@ -2738,7 +2739,6 @@ function OperationsSection({
             <InspectionWorkspace
               issues={materialIssues}
               listView={listView}
-              priority={priority}
               requests={materialRequests}
               value={qualityWorkflow}
               receipts={materialReceipts}
@@ -3710,7 +3710,10 @@ function OverviewDocumentsDialog({
           </button>
         </div>
         <div className="max-h-[460px] overflow-auto p-2">
-          {documents.map((document) => (
+          {sortOperationsNewestFirst(
+            documents,
+            (document) => document.date,
+          ).map((document) => (
             <button
               key={document.id}
               className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-blue-50"
@@ -4978,6 +4981,7 @@ function ReceiptsTable({
                   <OperationsGrid
                     id={`receipt:${group.key}`}
                     label={`Получения материала ${group.actualName}`}
+                    firstColumnId="date"
                     rows={[
                       ...group.entries.map((entry) => {
                         const request = requestById.get(entry.requestId)
@@ -4998,6 +5002,12 @@ function ReceiptsTable({
                     ]}
                     rowId={({ entry }) => entry.id}
                     columns={[
+                      {
+                        id: 'date',
+                        title: 'Дата получения',
+                        value: ({ entry }) => entry.date,
+                        render: ({ entry }) => <>{formatDate(entry.date)}</>,
+                      },
                       {
                         id: 'actions',
                         title: 'Действия',
@@ -5141,12 +5151,6 @@ function ReceiptsTable({
                         title: 'Альтернативная единица измерения',
                         value: ({ entry }) => entry.altUnit,
                         render: ({ entry }) => <>{entry.altUnit || '-'}</>,
-                      },
-                      {
-                        id: 'date',
-                        title: 'Дата получения',
-                        value: ({ entry }) => entry.date,
-                        render: ({ entry }) => <>{formatDate(entry.date)}</>,
                       },
                       {
                         id: 'app',
@@ -5316,6 +5320,10 @@ function IssuesTable({
   receipts: Array<MaterialReceiptEntry>
   onDelete: (entry: MaterialIssueEntry) => void
 }) {
+  const orderedEntries = useMemo(
+    () => sortOperationsNewestFirst(entries, (entry) => entry.date),
+    [entries],
+  )
   useEffect(() => {
     if (!focusEntryId) {
       return
@@ -5345,7 +5353,7 @@ function IssuesTable({
       }
       label={'Выдача'}
       rows={[
-        ...entries.map((entry) => {
+        ...orderedEntries.map((entry) => {
           const receipt = receiptById.get(entry.receiptId)
           const line = lineById.get(entry.projectLineId)
           const isDeletedProjectMaterial = !line
@@ -10410,10 +10418,35 @@ function buildOperationOverviewRows({
     (entry) => entry.date,
     (entry) => entry.quantity,
   )
+  const receiptLineIds = new Map(
+    materialReceipts.map((receipt) => [receipt.id, receipt.projectLineId]),
+  )
   const latestActivityByLineId = buildOperationActivityIndex({
     materialReceipts,
     materialRequests,
     qualityControls,
+    additionalOperations: [
+      ...materialIssues,
+      ...(workflow?.customerReturns ?? []).map((item) => ({
+        projectLineId: receiptLineIds.get(item.receiptId) ?? '',
+        date: item.date,
+      })),
+      ...(workflow?.cases ?? []).flatMap((entry) => {
+        const { zni, avk } = currentInspection(entry)
+        const date = [
+          zni.date,
+          zni.signedOn ?? '',
+          avk?.date ?? '',
+          avk?.signedOn ?? '',
+        ]
+          .sort()
+          .at(-1)!
+        return zni.rows.map((row) => ({
+          projectLineId: row.projectLineId,
+          date,
+        }))
+      }),
+    ],
   })
   const issueMetrics = groupOverviewDocuments(
     materialIssues,
@@ -10890,7 +10923,10 @@ function groupRequestDocuments(
     current.requester = current.requester || entry.requester
   }
 
-  return Array.from(groups.values())
+  return sortOperationsNewestFirst(
+    Array.from(groups.values()),
+    (group) => group.date,
+  )
 }
 
 function buildRequestGroupMeta(
@@ -10944,7 +10980,7 @@ function groupReceiptDocuments(
   const requestById = new Map(requests.map((request) => [request.id, request]))
   const groups = new Map<string, ReceiptDocumentGroup>()
 
-  entries.forEach((entry, index) => {
+  entries.forEach((entry) => {
     const key = getReceiptGroupKey(entry, lineById.get(entry.projectLineId))
     const request = requestById.get(entry.requestId)
     const current = groups.get(key)
@@ -10957,7 +10993,6 @@ function groupReceiptDocuments(
         firstDate: entry.date,
         entries: [entry],
         key,
-        latestChangeOrder: index,
         quantity: entry.quantity,
         replacement: isReceiptReplacement(entry, request),
         requestNumbers,
@@ -10969,7 +11004,6 @@ function groupReceiptDocuments(
     if (entry.date < current.firstDate) current.firstDate = entry.date
     if (entry.date > current.date) current.date = entry.date
     current.quantity += entry.quantity
-    current.latestChangeOrder = Math.min(current.latestChangeOrder, index)
     current.replacement =
       current.replacement || isReceiptReplacement(entry, request)
     current.requestNumbers = unique([
@@ -10978,21 +11012,13 @@ function groupReceiptDocuments(
     ])
   })
 
-  return Array.from(groups.values()).sort((left, right) => {
-    const byLatestChange = left.latestChangeOrder - right.latestChangeOrder
-
-    if (byLatestChange !== 0) {
-      return byLatestChange
-    }
-
-    const byDate = right.date.localeCompare(left.date)
-
-    if (byDate !== 0) {
-      return byDate
-    }
-
-    return left.actualName.localeCompare(right.actualName, 'ru')
-  })
+  const result = Array.from(groups.values())
+  for (const group of result)
+    group.entries = sortOperationsNewestFirst(
+      group.entries,
+      (entry) => entry.date,
+    )
+  return sortOperationsNewestFirst(result, (group) => group.date)
 }
 
 function receiptEditGroup(
@@ -11005,7 +11031,6 @@ function receiptEditGroup(
     date: entry.date,
     firstDate: entry.date,
     entries: [entry],
-    latestChangeOrder: 0,
     quantity: entry.quantity,
     requestNumbers: request ? [request.number] : [],
     replacement: isReceiptReplacement(entry, request),

@@ -25,6 +25,7 @@ import {
 } from './operation-pagination'
 import { isViewString, useWorkspaceViewState } from './workspace-view'
 import './operations-grid.css'
+import { materialsColumnFilter } from './materials-column-filter'
 
 export type DataColumn<T> = {
   id: string
@@ -51,7 +52,6 @@ const defaults = {
   floatingFilter: false,
   suppressHeaderMenuButton: true,
   cellDataType: false,
-  filterParams: { debounceMs: 150 },
   useValueFormatterForExport: false,
 }
 const numberFormat = new Intl.NumberFormat('ru-RU', {
@@ -79,6 +79,7 @@ export function OperationsGrid<T>({
   paginationFilterKey = '',
   priorityRow,
   onReady,
+  firstColumnId,
 }: {
   id: string
   label: string
@@ -92,6 +93,8 @@ export function OperationsGrid<T>({
   paginationFilterKey?: string
   priorityRow?: (row: T) => boolean
   onReady?: (api: GridApi<T>) => void
+  /** Keep this column first when restoring an older saved layout. */
+  firstColumnId?: string
 }) {
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
@@ -116,6 +119,25 @@ export function OperationsGrid<T>({
     const saved = readDataGridState(id)
     return {
       ...saved,
+      columnOrder:
+        firstColumnId && saved.columnOrder
+          ? {
+              orderedColIds: [
+                firstColumnId,
+                ...saved.columnOrder.orderedColIds.filter(
+                  (colId) => colId !== firstColumnId,
+                ),
+              ],
+            }
+          : saved.columnOrder,
+      columnVisibility:
+        firstColumnId && saved.columnVisibility
+          ? {
+              hiddenColIds: saved.columnVisibility.hiddenColIds.filter(
+                (colId) => colId !== firstColumnId,
+              ),
+            }
+          : saved.columnVisibility,
       pagination: pagination
         ? {
             page:
@@ -135,11 +157,7 @@ export function OperationsGrid<T>({
         headerName: column.title,
         initialWidth: column.width ?? (column.numeric ? 165 : 210),
         initialPinned: column.actions ? 'right' : undefined,
-        filter: column.actions
-          ? false
-          : column.numeric
-            ? 'agNumberColumnFilter'
-            : 'agTextColumnFilter',
+        filter: column.actions ? false : materialsColumnFilter,
         sortable: !column.actions,
         suppressColumnsToolPanel: column.actions,
         lockVisible: column.actions,

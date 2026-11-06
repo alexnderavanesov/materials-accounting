@@ -1,4 +1,5 @@
 import { isOverviewSort } from './operation-overview-indicators'
+import { normalizeCalendarDate } from './calendar-date'
 import type { OverviewSort } from './operation-overview-indicators'
 import type { receiptBalances } from './receipt-balances'
 
@@ -16,6 +17,17 @@ export const emptyOperationListView: OperationListView = {
   sort: '',
 }
 export const emptyReceiptPriority: ReceiptPriority = { key: '', ids: new Set() }
+
+/** Sort the view only; undated rows go last and equal dates keep their order. */
+export function sortOperationsNewestFirst<T>(
+  rows: ReadonlyArray<T>,
+  getDate: (row: T) => string,
+): Array<T> {
+  return rows
+    .map((row) => ({ row, date: normalizeCalendarDate(getDate(row)) ?? '' }))
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .map(({ row }) => row)
+}
 
 export function isOperationListViews(
   value: unknown,

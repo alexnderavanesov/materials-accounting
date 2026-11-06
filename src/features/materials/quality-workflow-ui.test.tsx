@@ -42,6 +42,11 @@ const receiptsOf = (value: ReturnType<typeof inspectionFixture>) =>
 const linesOf = (value: ReturnType<typeof inspectionFixture>) =>
   value.lines as unknown as Array<SubobjectMaterialMetric>
 
+const documentBadge = (label: string) =>
+  within(
+    screen.getByRole('group', { name: 'Сортировка: Входной контроль' }),
+  ).getByRole('button', { name: new RegExp(`^${label}\\s*\\d`) })
+
 it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', () => {
   const fixture = acceptFixture()
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
@@ -65,6 +70,8 @@ it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', 
     )
   }
   render(<Harness />)
+  expect(documentBadge('Создано ЗНИ').textContent).toContain('1 док.')
+  expect(documentBadge('Подписано АВК').textContent).toContain('1 док.')
   const openMenu = () =>
     fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
   openMenu()
@@ -80,6 +87,9 @@ it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', 
   expect(
     currentInspection(saved.mock.calls[0]![0].qualityWorkflow.cases[0]).avk,
   ).toBeNull()
+  expect(documentBadge('Создано АВК').textContent).toContain('0 док.')
+  expect(documentBadge('Подписано АВК').textContent).toContain('0 док.')
+  expect(documentBadge('Осталось создать АВК').textContent).toContain('1 док.')
   openMenu()
   expect(
     screen.getByRole('menuitem', { name: 'Повторная проверка' }),
@@ -91,6 +101,66 @@ it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', 
     fixture.materialReceipts,
   )
   expect(screen.queryByRole('button', { name: /^Действия ЗНИ/ })).toBeNull()
+  expect(documentBadge('Создано ЗНИ').textContent).toContain('0 док.')
+  expect(documentBadge('Осталось создать АВК').textContent).toContain('0 док.')
+})
+
+it('prioritizes document stages before pagination, restores the choice and keeps totals independent of search', () => {
+  const fixture = acceptFixture()
+  const original = fixture.qualityWorkflow.cases[0]!
+  fixture.qualityWorkflow.cases = Array.from({ length: 32 }, (_, i) => {
+    const entry = structuredClone(original)
+    entry.id = `case-${i}`
+    const revision = currentInspection(entry)
+    revision.zni.number = `ЗНИ-${i}`
+    revision.zni.date = i < 30 ? '2026-11-05' : '2026-11-04'
+    if (i >= 30) revision.avk!.signedOn = null
+    return entry
+  })
+  const before = structuredClone(fixture)
+  const onChange = vi.fn()
+  const props = {
+    value: fixture.qualityWorkflow,
+    receipts: receiptsOf(fixture),
+    lines: linesOf(fixture),
+    onChange,
+    prepare: async () => 'revision',
+  }
+  let view = render(<InspectionWorkspace {...props} />)
+  const cards = () =>
+    Array.from(document.querySelectorAll('article'), (card) => card.id)
+  expect(documentBadge('Создано ЗНИ').textContent).toContain('32 док.')
+  expect(documentBadge('Подписано АВК').textContent).toContain('30 док.')
+  expect(documentBadge('Осталось подписать АВК').textContent).toContain(
+    '2 док.',
+  )
+  expect(cards()[0]).toBe('inspection-case-case-0')
+  fireEvent.click(screen.getByRole('button', { name: 'Последняя страница' }))
+  expect(cards()).toHaveLength(7)
+  fireEvent.click(documentBadge('Осталось подписать АВК'))
+  expect(cards()).toHaveLength(25)
+  expect(cards().slice(0, 3)).toEqual([
+    'inspection-case-case-30',
+    'inspection-case-case-31',
+    'inspection-case-case-0',
+  ])
+  fireEvent.click(documentBadge('Осталось подписать АВК'))
+  expect(cards()[0]).toBe('inspection-case-case-0')
+  fireEvent.click(documentBadge('Осталось подписать АВК'))
+  view.unmount()
+  view = render(<InspectionWorkspace {...props} />)
+  expect(
+    documentBadge('Осталось подписать АВК').getAttribute('aria-pressed'),
+  ).toBe('true')
+  expect(cards()[0]).toBe('inspection-case-case-30')
+  view.rerender(<InspectionWorkspace {...props} search="ЗНИ-31" />)
+  expect(cards()).toEqual(['inspection-case-case-31'])
+  expect(documentBadge('Создано ЗНИ').textContent).toContain('32 док.')
+  expect(documentBadge('Осталось подписать АВК').textContent).toContain(
+    '2 док.',
+  )
+  expect(onChange).not.toHaveBeenCalled()
+  expect(fixture).toEqual(before)
 })
 
 it('explains why AVK deletion is blocked by an issue instead of changing data', () => {
@@ -242,6 +312,7 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
     { id: 'm15', kind: 'm15', number: '15', date: '2026-10-22' },
   ]
   fixture.materialReceipts[0]!.m15DocumentId = 'm15'
+  fixture.materialReceipts[0]!.certificate = '221'
   const onChange = vi.fn((qualityWorkflow) =>
     validateQualityWorkspace({ ...fixture, qualityWorkflow }),
   )
@@ -275,6 +346,10 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
     screen.getByRole('button', { name: 'Продолжить с выбранными материалами' }),
   )
   expect(screen.getByText(/Предъявлено: 2,5 шт/)).toBeTruthy()
+  expect(screen.getByLabelText<HTMLInputElement>('Наименование').value).toBe(
+    'Паспорт / сертификат',
+  )
+  expect(screen.getByLabelText<HTMLInputElement>('Номер').value).toBe('221')
   expect(onChange).not.toHaveBeenCalled()
   expect(
     screen.queryByRole('button', { name: 'Создать АВК на принятые позиции' }),
@@ -289,6 +364,9 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
   expect(currentInspection(entry).avk).toBeNull()
   expect(entry.processVersion).toBe(2)
   expect(entry.basis?.kind).toBe('m15')
+  expect(currentInspection(entry).zni.documents).toMatchObject([
+    { name: 'Паспорт / сертификат', number: '221' },
+  ])
 })
 
 it('selects a whole APP, keeps separate batches and selection during search, and cancels without writing', () => {

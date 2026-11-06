@@ -1,0 +1,37 @@
+.ag-status-bar:has(.materials-selection-summary) {
+  padding: 0 12px;
+  background: #f8fafc;
+}
+.ag-status-bar-right:has(.materials-selection-summary) {
+  min-width: 0;
+  width: 100%;
+}
+.ag-status-bar-right > .ag-react-container:has(.materials-selection-summary) {
+  min-width: 0;
+  width: 100%;
+}
+.materials-selection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px 16px;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.materials-selection-summary > span {
+  overflow-wrap: anywhere;
+}
+.materials-selection-summary strong {
+  color: #334155;
+  font-weight: 600;
+}
+.materials-selection-hint {
+  color: #64748b;
+}

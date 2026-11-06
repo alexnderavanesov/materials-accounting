@@ -4,14 +4,17 @@ export function buildOperationActivityIndex({
   materialReceipts,
   materialRequests,
   qualityControls,
+  additionalOperations = [],
 }: {
   materialReceipts: Array<OperationActivity>
   materialRequests: Array<OperationActivity>
   qualityControls: Array<OperationActivity>
+  additionalOperations?: Array<OperationActivity>
 }) {
   const latestByLineId = new Map<string, number>()
 
   function register(lineId: string, date: string, order: number) {
+    if (!lineId) return
     const time = getOperationActivityTime(date, order)
     latestByLineId.set(lineId, Math.max(latestByLineId.get(lineId) ?? 0, time))
   }
@@ -33,6 +36,17 @@ export function buildOperationActivityIndex({
       materialRequests.length +
         materialReceipts.length +
         qualityControls.length -
+        index,
+    )
+  })
+  additionalOperations.forEach((entry, index) => {
+    register(
+      entry.projectLineId,
+      entry.date,
+      materialRequests.length +
+        materialReceipts.length +
+        qualityControls.length +
+        additionalOperations.length -
         index,
     )
   })

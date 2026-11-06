@@ -12,9 +12,11 @@ import {
   ContextMenuModule,
   ExcelExportModule,
   LicenseManager,
+  StatusBarModule,
 } from 'ag-grid-enterprise'
 import { AgGridReact } from 'ag-grid-react'
 import type { AgGridReactProps } from 'ag-grid-react'
+import { materialsSelectionStatusBar } from './grid-selection-status-panel'
 
 ModuleRegistry.registerModules([
   AllCommunityModule,
@@ -24,6 +26,7 @@ ModuleRegistry.registerModules([
   ColumnMenuModule,
   ContextMenuModule,
   ExcelExportModule,
+  StatusBarModule,
 ])
 // A browser licence is intentionally included in the client bundle; keep it out of Git.
 const licence = import.meta.env.VITE_AG_GRID_LICENSE_KEY
@@ -50,8 +53,26 @@ export function MaterialsGridView<T>(
   delete gridProps['data-tsd-source']
   return createElement(AgGridReact<T>, {
     ...gridProps,
+    statusBar: gridProps.statusBar ?? materialsSelectionStatusBar,
+    enableFilterHandlers: true,
+    popupParent:
+      gridProps.popupParent ??
+      (typeof document === 'undefined' ? undefined : document.body),
     suppressCsvExport: true,
     postProcessPopup: (params) => {
+      if (params.type === 'columnFilter') {
+        const popup = params.ePopup
+        const left =
+          params.eventSource?.getBoundingClientRect().left ??
+          popup.getBoundingClientRect().left
+        popup.classList.add('materials-filter-popup')
+        Object.assign(popup.style, {
+          position: 'fixed',
+          top: '16px',
+          left: `max(12px, min(${left}px, calc(100vw - 452px)))`,
+          maxHeight: 'calc(100dvh - 32px)',
+        })
+      }
       if (params.type === 'columnChooser') {
         const count = (params.api.getColumns() ?? []).filter(
           (column) => !column.getColDef().suppressColumnsToolPanel,

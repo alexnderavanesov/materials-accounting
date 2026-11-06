@@ -11,14 +11,16 @@ export function OperationIndicatorBadge({
   details,
   active,
   onClick,
+  subject = 'материалы',
 }: {
   label: string
   value: string
   details: string
   active: boolean
   onClick: () => void
+  subject?: 'материалы' | 'документы'
 }) {
-  const description = `${details}\n${active ? 'Вернуть обычный порядок' : `Сначала материалы: ${label.toLocaleLowerCase('ru')}`}`
+  const description = `${details}\n${active ? 'Вернуть обычный порядок' : `Сначала ${subject}: ${label.toLocaleLowerCase('ru')}`}`
   return (
     <HoverTooltip text={description} className="flex min-w-0" focusable={false}>
       <button

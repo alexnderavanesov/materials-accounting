@@ -88,6 +88,98 @@ function another(
   )
 }
 
+describe('quality documents from receipts', () => {
+  it.each([
+    ['221', 'Паспорт / сертификат', '221', ''],
+    [' № 00221/А-1 ', 'Паспорт / сертификат', '00221/А-1', ''],
+    ['Сертификат №221 от 03.11.2026', 'Сертификат', '221', '2026-11-03'],
+    ['Паспорт 221', 'Паспорт', '221', ''],
+    ['221 от 2026-11-03', 'Паспорт / сертификат', '221', '2026-11-03'],
+    ['Паспорт', 'Паспорт', '', ''],
+    ['Паспорт изделия и сертификат', 'Паспорт изделия и сертификат', '', ''],
+    ['Паспорта №221, №222', 'Паспорта №221, №222', '', ''],
+    ['Паспорт №221 от 31.02.2026', 'Паспорт №221 от 31.02.2026', '', ''],
+  ])(
+    'separates receipt document details without losing text: %s',
+    (input, name, number, date) => {
+      const workspace = inspectionFixture()
+      workspace.qualityWorkflow.cases = []
+      workspace.materialReceipts[0]!.certificate = input
+      const before = structuredClone(workspace)
+      const entry = another(workspace, 10)
+      expect(currentInspection(entry).zni.documents).toEqual([
+        { id: expect.any(String), name, number, date, orderNumber: '' },
+      ])
+      expect(workspace).toEqual(before)
+    },
+  )
+
+  it('includes only selected receipts, deduplicates shared passports and keeps different numbers', () => {
+    const workspace = inspectionFixture()
+    workspace.qualityWorkflow.cases = []
+    workspace.materialReceipts = ['221', '№221', '222', '333'].map(
+      (certificate, index) => ({
+        ...workspace.materialReceipts[0]!,
+        id: `receipt-${index}`,
+        certificate,
+        qualityDocument: index === 0 ? '77 от 03.11.2026' : ' ',
+      }),
+    )
+    const entry = newInspection(
+      workspace.qualityWorkflow,
+      workspace.materialReceipts.slice(0, 3).map((receipt) => ({
+        receiptId: String(receipt.id),
+        quantity: 1,
+      })),
+      receipts(workspace),
+      lines(workspace),
+      'app',
+    )
+    expect(
+      currentInspection(entry).zni.documents.map(({ name, number, date }) => ({
+        name,
+        number,
+        date,
+      })),
+    ).toEqual([
+      { name: 'Паспорт / сертификат', number: '221', date: '' },
+      { name: 'Документ о качестве', number: '77', date: '2026-11-03' },
+      { name: 'Паспорт / сертификат', number: '222', date: '' },
+    ])
+  })
+
+  it('keeps the separated fields in saved ZNI, AVK and print data without rewriting existing history', () => {
+    const workspace = inspectionFixture()
+    const oldEntry = workspace.qualityWorkflow.cases[0]!
+    const oldDocuments = structuredClone(
+      currentInspection(oldEntry).zni.documents,
+    )
+    workspace.qualityWorkflow.cases = []
+    workspace.materialReceipts[0]!.certificate = '221'
+    const entry = another(workspace, 10)
+    workspace.qualityWorkflow.cases = [entry]
+    sign(entry, 10)
+    const saved = workspaceSnapshotSchema.parse(
+      JSON.parse(JSON.stringify(workspace)),
+    )
+    expect(() => validateQualityWorkspace(saved)).not.toThrow()
+    for (const kind of ['zni', 'avk'] as const) {
+      expect(buildQualityPrintData(saved, entry.id, 1, kind).documents).toEqual(
+        [
+          {
+            index: 1,
+            name: 'Паспорт / сертификат',
+            number: '221',
+            date: '',
+            orderNumber: '',
+          },
+        ],
+      )
+    }
+    expect(currentInspection(oldEntry).zni.documents).toEqual(oldDocuments)
+  })
+})
+
 describe('document → ZNI → AVK accounting', () => {
   it('requires a receipt document and rejects obsolete process payloads', () => {
     const workspace = inspectionFixture()

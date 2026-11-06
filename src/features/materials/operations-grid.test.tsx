@@ -125,9 +125,10 @@ it('filters from a header popup and only offers reset while a filter is active',
   expect(screen.queryByPlaceholderText('Фильтр…')).toBeNull()
   const header = screen.getByRole('columnheader', { name: /^Материал/ })
   fireEvent.click(header.querySelector('.ag-header-cell-filter-button')!)
-  fireEvent.input(await screen.findByPlaceholderText('Фильтр…'), {
-    target: { value: 'Отвод' },
-  })
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Выбрать все' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Отвод' }))
+  expect(api.getDisplayedRowCount()).toBe(3)
+  fireEvent.click(screen.getByRole('button', { name: 'Применить' }))
   await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
   fireEvent.click(
     await screen.findByRole('button', { name: 'Сбросить фильтры' }),

@@ -85,6 +85,24 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+it('shows selection totals for cipher quantities and refreshes them after editing', async () => {
+  render(<Harness />)
+  const api = await projectGridApi()
+  act(() =>
+    api.addCellRange({
+      rowStartIndex: 0,
+      rowEndIndex: 1,
+      columns: ['cipher:ТЕСТ'],
+    }),
+  )
+  const summary = () =>
+    screen.getByRole('status', { name: 'Сводка выделения' }).textContent
+  await waitFor(() => expect(summary()).toContain('Сумма: 20'))
+  await editGridQuantity('Альфа', 'ТЕСТ', '12,5')
+  await waitFor(() => expect(summary()).toContain('Сумма: 22,5'))
+  expect(summary()).toContain('Среднее: 11,25')
+})
+
 describe('project quantity input', () => {
   it('accepts decimal commas and copied thousand separators, rejecting malformed or negative quantities', () => {
     for (const [value, expected] of [
@@ -139,13 +157,19 @@ describe('project AG Grid integration', () => {
   it('opens the column filter on demand and applies its input without changing quantities', async () => {
     render(<Harness />)
     const api = await projectGridApi()
+    // Wait for the initial rows as well as column registration: opening during
+    // the first render can race AG Grid's initial popup/scroll cleanup.
+    await gridCell('Альфа', 'projectMaterialName')
     expect(screen.queryByPlaceholderText('Фильтр…')).toBeNull()
     const header = screen.getByRole('columnheader', {
       name: /^Наименование по проекту/,
     })
     fireEvent.click(header.querySelector('.ag-header-cell-filter-button')!)
-    const input = await screen.findByPlaceholderText('Фильтр…')
-    fireEvent.input(input, { target: { value: 'Бета' } })
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Альфа' }, { timeout: 5000 }),
+    )
+    expect(api.getDisplayedRowCount()).toBe(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }))
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
     expect(api.getDisplayedRowAtIndex(0)?.data?.projectMaterialName).toBe(
       'Бета',

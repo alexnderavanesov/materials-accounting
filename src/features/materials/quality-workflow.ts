@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { normalizeCalendarDate } from './calendar-date'
 import { validateProjectUnitChanges } from './project-unit-guard'
 import {
   validateInspectionChronology,
@@ -423,6 +424,54 @@ export function newInspection(
     ],
   }
 }
+function receiptQualityDocument(
+  value: string | undefined,
+  defaultName: string,
+): QualityDocument | null {
+  const source = value?.trim()
+  if (!source) return null
+  const document: QualityDocument = {
+    id: crypto.randomUUID(),
+    name: source,
+    number: '',
+    date: '',
+    orderNumber: '',
+  }
+  let documentText = source
+  let documentDate = ''
+  const dated =
+    /\s+от\s+(\d{1,2}\.\d{1,2}\.\d{4}|\d{4}-\d{1,2}-\d{1,2})$/iu.exec(
+      documentText,
+    )
+  if (dated) {
+    const normalized = normalizeCalendarDate(dated[1]!)
+    if (!normalized) return document
+    documentDate = normalized
+    documentText = documentText.slice(0, dated.index).trim()
+  }
+  const numbered = /^([^№]*?)\s*№\s*([^№]+)$/u.exec(documentText)
+  const identifier = /^[\p{L}\p{N}][\p{L}\p{N}./_-]*$/u
+  const named =
+    /^(паспорт(?: изделия| качества)?|сертификат(?: качества| соответствия)?|документ о качестве)\s+(.+)$/iu.exec(
+      documentText,
+    )
+  if (numbered) {
+    document.name = numbered[1]!.trim() || defaultName
+    document.number = numbered[2]!.trim()
+  } else if (named && identifier.test(named[2]!) && /\d/.test(named[2]!)) {
+    document.name = named[1]!
+    document.number = named[2]!
+  } else if (identifier.test(documentText) && /\d/.test(documentText)) {
+    document.name = defaultName
+    document.number = documentText
+  } else {
+    // Free-form descriptions stay intact when the document number is ambiguous.
+    return document
+  }
+  document.date = documentDate
+  return document
+}
+
 function inspectionSourceDocuments(
   receiptIds: Array<string>,
   receipts: Array<Receipt>,
@@ -430,15 +479,12 @@ function inspectionSourceDocuments(
   const documents: Array<QualityDocument> = []
   const selectedIds = new Set(receiptIds)
   for (const receipt of receipts.filter((item) => selectedIds.has(item.id))) {
-    for (const name of [receipt.certificate, receipt.qualityDocument]) {
-      if (name?.trim())
-        documents.push({
-          id: crypto.randomUUID(),
-          name: name.trim(),
-          number: '',
-          date: '',
-          orderNumber: '',
-        })
+    for (const [value, defaultName] of [
+      [receipt.certificate, 'Паспорт / сертификат'],
+      [receipt.qualityDocument, 'Документ о качестве'],
+    ] as const) {
+      const document = receiptQualityDocument(value, defaultName)
+      if (document) documents.push(document)
     }
   }
   const seen = new Set<string>()

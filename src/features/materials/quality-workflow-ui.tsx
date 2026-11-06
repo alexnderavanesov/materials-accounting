@@ -6,12 +6,20 @@ import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
 import { OperationsGrid } from './operations-grid'
 import {
   emptyOperationListView,
-  emptyReceiptPriority,
   matchesOperationMaterial,
   operationMaterial,
-  prioritizeReceiptRows,
+  sortOperationsNewestFirst,
 } from './operation-list-view'
-import type { OperationListView, ReceiptPriority } from './operation-list-view'
+import type { OperationListView } from './operation-list-view'
+import { OperationIndicatorBadge } from './operation-list-controls'
+import {
+  canCreateAct,
+  inspectionDocumentIndicators,
+  isInspectionDocumentSort,
+  prioritizeInspectionDocuments,
+  summarizeInspectionDocuments,
+} from './quality-workflow-indicators'
+import { useWorkspaceViewState } from './workspace-view'
 import {
   OperationPagination,
   useOperationPagination,
@@ -568,15 +576,6 @@ function InspectionMaterialPicker({
   )
 }
 
-function canCreateAct(entry: InspectionCase) {
-  const rev = currentInspection(entry)
-  return (
-    !!rev.zni.signedOn &&
-    !rev.avk &&
-    rev.zni.rows.some((row) => (row.accepted ?? 0) > 0)
-  )
-}
-
 function InspectionActPicker({
   cases,
   onSelect,
@@ -657,7 +656,6 @@ export function InspectionWorkspace({
   search = '',
   focusId,
   listView = emptyOperationListView,
-  priority = emptyReceiptPriority,
   issues = [],
 }: Props & {
   issues?: ReadonlyArray<{ receiptId?: unknown }>
@@ -665,13 +663,21 @@ export function InspectionWorkspace({
   search?: string
   focusId?: string
   listView?: OperationListView
-  priority?: ReceiptPriority
 }) {
   const suggestNumber = useDocumentNumber()
   const printing = useQualityPrint(prepare)
   const [choosingAct, setChoosingAct] = useState(false)
   const [editorKind, setEditorKind] = useState<'zni' | 'avk'>('zni')
   const workflow = value ?? emptyQualityWorkflow()
+  const [documentSort, setDocumentSort] = useWorkspaceViewState(
+    'quality.documentSort',
+    '',
+    isInspectionDocumentSort,
+  )
+  const documentCounts = useMemo(
+    () => summarizeInspectionDocuments(workflow.cases),
+    [workflow.cases],
+  )
   const numberMaterials = useMemo(
     () => indexInspectionMaterials(lines),
     [lines],
@@ -802,8 +808,16 @@ export function InspectionWorkspace({
       })
     }
   }, [focusId, value])
-  const visible = prioritizeReceiptRows(
-    workflow.cases.filter((entry) => {
+  const casesByDate = useMemo(
+    () =>
+      sortOperationsNewestFirst(
+        workflow.cases,
+        (entry) => currentInspection(entry).zni.date,
+      ),
+    [workflow.cases],
+  )
+  const visible = prioritizeInspectionDocuments(
+    casesByDate.filter((entry) => {
       const rows = currentInspection(entry).zni.rows
       const materialMatches = rows.some((row) =>
         matchesOperationMaterial(
@@ -834,13 +848,17 @@ export function InspectionWorkspace({
         (inspectionMatches(entry, search) || materialSearchMatches)
       )
     }),
-    priority,
-    (entry) => currentInspection(entry).zni.rows.map((row) => row.receiptId),
+    documentSort,
   )
   const pagination = useOperationPagination(
     'quality',
     visible,
-    JSON.stringify([search, listView]),
+    JSON.stringify([
+      search,
+      listView.cipher,
+      listView.materialType,
+      documentSort,
+    ]),
     {
       key: focusId,
       index: visible.findIndex((entry) =>
@@ -851,6 +869,29 @@ export function InspectionWorkspace({
 
   return (
     <section className="grid gap-4 p-4">
+      <div className="-mx-4 -mt-4 border-b bg-white p-4">
+        <div
+          role="group"
+          aria-label="Сортировка: Входной контроль"
+          className="grid grid-cols-2 gap-2 lg:grid-cols-4 2xl:grid-cols-7"
+        >
+          {inspectionDocumentIndicators.map(({ key, label, details }) => (
+            <OperationIndicatorBadge
+              key={key}
+              label={label}
+              value={`${fmt(documentCounts[key])} док.`}
+              details={details}
+              subject="документы"
+              active={documentSort === key}
+              onClick={() => setDocumentSort(documentSort === key ? '' : key)}
+            />
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-slate-500">
+          По всем документам, только текущие редакции. Нажмите на показатель,
+          чтобы поднять соответствующие документы вверх списка.
+        </p>
+      </div>
       <div
         ref={pagination.containerRef}
         className="flex scroll-mt-[32rem] flex-wrap gap-3 md:scroll-mt-48 xl:scroll-mt-32"

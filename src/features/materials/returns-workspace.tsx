@@ -16,6 +16,7 @@ import {
   emptyReceiptPriority,
   matchesOperationMaterial,
   operationMaterial,
+  sortOperationsNewestFirst,
 } from './operation-list-view'
 import type { OperationListView, ReceiptPriority } from './operation-list-view'
 import {
@@ -177,9 +178,18 @@ export function ReturnsWorkspace({
         }
       })
     return {
-      pending: pendingRows,
-      stock: stockRows,
-      history: historyRows,
+      pending: sortOperationsNewestFirst(
+        pendingRows,
+        ({ entry: inspection }) => {
+          const zni = currentInspection(inspection).zni
+          return zni.signedOn || zni.date
+        },
+      ),
+      stock: sortOperationsNewestFirst(
+        stockRows,
+        ({ receipt }) => receipt.date,
+      ),
+      history: sortOperationsNewestFirst(historyRows, ({ item }) => item.date),
       describe: describeReceipt,
       available: availableByReceipt,
     }

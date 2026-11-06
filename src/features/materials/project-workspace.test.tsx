@@ -1254,6 +1254,170 @@ function expandReceiptGroups() {
     fireEvent.click(button)
   }
 }
+
+function datedOperationsWorkspace() {
+  const workspace = searchableOperationsWorkspace()
+  for (const [index, request] of workspace.materialRequests.entries())
+    request.date = ['2026-09-30', '2026-10-01'][index]!
+  for (const [index, receipt] of workspace.materialReceipts.entries())
+    receipt.date = ['2026-10-20', '2026-11-01'][index]!
+  for (const [index, entry] of workspace.qualityWorkflow!.cases.entries()) {
+    const revision = currentInspection(entry)
+    const date = ['2026-10-30', '2026-11-02'][index]!
+    Object.assign(revision.zni, { date, inspectionDate: date, signedOn: date })
+    Object.assign(revision.avk!, { date, signedOn: date })
+  }
+  for (const [index, issue] of workspace.materialIssues.entries())
+    issue.date = ['2026-10-31', '2026-11-03'][index]!
+  return workspace
+}
+
+it.each([
+  ['Заявки', 'requests'],
+  ['Входной контроль', 'quality'],
+  ['Выдача', 'issues'],
+] as const)(
+  'orders %s by document date and restores that order after turning a badge off',
+  async (label, tab) => {
+    const workspace = datedOperationsWorkspace()
+    if (tab === 'quality') {
+      currentInspection(workspace.qualityWorkflow!.cases[1]!).avk = null
+      workspace.materialIssues = workspace.materialIssues.filter(
+        (issue) => issue.receiptId !== 'receipt-beta',
+      )
+    }
+    workspace.qualityWorkflow = recordSurplusReturn(
+      workspace.qualityWorkflow!,
+      workspace.materialReceipts as unknown as Parameters<
+        typeof recordSurplusReturn
+      >[1],
+      workspace.materialIssues as unknown as Parameters<
+        typeof recordSurplusReturn
+      >[2],
+      [{ receiptId: 'receipt-legacy', quantity: 0.25 }],
+      '2026-11-04',
+    )
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(
+      screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+    )
+    const betaId =
+      tab === 'quality'
+        ? `inspection-case-${workspace.qualityWorkflow.cases[1]!.id}`
+        : tab === 'issues'
+          ? String(workspace.materialIssues[1]!.id)
+          : 'REQUEST-BETA'
+    const order = async () => {
+      if (tab === 'issues') {
+        const api = await operationGridApi('issues')
+        return [0, 1].map((i) => api.getDisplayedRowAtIndex(i)!.id!)
+      }
+      return Array.from(
+        document.querySelectorAll(
+          tab === 'quality'
+            ? '[id^="inspection-case-"]'
+            : '[id^="operation-requests-"]',
+        ),
+      ).map((card) => (tab === 'quality' ? card.id : card.textContent))
+    }
+    expect((await order())[0]).toContain(betaId)
+    const badge = within(
+      screen.getByRole('group', { name: `Сортировка: ${label}` }),
+    ).getByRole('button', {
+      name: tab === 'quality' ? /^Подписано АВК/ : /^Возвращено/,
+    })
+    fireEvent.click(badge)
+    await waitFor(async () => expect((await order())[1]).toContain(betaId))
+    fireEvent.click(badge)
+    await waitFor(async () => expect((await order())[0]).toContain(betaId))
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  },
+)
+
+it('orders all return views by their relevant dates rather than insertion order', async () => {
+  const workspace = datedOperationsWorkspace()
+  workspace.materialIssues = []
+  for (const entry of workspace.qualityWorkflow!.cases) {
+    const revision = currentInspection(entry)
+    for (const row of revision.zni.rows) {
+      row.accepted = row.presented - 0.5
+      row.result = 'remarks'
+      row.remarks = 'Повреждение'
+    }
+    revision.avk = null
+  }
+  for (const [index, date] of [
+    [1, '2026-11-05'],
+    [0, '2026-11-04'],
+  ] as const)
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow!,
+      workspace.qualityWorkflow!.cases[index]!.id,
+      [
+        {
+          receiptId: String(workspace.materialReceipts[index]!.id),
+          quantity: 0.25,
+        },
+      ],
+      date,
+    )
+  const before = structuredClone(workspace)
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
+  let api = await operationGridApi('returns-pending')
+  expect(api.getDisplayedRowAtIndex(0)!.data.row.receiptId).toBe('receipt-beta')
+  fireEvent.click(
+    screen.getByRole('button', { name: /^Все полученные материалы/ }),
+  )
+  api = await operationGridApi('returns-stock')
+  expect(api.getDisplayedRowAtIndex(0)!.id).toBe('receipt-beta')
+  fireEvent.click(screen.getByRole('button', { name: /^История возвратов/ }))
+  api = await operationGridApi('returns-history')
+  expect(
+    [0, 1].map((i) => api.getDisplayedRowAtIndex(i)!.data.item.date),
+  ).toEqual(['2026-11-05', '2026-11-04'])
+  expect(workspace).toEqual(before)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+
+it.each(['issue', 'return', 'inspection'] as const)(
+  'orders overview materials by the latest %s date without changing their records',
+  (kind) => {
+    const workspace = datedOperationsWorkspace()
+    if (kind === 'issue') workspace.materialIssues[0]!.date = '2026-11-05'
+    if (kind === 'return')
+      workspace.qualityWorkflow = recordSurplusReturn(
+        workspace.qualityWorkflow!,
+        workspace.materialReceipts as unknown as Parameters<
+          typeof recordSurplusReturn
+        >[1],
+        workspace.materialIssues as unknown as Parameters<
+          typeof recordSurplusReturn
+        >[2],
+        [{ receiptId: 'receipt-legacy', quantity: 0.25 }],
+        '2026-11-05',
+      )
+    if (kind === 'inspection') {
+      const revision = currentInspection(workspace.qualityWorkflow!.cases[0]!)
+      Object.assign(revision.zni, {
+        date: '2026-11-05',
+        inspectionDate: '2026-11-05',
+        signedOn: null,
+      })
+      revision.avk = null
+      workspace.materialIssues = workspace.materialIssues.slice(1)
+    }
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+    const cards = document.querySelectorAll('[id^="operation-overview-"]')
+    expect(cards[0]!.querySelector('button')?.textContent).toMatch(/^Альфа/)
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  },
+)
 function openReceipt() {
   fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
   fireEvent.click(
@@ -1896,6 +2060,14 @@ describe('receipts grouped by material', () => {
     const gridRoot = gridElement.closest('[grid-id]')!.parentElement!
     await waitFor(() => expect(getGridApi(gridRoot)).toBeTruthy())
     const api = getGridApi(gridRoot)!
+    // The API exists before gridReady; wait until initial focus has cleared filters.
+    await waitFor(() =>
+      expect(
+        card.getByRole<HTMLButtonElement>('button', {
+          name: /^Экспорт Excel:/,
+        }).disabled,
+      ).toBe(false),
+    )
     await waitFor(() =>
       expect(
         gridElement
@@ -1903,11 +2075,11 @@ describe('receipts grouped by material', () => {
           ?.classList.contains('operations-grid-focused'),
       ).toBe(true),
     )
-    act(() =>
+    await act(async () => {
       api.setFilterModel({
         quantity: { filterType: 'number', type: 'lessThan', filter: 2 },
-      }),
-    )
+      })
+    })
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
     fireEvent.click(card.getByRole('button', { name: 'Документы: 2' }))
     dialog = screen.getByRole('dialog', { name: 'Документы получения' })
@@ -2154,6 +2326,90 @@ describe('receipts grouped by material', () => {
     ]
     return workspace
   }
+
+  it('orders receipt cards and their rows by newest receipt date, restores date first in saved layouts and preserves badge priority', async () => {
+    const workspace = workspaceWithReceipts()
+    workspace.materialReceipts[2]!.date = '2026-11-02'
+    workspace.materialReceipts[2]!.quantity = 4
+    workspace.materialReceipts.push({
+      ...legacyReceipt(),
+      id: 'receipt-latest-alpha',
+      date: '2026-11-01',
+      quantity: 1,
+    })
+    addReceiptDocuments(workspace)
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+    const cardOrder = () =>
+      Array.from(document.querySelectorAll('[id^="operation-receipts-"]')).map(
+        (card) => card.querySelector('button[aria-expanded]')?.textContent,
+      )
+    const byDate = [
+      expect.stringMatching(/^Бета/),
+      expect.stringMatching(/^Альфа/),
+      expect.stringMatching(/^Замена Альфы/),
+    ]
+    expect(cardOrder()).toEqual(byDate)
+    const remainingBadge = within(
+      screen.getByRole('group', { name: 'Сортировка: Получение' }),
+    ).getByRole('button', { name: /^Осталось получить/ })
+    fireEvent.click(remainingBadge)
+    expect(cardOrder()).toEqual([byDate[1], byDate[2], byDate[0]])
+    fireEvent.click(remainingBadge)
+    expect(cardOrder()).toEqual(byDate)
+    const alphaToggle = screen.getByRole('button', {
+      name: /^Альфа/,
+      expanded: false,
+    })
+    const toggleAlpha = () => fireEvent.click(alphaToggle)
+    const receiptGridApi = async () => {
+      const grid = await screen.findByRole('grid')
+      const root = grid.closest('[grid-id]')!.parentElement!
+      await waitFor(() => expect(getGridApi(root)).toBeTruthy())
+      return getGridApi(root)!
+    }
+    toggleAlpha()
+    let api = await receiptGridApi()
+    expect(api.getAllDisplayedColumns()[0]!.getColId()).toBe('date')
+    expect([0, 1].map((i) => api.getDisplayedRowAtIndex(i)!.id)).toEqual([
+      'receipt-latest-alpha',
+      'receipt-legacy',
+    ])
+    // Simulate a layout saved before the date column moved to the beginning.
+    act(() =>
+      api.applyColumnState({
+        state: [
+          { colId: 'request' },
+          { colId: 'name', width: 333 },
+          { colId: 'date' },
+          { colId: 'certificate', hide: true },
+        ],
+        applyOrder: true,
+      }),
+    )
+    toggleAlpha()
+    toggleAlpha()
+    api = await receiptGridApi()
+    expect(
+      api
+        .getAllDisplayedColumns()
+        .slice(0, 3)
+        .map((col) => col.getColId()),
+    ).toEqual(['date', 'request', 'name'])
+    expect(
+      api.getColumnState().find((col) => col.colId === 'name')?.width,
+    ).toBe(333)
+    expect(
+      api.getColumnState().find((col) => col.colId === 'certificate')?.hide,
+    ).toBe(true)
+    expect([0, 1].map((i) => api.getDisplayedRowAtIndex(i)!.id)).toEqual([
+      'receipt-latest-alpha',
+      'receipt-legacy',
+    ])
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
 
   it('groups the same material across dates, invoices, requests and ciphers while keeping every receipt row', async () => {
     const workspace = workspaceWithReceipts()
@@ -2980,9 +3236,7 @@ describe('receipt import dates and editing', () => {
     expect(api.getRowNode('6-request-conversion')!.data.row.row.appNumber).toBe(
       'Н-Последний',
     )
-    expect(within(dialog).getByRole('status').textContent).toBe(
-      'receipt-dates.xlsx',
-    )
+    expect(within(dialog).getByText('receipt-dates.xlsx')).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
@@ -3250,6 +3504,13 @@ describe('workspace user workflows', () => {
     'combines badge priority and material filters in %s without changing business data',
     async (label, tab, searchLabel) => {
       const workspace = searchableOperationsWorkspace()
+      if (tab === 'quality') {
+        currentInspection(workspace.qualityWorkflow!.cases[1]!).avk!.signedOn =
+          null
+        workspace.materialIssues = workspace.materialIssues.filter(
+          (issue) => issue.receiptId !== 'receipt-beta',
+        )
+      }
       workspace.materialIssues[0]!.quantity = 2
       workspace.lines[1]!.normativeDocument = 'ГОСТ-БЕТА'
       let view = mount(workspace)
@@ -3283,26 +3544,47 @@ describe('workspace user workflows', () => {
       ).getAllByRole('button')
       expect(
         indicators.map((button) =>
-          button.textContent.replace(/\d[\d\s]* поз\.$/, ''),
+          button.textContent.replace(/\d[\d\s]* (поз|док)\.$/, ''),
         ),
-      ).toEqual([
-        'Получено',
-        'Осталось получить',
-        'Ожидает инспекции',
-        'Ожидает АВК',
-        'Доступно к выдаче',
-        'К возврату',
-        'Возвращено',
-      ])
+      ).toEqual(
+        tab === 'quality'
+          ? [
+              'Создано ЗНИ',
+              'Подписано ЗНИ',
+              'Осталось подписать ЗНИ',
+              'Создано АВК',
+              'Подписано АВК',
+              'Осталось подписать АВК',
+              'Осталось создать АВК',
+            ]
+          : [
+              'Получено',
+              'Осталось получить',
+              'Ожидает инспекции',
+              'Ожидает АВК',
+              'Доступно к выдаче',
+              'К возврату',
+              'Возвращено',
+            ],
+      )
       expect(
-        indicators.every((button) => /\d+ поз\.$/.test(button.textContent)),
+        indicators.every((button) =>
+          (tab === 'quality' ? /\d+ док\.$/ : /\d+ поз\.$/).test(
+            button.textContent,
+          ),
+        ),
       ).toBe(true)
       const initial = await content()
       expect(initial).toHaveLength(2)
       const badge = () =>
         within(
           screen.getByRole('group', { name: `Сортировка: ${label}` }),
-        ).getByRole('button', { name: /^Доступно к выдаче/ })
+        ).getByRole('button', {
+          name:
+            tab === 'quality'
+              ? /^Осталось подписать АВК/
+              : /^Доступно к выдаче/,
+        })
       fireEvent.click(badge())
       await waitFor(async () => {
         const sorted = await content()
