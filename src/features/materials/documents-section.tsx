@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
+import { DocumentFileInput } from './document-file-input'
 import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { materialsColumnFilter } from './materials-column-filter'
 import { projectGridLocale } from './project-grid-locale'
@@ -86,6 +87,8 @@ function DocumentDialog({
     <dialog
       ref={ref}
       onCancel={(event) => {
+        // A file input also emits a bubbling cancel event when its picker closes.
+        if (event.target !== event.currentTarget) return
         event.preventDefault()
         onClose()
       }}
@@ -323,6 +326,7 @@ export function DocumentsSection({
     return (catalog?.materials ?? []).filter((row) => ids.has(row.id))
   }, [catalog, selection, selectedMaterials])
   function startUpload(doc: RegistryDocument | 'new') {
+    setNotice('')
     setUploadDocument(doc)
     setUploadFile(null)
     setUploadLabel('')
@@ -584,19 +588,11 @@ export function DocumentsSection({
                 ) : (
                   <p>{uploadDocument.label}</p>
                 )}
-                <label className="grid gap-2 text-sm">
-                  Файл оригинала
-                  <input
-                    type="file"
-                    accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx"
-                    onChange={(event) =>
-                      setUploadFile(event.target.files?.[0] ?? null)
-                    }
-                  />
-                </label>
-                <p className="text-xs text-slate-500">
-                  PDF, PNG, JPEG, Excel или Word · до 20 МБ
-                </p>
+                <DocumentFileInput
+                  file={uploadFile}
+                  onChange={setUploadFile}
+                  disabled={Boolean(busy)}
+                />
               </>
             ) : (
               <>
