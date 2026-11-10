@@ -182,15 +182,10 @@ describe('document originals and on-demand archives', () => {
       const names = Object.keys(zip.files).filter(
         (name) => !zip.files[name]!.dir,
       )
-      expect(names.filter((name) => name.includes('Оригиналы/'))).toHaveLength(
-        1,
-      )
-      expect(
-        names.filter((name) => name.endsWith('/Документ.pdf')),
-      ).toHaveLength(1)
-      expect(
-        names.filter((name) => name.endsWith('/Документ.xlsx')),
-      ).toHaveLength(1)
+      expect(names.filter((name) => name.startsWith('АПП/'))).toHaveLength(1)
+      expect(names).toContain(`ЗНИ/${zni.label}.pdf`)
+      expect(names).toContain(`ЗНИ/${zni.label}.xlsx`)
+      expect(names.every((name) => name.split('/').length <= 2)).toBe(true)
       expect(names).toContain('Реестр.xlsx')
     }
     expect(f.render).toHaveBeenCalledTimes(2)
@@ -257,7 +252,10 @@ describe('document originals and on-demand archives', () => {
   })
   it('prints the entire saved request when only one of its materials was selected', async () => {
     const f = await fixture()
-    f.workspace.materialRequests[1]!.number = 'ЗП-1'
+    for (const request of f.workspace.materialRequests) {
+      request.number = 'ЗП-10-26-0002-Соединительные детали трубопроводов'
+      request.date = '2026-10-28'
+    }
     f.workspace.lines[1]!.normativeDocument = 'ГОСТ другой'
     const registry = buildDocumentRegistry(f.workspace),
       doc = registry.documents.find((entry) => entry.kind === 'request')!
@@ -281,9 +279,10 @@ describe('document originals and on-demand archives', () => {
       convert: async () => pdf,
     })
     const zip = await JSZip.loadAsync(archive.bytes)
-    const workbookFile = Object.keys(zip.files).find((name) =>
-      name.endsWith('/Документ.xlsx'),
-    )!
+    const basename =
+      'Заявки/ЗП-10-26-0002-Соединительные детали трубопроводов от 28.10.2026'
+    const workbookFile = `${basename}.xlsx`
+    expect(zip.file(`${basename}.pdf`)).not.toBeNull()
     expect(
       (
         await readPrintWorkbook(
@@ -291,6 +290,66 @@ describe('document originals and on-demand archives', () => {
         )
       ).worksheets[0]!.rowCount,
     ).toBeGreaterThan(2)
+  })
+  it('keeps colliding document names and multiple originals in flat category folders without overwriting files', async () => {
+    const f = await fixture(),
+      registry = buildDocumentRegistry(f.workspace)
+    const first = registry.documents.find((doc) => doc.kind === 'request')!
+    first.label = 'Общий/документ'
+    const second = {
+      ...first,
+      id: 'second-request',
+      label: 'общий:документ',
+      target: { kind: 'request' as const, entryId: 'second-request' },
+    }
+    registry.documents = [first, second]
+    const archive = await buildDocumentArchive({
+      registry,
+      manifest: {
+        revision: 'test',
+        documents: [],
+        files: ['original-one', 'original-two'].map((id) => ({
+          id,
+          documentId: first.id,
+          name: 'скан.PDF',
+          size: 20,
+          uploadedAt: '2026-10-28T12:00:00Z',
+        })),
+      },
+      materialIds: first.materialIds,
+      documentIds: [first.id, second.id],
+      render: async (target) =>
+        Buffer.from(target.kind === 'request' ? target.entryId : ''),
+      readFile: async (id) => ({ bytes: Buffer.from(id) }),
+      convert: async (bytes) => Buffer.concat([pdf, bytes]),
+    })
+    const zip = await JSZip.loadAsync(archive.bytes)
+    const names = Object.keys(zip.files).filter((name) => !zip.files[name]!.dir)
+    expect(names.filter((name) => name.startsWith('Заявки/'))).toHaveLength(6)
+    expect(names.every((name) => name.split('/').length <= 2)).toBe(true)
+    for (const extension of ['pdf', 'xlsx']) {
+      expect(zip.file(`Заявки/Общий-документ.${extension}`)).not.toBeNull()
+      expect(zip.file(`Заявки/общий-документ (2).${extension}`)).not.toBeNull()
+    }
+    expect(
+      await zip.file('Заявки/общий-документ (2).xlsx')!.async('string'),
+    ).toBe('second-request')
+    expect(
+      await zip.file('Заявки/Общий-документ — оригинал.pdf')!.async('string'),
+    ).toBe('original-one')
+    expect(
+      await zip
+        .file('Заявки/Общий-документ — оригинал (2).pdf')!
+        .async('string'),
+    ).toBe('original-two')
+    const index = await readPrintWorkbook(
+      await zip.file('Реестр.xlsx')!.async('nodebuffer'),
+    )
+    index.worksheets[0]!.eachRow((row, number) => {
+      if (number === 1) return
+      for (const path of String(row.getCell(5).value).split('\n'))
+        expect(zip.file(path)).not.toBeNull()
+    })
   })
   it('does not export a document outside selected materials', async () => {
     const f = await fixture()

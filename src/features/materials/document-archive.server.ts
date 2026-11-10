@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { extname } from 'node:path'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
 import { documentCategories } from './document-registry'
@@ -141,6 +141,34 @@ export async function buildDocumentArchive(input: ArchiveInput) {
     warnings: string[] = []
   const paths = new Map<string, string[]>(),
     statuses = new Map<string, string[]>()
+  const reservedPaths = new Set<string>()
+  const reservePaths = (
+    folder: string,
+    label: string,
+    extensions: string[],
+  ) => {
+    // Leave room for extensions and duplicate suffixes on filesystems with a 255-byte limit.
+    let name = ''
+    for (const character of safeDocumentFilename(label)) {
+      if (Buffer.byteLength(name + character) > 220) break
+      name += character
+    }
+    name = name.replace(/[. ]+$/, '') || 'Документ'
+    let counter = 1
+    let candidates: string[]
+    do {
+      const suffix = counter === 1 ? '' : ` (${counter})`
+      candidates = extensions.map(
+        (extension) => `${folder}/${name}${suffix}${extension}`,
+      )
+      counter++
+    } while (
+      candidates.some((path) => reservedPaths.has(path.toLocaleLowerCase('ru')))
+    )
+    for (const path of candidates)
+      reservedPaths.add(path.toLocaleLowerCase('ru'))
+    return candidates
+  }
   let bytesUsed = 0
   const deadline = Date.now() + archiveLimits.milliseconds
   const put = (path: string, bytes: Buffer) => {
@@ -155,15 +183,16 @@ export async function buildDocumentArchive(input: ArchiveInput) {
   }
   for (const doc of docs) {
     if (input.signal?.aborted) throw new PrintError('Скачивание отменено.', 499)
-    const suffix = createHash('sha256')
-      .update(doc.id)
-      .digest('hex')
-      .slice(0, 12)
-    const folder = `${documentCategories[doc.kind]}/${safeDocumentFilename(doc.label).slice(0, 95)}-${suffix}`
+    const folder = documentCategories[doc.kind]
     const docPaths: string[] = []
     paths.set(doc.id, docPaths)
     statuses.set(doc.id, [])
     if (doc.target) {
+      // Reserve the pair together so PDF and Excel keep matching document names.
+      const [excelPath, pdfPath] = reservePaths(folder, doc.label, [
+        '.xlsx',
+        '.pdf',
+      ]) as [string, string]
       let excel: Buffer | null = null
       try {
         excel = await input.render(doc.target)
@@ -174,9 +203,8 @@ export async function buildDocumentArchive(input: ArchiveInput) {
         )
       }
       if (excel) {
-        const path = `${folder}/Документ.xlsx`
-        put(path, excel)
-        docPaths.push(path)
+        put(excelPath, excel)
+        docPaths.push(excelPath)
         let pdf: Buffer | null = null
         try {
           const remaining = deadline - Date.now()
@@ -195,7 +223,6 @@ export async function buildDocumentArchive(input: ArchiveInput) {
           )
         }
         if (pdf) {
-          const pdfPath = `${folder}/Документ.pdf`
           put(pdfPath, pdf)
           docPaths.push(pdfPath)
         }
@@ -209,7 +236,11 @@ export async function buildDocumentArchive(input: ArchiveInput) {
         warning(doc, `Оригинал недоступен: ${file.name}`)
         continue
       }
-      const path = `${folder}/Оригиналы/${file.id.slice(0, 8)}-${safeDocumentFilename(file.name)}`
+      const [path] = reservePaths(
+        folder,
+        `${doc.label}${doc.target ? ' — оригинал' : ''}`,
+        [extname(safeDocumentFilename(file.name)).toLowerCase()],
+      ) as [string]
       put(path, original)
       docPaths.push(path)
     }
