@@ -1,7 +1,13 @@
+import { netIssued, quarantinedReturn, siteReturned } from './material-issues'
+import type { IssueMovement } from './material-issues'
 import {
   approvedCustomerReturnTotals,
+  acceptedAfterInspection,
   customerReturnTotals,
   currentInspection,
+  pendingCustomerReturns,
+  rejectedReturnsByCase,
+  rejectedStockTotals,
 } from './quality-workflow'
 import type { QualityWorkflow, InspectionRow } from './quality-workflow'
 import { getOperationAlternative, getOperationConversion } from './domain'
@@ -21,10 +27,13 @@ export function receiptBalances(
   receipts: Array<Receipt>,
   workflow: QualityWorkflow | undefined,
   controls: Array<{ receiptId: string; quantity: number; status: string }>,
-  issues: Array<{ receiptId: string; quantity: number }>,
+  issues: Array<IssueMovement>,
 ) {
+  const rejectedStock = rejectedStockTotals(workflow)
   const returned = customerReturnTotals(workflow)
-  const rejectedReturned = customerReturnTotals(workflow, 'rejected')
+  const rejectedReturned = workflow
+    ? rejectedReturnsByCase(workflow)
+    : undefined
   const approvedReturned = approvedCustomerReturnTotals(workflow)
   const uninspectedReturned = new Map<string, number>()
   const acceptedReturned = new Map<string, number>()
@@ -49,13 +58,28 @@ export function receiptBalances(
         awaitingAct: 0,
         availableToIssue: 0,
         stock: 0,
+        returnedFromSite: 0,
+        quarantined: 0,
+        issuedBeforeInspection: 0,
+        availableBeforeInspection: 0,
       },
     ]),
   )
   const decided = new Map<string, number>(),
     accepted = new Map<string, number>(),
-    rejected = new Map<string, number>()
+    toReturn = new Map<string, number>()
   for (const entry of workflow?.cases ?? []) {
+    // Match the return list: a new unsigned revision pauses returns for this case.
+    for (const item of pendingCustomerReturns(
+      workflow!,
+      entry,
+      rejectedReturned,
+    )) {
+      toReturn.set(
+        item.row.receiptId,
+        precise((toReturn.get(item.row.receiptId) ?? 0) + item.quantity),
+      )
+    }
     const latest = currentInspection(entry)
     const revision = latest.zni.signedOn
       ? latest
@@ -68,14 +92,9 @@ export function receiptBalances(
       )
       accepted.set(
         row.receiptId,
-        precise((accepted.get(row.receiptId) ?? 0) + (row.accepted ?? 0)),
-      )
-      rejected.set(
-        row.receiptId,
         precise(
-          (rejected.get(row.receiptId) ?? 0) +
-            row.presented -
-            (row.accepted ?? 0),
+          (accepted.get(row.receiptId) ?? 0) +
+            acceptedAfterInspection(revision, row),
         ),
       )
     }
@@ -89,16 +108,23 @@ export function receiptBalances(
         precise((approved.get(control.receiptId) ?? 0) + control.quantity),
       )
     }
-  for (const issue of issues)
+  for (const issue of issues) {
+    const balance = result.get(issue.receiptId)
+    if (balance) {
+      balance.returnedFromSite = precise(
+        balance.returnedFromSite + siteReturned(issue),
+      )
+      balance.quarantined = precise(
+        balance.quarantined + quarantinedReturn(issue),
+      )
+    }
     issued.set(
       issue.receiptId,
-      precise((issued.get(issue.receiptId) ?? 0) + issue.quantity),
+      precise((issued.get(issue.receiptId) ?? 0) + netIssued(issue)),
     )
+  }
   for (const [id, balance] of result) {
-    balance.toReturn = Math.max(
-      0,
-      precise((rejected.get(id) ?? 0) - (rejectedReturned.get(id) ?? 0)),
-    )
+    balance.toReturn = toReturn.get(id) ?? 0
     balance.awaitingInspection = Math.max(
       0,
       precise(
@@ -122,10 +148,28 @@ export function receiptBalances(
         Math.min(
           balance.retained,
           (approved.get(id) ?? 0) - (approvedReturned.get(id) ?? 0),
-        ) - (issued.get(id) ?? 0),
+        ) -
+          (issued.get(id) ?? 0) -
+          balance.quarantined,
       ),
     )
     balance.stock = precise(balance.retained - (issued.get(id) ?? 0))
+    balance.availableBeforeInspection = Math.max(
+      0,
+      precise(
+        balance.stock -
+          (rejectedStock.get(id) ?? 0) -
+          balance.quarantined -
+          balance.availableToIssue,
+      ),
+    )
+    balance.issuedBeforeInspection = Math.max(
+      0,
+      precise(
+        (issued.get(id) ?? 0) -
+          ((approved.get(id) ?? 0) - (approvedReturned.get(id) ?? 0)),
+      ),
+    )
   }
   return result
 }

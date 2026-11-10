@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { acceptFixture } from './quality-workflow.fixtures'
+import { scaledWorkspace } from './scalability.fixtures'
 import {
   inspectionApprovals,
   validateQualityWorkspace,
@@ -15,80 +15,9 @@ import { normalizeImportRow } from './domain'
 import { applyMaterialImportRows } from './project-material-data'
 import { toWorkspaceSnapshot } from './workspace-snapshot'
 import { createWorkspaceStore } from './workspace-snapshot.server'
+import { buildDocumentRegistry } from './document-registry'
 
 // Synthetic fixtures only; no production file, browser cache or database access.
-function scaledWorkspace(count: number) {
-  const seed = acceptFixture(8)
-  const workspace = {
-    ...seed,
-    lines: [] as typeof seed.lines,
-    materialRequests: [] as typeof seed.materialRequests,
-    materialReceipts: [] as typeof seed.materialReceipts,
-    materialIssues: [] as typeof seed.materialIssues,
-    qualityWorkflow: {
-      ...seed.qualityWorkflow,
-      cases: [] as typeof seed.qualityWorkflow.cases,
-      receiptDocuments: [] as NonNullable<
-        typeof seed.qualityWorkflow.receiptDocuments
-      >,
-      customerReturns: [] as NonNullable<
-        typeof seed.qualityWorkflow.customerReturns
-      >,
-    },
-  }
-  for (let index = 0; index < count; index++) {
-    const lineId = `line-${index}`,
-      receiptId = `receipt-${index}`,
-      requestId = `request-${index}`
-    const document = {
-      ...seed.qualityWorkflow.receiptDocuments![0]!,
-      id: `app-${index}`,
-      number: `АПП-${index}`,
-    }
-    const entry = structuredClone(seed.qualityWorkflow.cases[0]!)
-    entry.id = `case-${index}`
-    entry.basis = document
-    const revision = entry.revisions[0]!
-    revision.zni.number = `ЗНИ-${index}`
-    revision.avk!.number = `АВК-${index}`
-    Object.assign(revision.zni.rows[0]!, { receiptId, projectLineId: lineId })
-    workspace.lines.push({ ...seed.lines[0], id: lineId })
-    workspace.materialRequests.push({
-      id: requestId,
-      date: revision.zni.date,
-      projectLineId: lineId,
-      quantity: 10,
-    })
-    workspace.materialReceipts.push({
-      ...seed.materialReceipts[0],
-      id: receiptId,
-      projectLineId: lineId,
-      requestId,
-      appDocumentId: document.id,
-    })
-    workspace.materialIssues.push({
-      id: `issue-${index}`,
-      date: revision.avk!.signedOn!,
-      receiptId,
-      projectLineId: lineId,
-      quantity: 1,
-    })
-    workspace.qualityWorkflow.cases.push(entry)
-    workspace.qualityWorkflow.receiptDocuments.push(document)
-    workspace.qualityWorkflow.customerReturns.push({
-      id: `return-${index}`,
-      kind: 'rejected',
-      receiptId,
-      caseId: entry.id,
-      revision: 1,
-      quantity: 2,
-      date: revision.zni.signedOn!,
-      documentNumber: '',
-      note: '',
-    })
-  }
-  return workspace
-}
 
 describe('isolated accounting scale', () => {
   it('keeps receipt, inspection, issue and return quantities consistent across 1000 positions', () => {
@@ -120,7 +49,16 @@ describe('isolated accounting scale', () => {
     'measures validation, balances, document lookup and snapshot copies at the target scale',
     async () => {
       const results: Array<Record<string, number>> = []
-      for (const count of [1000, 5000, 10000]) {
+      const counts = process.env.MATERIALS_SCALE_COUNTS
+        ? process.env.MATERIALS_SCALE_COUNTS.split(',').map(Number)
+        : [1000, 5000, 10000]
+      if (
+        counts.some(
+          (count) => !Number.isSafeInteger(count) || count < 1 || count > 50000,
+        )
+      )
+        throw new Error('Scale counts must be integers from 1 to 50000')
+      for (const count of counts) {
         const workspace = scaledWorkspace(count)
         const times: Record<string, number> = {}
         function measure(name: string, run: () => unknown) {
@@ -170,6 +108,11 @@ describe('isolated accounting scale', () => {
           ),
         )
         measure('snapshotCopyMs', () => toWorkspaceSnapshot(workspace))
+        measure('registryMs', () => {
+          const registry = buildDocumentRegistry(toWorkspaceSnapshot(workspace))
+          expect(registry.materials).toHaveLength(count)
+        })
+        measure('serializeMs', () => JSON.stringify(workspace))
         const directory = await mkdtemp(join(tmpdir(), 'materials-scale-'))
         try {
           const store = createWorkspaceStore(directory)
@@ -186,6 +129,9 @@ describe('isolated accounting scale', () => {
           times.loadMs = Math.round(performance.now() - loadStart)
           expect(restored.workspace?.materialReceipts).toHaveLength(count)
           expect(restored.workspace?.configuredUnits).toContain('кг')
+          times.heapMiB = Math.round(
+            process.memoryUsage().heapUsed / 1024 / 1024,
+          )
         } finally {
           await rm(directory, { recursive: true, force: true })
         }

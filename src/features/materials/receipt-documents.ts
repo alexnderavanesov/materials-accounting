@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { normalizeCalendarDate } from './calendar-date'
+import { documentNumberLabel, normalizeDocumentNumber } from './document-number'
 
 const calendarDate = z
   .string()
@@ -38,8 +39,16 @@ export const emptyReceiptDocumentFields: ReceiptDocumentFields = {
 }
 export const receiptDocumentKindLabel = (kind: ReceiptDocument['kind']) =>
   kind === 'app' ? 'АПП' : 'М-15'
+export function receiptDocumentNumberLabel(
+  document: Pick<ReceiptDocument, 'kind' | 'number'>,
+) {
+  return documentNumberLabel(
+    receiptDocumentKindLabel(document.kind),
+    document.number,
+  )
+}
 export function receiptDocumentLabel(document: ReceiptDocument) {
-  return `${receiptDocumentKindLabel(document.kind)} №${document.number} от ${document.date.split('-').reverse().join('.')}`
+  return `${receiptDocumentNumberLabel(document)} от ${document.date.split('-').reverse().join('.')}`
 }
 export function receiptDocumentKey(
   document: Pick<ReceiptDocument, 'kind' | 'number' | 'date'>,
@@ -94,13 +103,16 @@ export function receiptDocumentFields(
 }
 export function receiptDocumentError(fields: ReceiptDocumentFields) {
   for (const kind of ['app', 'm15'] as const) {
-    const number = fields[`${kind}Number`].trim(),
+    const number = normalizeDocumentNumber(fields[`${kind}Number`]),
       date = fields[`${kind}Date`]
     if (!number && !date) continue
     if (!number || !calendarDate.safeParse(date).success)
       return `Укажите номер и корректную дату ${receiptDocumentKindLabel(kind)}.`
   }
-  if (!fields.appNumber.trim() && !fields.m15Number.trim())
+  if (
+    !normalizeDocumentNumber(fields.appNumber) &&
+    !normalizeDocumentNumber(fields.m15Number)
+  )
     return 'Укажите АПП или М-15: номер и дату хотя бы одного документа.'
   return ''
 }
@@ -111,13 +123,25 @@ export function bindReceiptDocuments(
 ) {
   const result: { appDocumentId?: string; m15DocumentId?: string } = {}
   for (const kind of ['app', 'm15'] as const) {
-    const number = fields[`${kind}Number`].trim(),
+    const rawNumber = fields[`${kind}Number`].trim(),
+      number = normalizeDocumentNumber(rawNumber),
       date = fields[`${kind}Date`]
     if (!number) continue
     const input = { kind, number, date }
-    let document = catalog.find(
-      (doc) => receiptDocumentKey(doc) === receiptDocumentKey(input),
-    )
+    // Preserve exact historical links; reuse older prefixed numbers without rewriting them.
+    let document =
+      catalog.find(
+        (doc) =>
+          receiptDocumentKey(doc) ===
+          receiptDocumentKey({ ...input, number: rawNumber }),
+      ) ??
+      catalog.find(
+        (doc) =>
+          receiptDocumentKey({
+            ...doc,
+            number: normalizeDocumentNumber(doc.number),
+          }) === receiptDocumentKey(input),
+      )
     if (!document) {
       document = receiptDocumentSchema.parse({
         ...input,

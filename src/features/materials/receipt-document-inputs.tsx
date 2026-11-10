@@ -1,5 +1,7 @@
 import { useId } from 'react'
 import { Input } from '#/components/ui/input'
+import { normalizeDocumentNumber } from './document-number'
+import { localDateInputValue } from './calendar-date'
 import {
   receiptDocumentKindLabel,
   receiptDocumentLabel,
@@ -44,25 +46,30 @@ export function ReceiptDocumentInputs({
                   className="pl-20"
                   placeholder="Номер"
                   list={`${id}-${kind}`}
-                  value={fields[`${kind}Number`]}
+                  value={normalizeDocumentNumber(fields[`${kind}Number`])}
                   onChange={(event) => {
-                    const number = event.target.value
+                    const number = normalizeDocumentNumber(event.target.value)
                     const matching = options.filter(
-                      (doc) => doc.number === number,
+                      (doc) => normalizeDocumentNumber(doc.number) === number,
                     )
                     onChange({
                       ...fields,
                       [`${kind}Number`]: number,
-                      ...(matching.length === 1
-                        ? { [`${kind}Date`]: matching[0]!.date }
-                        : {}),
+                      [`${kind}Date`]: number
+                        ? matching.length === 1
+                          ? matching[0]!.date
+                          : fields[`${kind}Date`] || localDateInputValue()
+                        : '',
                     })
                   }}
                 />
               </span>
               <datalist id={`${id}-${kind}`}>
                 {options.map((doc) => (
-                  <option key={doc.id} value={doc.number}>
+                  <option
+                    key={doc.id}
+                    value={normalizeDocumentNumber(doc.number)}
+                  >
                     {receiptDocumentLabel(doc)}
                   </option>
                 ))}
@@ -73,7 +80,12 @@ export function ReceiptDocumentInputs({
               <Input
                 aria-label={`Дата ${title}`}
                 type="date"
-                value={fields[`${kind}Date`]}
+                // An unused document shows today's default without requiring
+                // its number or adding it to the receipt until the user types one.
+                value={
+                  fields[`${kind}Date`] ||
+                  (!fields[`${kind}Number`] ? localDateInputValue() : '')
+                }
                 onChange={(event) =>
                   onChange({ ...fields, [`${kind}Date`]: event.target.value })
                 }

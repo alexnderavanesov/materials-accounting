@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
 import { validateQualityWorkspace } from './quality-workflow'
+import { postgresWorkspaceStore } from './workspace-postgres.server'
 import type {
   LoadedWorkspace,
   SaveWorkspaceResult,
@@ -83,7 +84,16 @@ export function createWorkspaceStore(directory: string) {
 }
 
 // process.cwd() stays the project root in both Vite dev and built preview.
-export const projectWorkspaceStore = createWorkspaceStore(
-  process.env.MATERIALS_WORKSPACE_DIR ??
-    resolve(process.cwd(), '.materials-workspace'),
-)
+export const projectWorkspaceStore = {
+  load: () => postgresWorkspaceStore().load(),
+  // Old tabs must reload instead of replacing the new database with an old snapshot.
+  save: (
+    _workspace: WorkspaceSnapshot,
+    _expectedRevision: string | null,
+  ): Promise<SaveWorkspaceResult> =>
+    Promise.reject(
+      new Error(
+        'Хранилище обновлено до PostgreSQL. Скачайте несохранённую копию и обновите страницу.',
+      ),
+    ),
+}

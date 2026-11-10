@@ -9,6 +9,7 @@ import {
   documentsForReceipt,
   receiptDocumentError,
   receiptDocumentFields,
+  receiptDocumentLabel,
   receiptDocuments,
 } from './receipt-documents'
 import {
@@ -88,6 +89,69 @@ function inspect(
   return entry
 }
 describe('document-based receipt and acceptance workflow', () => {
+  it('rejects invalid request quantities and excess receipt quantities on the first save', () => {
+    for (const quantity of [0, -1, '4']) {
+      const workspace = fixture()
+      workspace.materialRequests[0]!.quantity = quantity
+      expect(() => validateQualityWorkspace(workspace)).toThrow(
+        /количество.*заявк/,
+      )
+    }
+    const workspace = fixture()
+    workspace.materialReceipts[0]!.quantity = 5
+    expect(() => validateQualityWorkspace(workspace)).toThrow(
+      /превышают количество по заявке/,
+    )
+  })
+  it.each(['app', 'm15'] as const)(
+    'normalizes pasted %s numbers and reuses historical prefixed documents without rewriting them',
+    (kind) => {
+      const fields = {
+        appNumber: '',
+        appDate: '',
+        m15Number: '',
+        m15Date: '',
+        [`${kind}Number`]: '  № № 221 / A  ',
+        [`${kind}Date`]: '2026-10-22',
+      }
+      const catalog: ReturnType<typeof receiptDocuments> = []
+      const refs = bindReceiptDocuments(fields, catalog)
+      expect(catalog[0]!.number).toBe('221 / A')
+      expect(receiptDocumentLabel(catalog[0]!)).toBe(
+        `${kind === 'app' ? 'АПП' : 'М-15'} №221 / A от 22.10.2026`,
+      )
+      expect(
+        bindReceiptDocuments(
+          { ...fields, [`${kind}Number`]: '221 / A' },
+          catalog,
+        ),
+      ).toEqual(refs)
+      expect(catalog).toHaveLength(1)
+
+      catalog[0]!.number = '№221 / A'
+      const previous = structuredClone(catalog)
+      expect(bindReceiptDocuments(fields, catalog)).toEqual(refs)
+      expect(catalog).toEqual(previous)
+      expect(receiptDocumentLabel(catalog[0]!)).not.toContain('№№')
+      expect(
+        receiptDocumentError({ ...fields, [`${kind}Number`]: '№ №' }),
+      ).toContain('номер')
+    },
+  )
+
+  it('preserves exact existing document links when old numbers differ only by a prefix', () => {
+    const catalog: ReturnType<typeof receiptDocuments> = [
+      { id: 'old', kind: 'app', number: '№1', date: '2026-10-22' },
+      { id: 'other', kind: 'app', number: '1', date: '2026-10-22' },
+    ]
+    const fields = receiptDocumentFields(
+      { id: 'receipt', appDocumentId: 'old' },
+      { receiptDocuments: catalog },
+    )
+    expect(bindReceiptDocuments(fields, catalog).appDocumentId).toBe('old')
+    expect(catalog).toHaveLength(2)
+  })
+
   it('deduplicates document identities, preserves legacy invoices and allows M-15-only receipts', () => {
     const workspace = fixture(),
       receipt = receiptsOf(workspace)[0]!
@@ -329,7 +393,7 @@ describe('document-based receipt and acceptance workflow', () => {
     ).toBe(4)
     expect(workspace.materialReceipts[0]!.quantity).toBe(4)
   })
-  it('keeps the last signed inspection in balances while a revision is in progress', () => {
+  it('keeps historical signed stock balances but pauses returns while a revision is in progress', () => {
     const workspace = acceptFixture(8)
     const initial = receiptBalances(
       receiptsOf(workspace),
@@ -340,14 +404,17 @@ describe('document-based receipt and acceptance workflow', () => {
     workspace.qualityWorkflow.cases[0] = historicalReinspection(
       workspace.qualityWorkflow.cases[0]!,
     )
-    expect(
-      receiptBalances(
-        receiptsOf(workspace),
-        workspace.qualityWorkflow,
-        inspectionApprovals(workspace.qualityWorkflow),
-        [],
-      ),
-    ).toEqual(initial)
+    const updated = receiptBalances(
+      receiptsOf(workspace),
+      workspace.qualityWorkflow,
+      inspectionApprovals(workspace.qualityWorkflow),
+      [],
+    )
+    expect(initial.get('receipt')!.toReturn).toBe(2)
+    expect(updated.get('receipt')).toEqual({
+      ...initial.get('receipt'),
+      toReturn: 0,
+    })
   })
   it('calculates return alternatives with current conversion and historical fallback; rejects quantity reduction below net receipts', () => {
     const workspace = fixture(),

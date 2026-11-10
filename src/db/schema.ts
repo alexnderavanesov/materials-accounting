@@ -357,3 +357,4 @@ export const projectMaterialLineRelations = relations(
 export type DocumentType = (typeof documentTypeEnum.enumValues)[number]
 export type DocumentStatus = (typeof documentStatusEnum.enumValues)[number]
 export type QcStatus = (typeof qcStatusEnum.enumValues)[number]
+export * from './workspace-schema'

@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { documentNumberingSchema } from './document-numbering'
 import { qualityWorkflowSchema } from './quality-workflow'
+import type { WorkspaceSync } from './workspace-protocol'
+import type { WorkspaceUser } from './workspace-auth'
 
 const records = z.array(z.record(z.string(), z.json()))
 
@@ -27,7 +29,9 @@ export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>
 export type LoadedWorkspace = {
   workspace: WorkspaceSnapshot | null
   revision: string | null
-}
+  user?: WorkspaceUser | null
+  authenticationRequired?: boolean
+} & Partial<WorkspaceSync>
 export type SaveWorkspaceResult =
   | { status: 'saved'; revision: string }
   | { status: 'conflict' }

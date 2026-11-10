@@ -37,7 +37,12 @@ import {
   operationGridApi,
 } from './project-grid-test-support'
 import { ProjectWorkspace } from './project-workspace'
-import { saveProjectWorkspaceSnapshot } from './functions'
+import {
+  saveProjectWorkspaceSnapshot,
+  saveProjectWorkspaceChanges,
+  loadProjectWorkspaceChanges,
+} from './functions'
+import { recordKey, workspaceEntities } from './workspace-protocol'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
 import {
   emptyQualityWorkflow,
@@ -49,6 +54,7 @@ import {
   validateQualityWorkspace,
   recordCustomerReturn,
   recordSurplusReturn,
+  rejectInspectionAct,
 } from './quality-workflow'
 import { documentInspectionFixture } from './quality-workflow.fixtures'
 
@@ -57,6 +63,8 @@ vi.setConfig({ testTimeout: 20000 })
 
 vi.mock('./functions', () => ({
   saveProjectWorkspaceSnapshot: vi.fn(),
+  saveProjectWorkspaceChanges: vi.fn(),
+  loadProjectWorkspaceChanges: vi.fn(),
 }))
 const base = () =>
   workspaceSnapshotSchema.parse({
@@ -709,6 +717,12 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
   fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
     target: { value: '15' },
   })
+  expect(
+    within(dialog).getByLabelText<HTMLInputElement>('Дата М-15').value,
+  ).toBe(localDateInputValue())
+  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
+    target: { value: '' },
+  })
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
   )
@@ -924,7 +938,7 @@ it('rejects moving a request past an existing receipt and keeps the editor open'
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
 
-it('blocks an issue before the signed AVK and allows it on the signing day', async () => {
+it('reclassifies an issue when its date moves before the AVK and requires a reason', async () => {
   const workspace = qualityWorkspace()
   mount(workspace)
   const dialog = openIssue()
@@ -937,7 +951,7 @@ it('blocks an issue before the signed AVK and allows it on the signing day', asy
     within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
   )
   expect(within(dialog).getByRole('alert').textContent).toContain(
-    'по подписанным АВК 0',
+    'получателя и причину',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
@@ -1147,7 +1161,7 @@ describe('compact issue selection', () => {
     })
   })
 
-  it('offers only the approved balance after rejected returns and previous issues, keeping unsigned receipts out', async () => {
+  it('includes unsigned receipts alongside the approved balance after returns and previous issues', async () => {
     const workspace = returnScenarioWorkspace()
     workspace.qualityWorkflow = recordCustomerReturn(
       workspace.qualityWorkflow,
@@ -1171,17 +1185,18 @@ describe('compact issue selection', () => {
     mount(workspace)
     const dialog = openIssue()
     const api = await operationGridApi('issue-selection')
-    expect(api.getDisplayedRowCount()).toBe(1)
-    expect(api.getRowNode('unsigned')).toBeUndefined()
+    expect(api.getDisplayedRowCount()).toBe(2)
+    expect(api.getRowNode('unsigned')!.data).toMatchObject({
+      available: 1,
+      approvedAvailable: 0,
+    })
     expect(
       api.getCellValue({
         rowNode: api.getRowNode('receipt')!,
         colKey: 'available',
       }),
     ).toBe(2)
-    fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Весь остаток: Отвод 23х7' }),
-    )
+    await editIssue('receipt', 'quantity', '2')
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
     )
@@ -1549,6 +1564,83 @@ it('exports the filtered view from the Excel menu while the full export keeps ev
 })
 
 describe('material import change preview', () => {
+  it('paginates large previews while applying all rows, including rows outside the current page', async () => {
+    mount()
+    const dialog = openImport()
+    upload(
+      dialog,
+      Array.from({ length: 130 }, (_, index) => ({
+        'Наименование по проекту': `Импорт ${index + 1}`,
+        Количество: index + 1,
+      })),
+    )
+    await within(dialog).findByRole('group', {
+      name: 'Позиция 1: Импорт 1, шифр ТЕСТ',
+    })
+    expect(
+      within(dialog).getAllByRole('group', { name: /^Позиция / }),
+    ).toHaveLength(25)
+    const pages = within(
+      within(dialog).getByRole('navigation', {
+        name: 'Страницы: Импорт проектной базы',
+      }),
+    )
+    fireEvent.click(pages.getByRole('button', { name: 'Последняя страница' }))
+    expect(
+      within(dialog).getByRole('group', {
+        name: 'Позиция 130: Импорт 130, шифр ТЕСТ',
+      }),
+    ).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Применить' }))
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    expect(lastSaved().lines).toHaveLength(132)
+    expect(
+      lastSaved().lines.find((line) => line.projectMaterialName === 'Импорт 1')
+        ?.plannedQuantity,
+    ).toBe(1)
+    expect(
+      lastSaved().lines.find(
+        (line) => line.projectMaterialName === 'Импорт 130',
+      )?.plannedQuantity,
+    ).toBe(130)
+  })
+
+  it('reports a file read failure, clears the old preview and allows a corrected file', async () => {
+    mount()
+    const dialog = openImport()
+    upload(dialog, [{ 'Наименование по проекту': 'Гамма', Количество: 4 }])
+    await within(dialog).findByRole('group', {
+      name: 'Позиция 1: Гамма, шифр ТЕСТ',
+    })
+    const file = new File([], 'unreadable.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', {
+      value: async () => {
+        throw new Error('Файл недоступен')
+      },
+    })
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      target: { files: [file] },
+    })
+    expect((await within(dialog).findByRole('alert')).textContent).toContain(
+      'Файл недоступен',
+    )
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', {
+        name: 'Применить',
+      }).disabled,
+    ).toBe(true)
+    expect(
+      within(dialog).queryByRole('group', { name: /^Позиция / }),
+    ).toBeNull()
+    upload(dialog, [{ 'Наименование по проекту': 'Дельта', Количество: 7 }])
+    await within(dialog).findByRole('group', {
+      name: 'Позиция 1: Дельта, шифр ТЕСТ',
+    })
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
   function openImport() {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     fireEvent.click(screen.getAllByRole('button', { name: /^Excel/ })[0]!)
@@ -2030,6 +2122,10 @@ it('inherits common receipt details, preserves individual overrides and saves co
   const common = within(
     form.getByRole('group', { name: 'Общие реквизиты получения' }),
   )
+  for (const title of ['Дата получения', 'Дата АПП', 'Дата М-15'])
+    expect(common.getByLabelText<HTMLInputElement>(title).value).toBe(
+      localDateInputValue(),
+    )
   const alphaElement = form.getByRole('group', { name: 'Материал: Альфа' })
   const betaElement = form.getByRole('group', { name: 'Материал: Бета' })
   const alpha = within(alphaElement)
@@ -3841,6 +3937,7 @@ describe('workspace user workflows', () => {
               'Создано АВК',
               'Подписано АВК',
               'Осталось подписать АВК',
+              'Отклонено АВК',
               'Осталось создать АВК',
             ]
           : [
@@ -3916,7 +4013,10 @@ describe('workspace user workflows', () => {
           .value,
       ).toBe('гост-бета')
       expect(badge().getAttribute('aria-pressed')).toBe('true')
-      await waitFor(async () => expect(await content()).toHaveLength(1))
+      // A remounted real grid may need the same readiness window as operationGridApi.
+      await waitFor(async () => expect(await content()).toHaveLength(1), {
+        timeout: 5000,
+      })
       fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
         target: { value: 'Трубопровод' },
       })
@@ -4064,6 +4164,7 @@ describe('workspace user workflows', () => {
           name: 'Подтвердить подписание',
         }),
       )
+      fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
       fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
       fireEvent.click(
         within(screen.getByRole('dialog')).getByRole('button', {
@@ -4102,7 +4203,9 @@ describe('workspace user workflows', () => {
         expect(lastSaved().qualityWorkflow?.cases).toHaveLength(1),
       )
       for (const kind of ['АВК']) {
-        fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
+        fireEvent.click(
+          screen.getByRole('button', { name: new RegExp(`^Действия ${kind}`) }),
+        )
         fireEvent.click(
           await screen.findByRole('menuitem', { name: `Подписать ${kind}` }),
         )
@@ -5562,6 +5665,92 @@ it.each([
   },
 )
 
+it('returns 10 rejected by AVK, shows 14 still due on the request for 24, and keeps 10 accepted after reload', async () => {
+  const workspace = returnScenarioWorkspace()
+  workspace.materialRequests[0]!.quantity = 24
+  Object.assign(workspace.materialReceipts[0]!, {
+    quantity: 20,
+    altQuantity: 50,
+  })
+  const entry = workspace.qualityWorkflow.cases[0]!
+  const rev = currentInspection(entry)
+  Object.assign(rev.zni.rows[0]!, {
+    presented: 20,
+    accepted: 20,
+    result: 'accepted',
+    remarks: '',
+  })
+  rev.avk!.signedOn = null
+  rev.avk!.conclusion = 'Принято 10 шт.'
+  workspace.qualityWorkflow.cases[0] = rejectInspectionAct(
+    entry,
+    'materials',
+    localToday(),
+    'Ржавчина',
+    [{ receiptId: 'receipt', quantity: 10 }],
+  )
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '4 шт',
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
+  await operationGridApi('returns-pending')
+  fireEvent.click(screen.getByRole('button', { name: 'Оформить возврат' }))
+  fireEvent.change(screen.getByLabelText('Возвратить: Отвод 23х7'), {
+    target: { value: '10' },
+  })
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Сохранить фактический возврат' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^История возвратов/ }))
+  const history = await operationGridApi('returns-history')
+  expect(
+    history.getCellValue({
+      rowNode: history.getDisplayedRowAtIndex(0)!,
+      colKey: 'reason',
+    }),
+  ).toBe('Не принято по АВК')
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '14 шт',
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
+  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^Действия АВК/ }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Подписать АВК' }))
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Подтвердить подписание' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(2),
+  )
+  const saved = lastSaved()
+  validateQualityWorkspace(saved, workspace)
+  cleanup()
+  mount(saved)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
+    '14 шт',
+  )
+  fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
+  const grid = await operationGridApi('request:ЗП-42-Материалы')
+  expect(
+    [
+      'quantity',
+      'received',
+      'remaining',
+      'indicator:availableToIssue',
+      'indicator:toReturn',
+    ].map((colKey) =>
+      grid.getCellValue({ rowNode: grid.getDisplayedRowAtIndex(0)!, colKey }),
+    ),
+  ).toEqual([24, 10, 14, 10, 0])
+})
+
 it('returns the rejected fourth elbow from the new tab, reopens one request unit, and preserves three approved units after reload', async () => {
   const workspace = returnScenarioWorkspace()
   mount(workspace)
@@ -6114,4 +6303,233 @@ it('prioritizes requests awaiting their first receipt and restores the default o
   expect(cards()).toEqual(initial)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   view.unmount()
+})
+
+describe('PostgreSQL editing in the real workspace UI', () => {
+  function mountPostgres() {
+    sessionStorage.clear()
+    const workspace = base()
+    vi.mocked(loadProjectWorkspaceChanges)
+      .mockReset()
+      .mockImplementation(async ({ data }) => ({
+        revision: data.revision,
+        records: [],
+        groups: {},
+        hasMore: false,
+      }))
+    vi.mocked(saveProjectWorkspaceChanges)
+      .mockReset()
+      .mockImplementation(async ({ data }) => ({
+        status: 'saved',
+        revision: 'pg:2',
+        records: data.changes.map((change) => ({ ...change, version: 2 })),
+        groups: {},
+      }))
+    render(
+      <ProjectWorkspace
+        initialStoredData={{
+          workspace,
+          revision: 'pg:1',
+          storage: 'postgres',
+          groups: {},
+          versions: Object.fromEntries(
+            [...workspaceEntities(workspace).values()].map((entity) => [
+              recordKey(entity),
+              { version: 1, position: entity.position },
+            ]),
+          ),
+        }}
+      />,
+    )
+    return workspace
+  }
+  it('saves only the edited material and leaves the legacy full-snapshot API unused', async () => {
+    mountPostgres()
+    expect(saveProjectWorkspaceChanges).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+    await editGridQuantity('Альфа', 'ТЕСТ', '15')
+    await waitFor(() =>
+      expect(saveProjectWorkspaceChanges).toHaveBeenCalledTimes(1),
+    )
+    expect(
+      vi.mocked(saveProjectWorkspaceChanges).mock.calls[0]![0].data.changes,
+    ).toEqual([
+      expect.objectContaining({
+        collection: 'lines',
+        id: 'line-0',
+        expectedVersion: 1,
+        value: expect.objectContaining({ plannedQuantity: 15 }),
+      }),
+    ])
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    expect(screen.queryByText('Сохранение…')).toBeNull()
+  })
+  it('shows the conflicting values and accepts the server value without reloading', async () => {
+    const workspace = mountPostgres()
+    const current = {
+      collection: 'lines' as const,
+      id: 'line-0',
+      value: { ...workspace.lines[0]!, plannedQuantity: 17 },
+      version: 2,
+      position: 0,
+    }
+    vi.mocked(saveProjectWorkspaceChanges).mockResolvedValueOnce({
+      status: 'conflict',
+      message: 'Позиция изменена другим пользователем.',
+      conflicts: [{ key: 'lines/line-0', current }],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
+    await editGridQuantity('Альфа', 'ТЕСТ', '15')
+    await screen.findByText('Сравнение одновременных изменений (1)')
+    expect(
+      screen.getByRole('columnheader', { name: 'Ваше изменение' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('columnheader', { name: 'Сейчас в базе' }),
+    ).toBeTruthy()
+    vi.mocked(loadProjectWorkspaceChanges).mockResolvedValueOnce({
+      revision: 'pg:2',
+      records: [current],
+      groups: {},
+      hasMore: false,
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Принять значения из базы' }),
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Сравнение одновременных изменений (1)'),
+      ).toBeNull(),
+    )
+    expect(saveProjectWorkspaceChanges).toHaveBeenCalledTimes(1)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+})
+
+it('automatically records an issue before VK from the single issue form', async () => {
+  const workspace = conversionWorkspace()
+  workspace.materialReceipts = [legacyReceipt()]
+  mount(workspace)
+  const dialog = openIssue()
+  expect(within(dialog).getByText('Выдача в монтаж')).toBeTruthy()
+  expect(screen.queryByLabelText('Другие действия выдачи')).toBeNull()
+  expect(within(dialog).queryByLabelText('Причина выдачи до ВК')).toBeNull()
+  await operationGridApi('issue-selection')
+  await editIssue('receipt-legacy', 'quantity', '1')
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+  )
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'получателя и причину',
+  )
+  fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+    target: { value: 'Бригада 5' },
+  })
+  fireEvent.change(within(dialog).getByLabelText('Причина выдачи до ВК'), {
+    target: { value: 'Передан до оформления' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(lastSaved().materialIssues[0]).toMatchObject({
+    quantity: 1,
+    receiver: 'Бригада 5',
+    beforeInspection: { reason: 'Передан до оформления' },
+  })
+  expect(lastSaved().qualityWorkflow!.cases).toHaveLength(0)
+})
+
+it('splits a mixed issue automatically and keeps approved-only selection free of extra fields', async () => {
+  const workspace = qualityWorkspace()
+  Object.assign(
+    currentInspection(workspace.qualityWorkflow!.cases[0]!).zni.rows[0]!,
+    {
+      presented: 1,
+      accepted: 1,
+      result: 'accepted',
+    },
+  )
+  mount(workspace)
+  const dialog = openIssue()
+  await operationGridApi('issue-selection')
+  await editIssue('receipt-legacy', 'quantity', '1')
+  expect(within(dialog).queryByLabelText('Причина выдачи до ВК')).toBeNull()
+  await editIssue('receipt-legacy', 'quantity', '2')
+  expect(within(dialog).getByLabelText('Выдача до ВК').textContent).toContain(
+    '1 м',
+  )
+  fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+    target: { value: 'Бригада' },
+  })
+  fireEvent.change(within(dialog).getByLabelText('Причина выдачи до ВК'), {
+    target: { value: 'Фактическая передача' },
+  })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const entries = lastSaved().materialIssues
+  expect(entries).toHaveLength(2)
+  expect(new Set(entries.map((item) => item.document)).size).toBe(1)
+  expect(
+    entries.map((item) => [
+      item.quantity,
+      item.altQuantity,
+      Boolean(item.beforeInspection),
+    ]),
+  ).toEqual([
+    [1, 2.5, false],
+    [1, 2.5, true],
+  ])
+})
+
+it('accepts a partial site return and shows it separately after reopening the returns tab', async () => {
+  const workspace = qualityWorkspace()
+  workspace.materialIssues = [{ ...savedIssue(), date: localToday() }]
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
+  const grid = await operationGridApi('issues')
+  act(() => grid.ensureColumnVisible('actions'))
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Принять возврат с площадки' }),
+    ).toBeTruthy(),
+  )
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Принять возврат с площадки' }),
+  )
+  const dialog = screen.getByRole('dialog')
+  fireEvent.change(
+    within(dialog).getByLabelText('Количество возврата с площадки'),
+    { target: { value: '0,4' } },
+  )
+  fireEvent.click(
+    within(dialog).getByRole('button', {
+      name: 'Сохранить возврат с площадки',
+    }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const saved = lastSaved()
+  expect(saved.materialIssues[0]).toMatchObject({
+    quantity: 1,
+    siteReturns: [{ quantity: 0.4, condition: 'good' }],
+  })
+  expect(saved.materialReceipts.map((item) => item.quantity)).toEqual(
+    workspace.materialReceipts.map((item) => item.quantity),
+  )
+  expect(saved.qualityWorkflow?.customerReturns ?? []).toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'С площадки' }))
+  const sources = await operationGridApi('site-return-sources')
+  expect(sources.getDisplayedRowCount()).toBe(1)
+  fireEvent.click(screen.getByRole('button', { name: /^Принятые возвраты/ }))
+  const history = await operationGridApi('site-returns-history')
+  expect(history.getDisplayedRowAtIndex(0)!.data.item.quantity).toBe(0.4)
 })

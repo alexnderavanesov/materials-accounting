@@ -309,6 +309,11 @@ it.each(['app', 'm15'] as const)(
   'prints presented ZNI and accepted AVK quantities for %s without changing saved history',
   async (sourceKind) => {
     const workspace = documentInspectionFixture(sourceKind)
+    // Historical input may include the symbol already supplied by the print form.
+    workspace.qualityWorkflow.receiptDocuments![0]!.number = '№ №42'
+    workspace.qualityWorkflow.cases[0]!.basis.number = '№ №42'
+    workspace.qualityWorkflow.cases[0]!.revisions[0]!.zni.number = '№221'
+    workspace.qualityWorkflow.cases[0]!.revisions[0]!.avk!.number = '№222'
     const before = JSON.stringify(workspace)
     for (const kind of ['zni', 'avk'] as const) {
       const data = buildQualityPrintData(
@@ -318,6 +323,9 @@ it.each(['app', 'm15'] as const)(
         kind,
       )
       expect(data.materials[0]!.quantity).toBe(kind === 'zni' ? 4 : 3)
+      expect(data.fields.number).toBe(kind === 'zni' ? '221' : '222')
+      expect(data.fields.zniNumber).toBe('221')
+      expect(data.fields.basisNumber).toBe('42')
       const template = await builtinQualityTemplate(kind)
       const bytes = await fillQualityPrintWorkbook(
         Buffer.from(template.base64, 'base64'),
@@ -325,6 +333,12 @@ it.each(['app', 'm15'] as const)(
         data,
       )
       const sheet = (await readPrintWorkbook(bytes)).worksheets[0]!
+      sheet.eachRow((row) =>
+        row.eachCell((cell) => {
+          if (cell.master.address === cell.address && cell.value !== null)
+            expect(cell.text).not.toMatch(/№\s*№/)
+        }),
+      )
       if (kind === 'zni') {
         expect(sheet.getCell('C11').text).toContain('4 шт')
         expect(sheet.getCell('C11').text).toContain(

@@ -9,8 +9,10 @@ import {
   inspectionApprovals,
   inspectionAvailableQuantities,
   newInspection,
+  pendingCustomerReturns,
   recordCustomerReturn,
   recordSurplusReturn,
+  reopenInspection,
   signInspection,
   surplusReturnSources,
   validateQualityWorkspace,
@@ -69,6 +71,92 @@ afterEach(async () => {
 })
 
 describe('surplus and rejected customer returns', () => {
+  it('keeps the return badge and list aligned during a repeated inspection and partial returns', () => {
+    const workspace = fixture()
+    const entry = workspace.qualityWorkflow.cases[0]!
+    currentInspection(entry).avk = null
+    const signed = structuredClone(currentInspection(entry))
+    const pendingTotal = () =>
+      workspace.qualityWorkflow.cases
+        .flatMap((item) =>
+          pendingCustomerReturns(workspace.qualityWorkflow, item),
+        )
+        .reduce((total, item) => total + item.quantity, 0)
+    expect(balance(workspace).toReturn).toBe(pendingTotal())
+    expect(balance(workspace).toReturn).toBe(1)
+
+    const before = structuredClone(workspace)
+    const repeated = reopenInspection(entry)
+    workspace.qualityWorkflow.cases[0] = repeated
+    currentInspection(repeated).zni.rows[0]!.accepted = 2.5
+    validateQualityWorkspace(workspace, before)
+    expect(balance(workspace).toReturn).toBe(pendingTotal())
+    expect(balance(workspace)).toMatchObject({
+      toReturn: 0,
+      stock: 4,
+      returned: 0,
+      awaitingAct: 3,
+      awaitingInspection: 0,
+    })
+    expect(() =>
+      recordCustomerReturn(
+        workspace.qualityWorkflow,
+        repeated.id,
+        [{ receiptId: 'receipt', quantity: 1 }],
+        date,
+      ),
+    ).toThrow(/остаток/)
+
+    repeated.revisions[1] = signInspection(
+      currentInspection(repeated),
+      'zni',
+      date,
+    )
+    expect(balance(workspace).toReturn).toBe(pendingTotal())
+    expect(balance(workspace).toReturn).toBe(1.5)
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow,
+      repeated.id,
+      [{ receiptId: 'receipt', quantity: 0.5 }],
+      date,
+    )
+    expect(balance(workspace).toReturn).toBe(pendingTotal())
+    expect(balance(workspace)).toMatchObject({
+      toReturn: 1,
+      returned: 0.5,
+      stock: 3.5,
+    })
+    expect(repeated.revisions[0]).toEqual(signed)
+  })
+
+  it('subtracts returns from the corresponding partial inspection of a shared receipt', () => {
+    const workspace = fixture()
+    const first = workspace.qualityWorkflow.cases[0]!
+    currentInspection(first).zni.rows[0]!.presented = 2
+    currentInspection(first).zni.rows[0]!.accepted = 1
+    currentInspection(first).avk = null
+    const second = structuredClone(first)
+    second.id = 'second-inspection'
+    workspace.qualityWorkflow.cases.push(second)
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow,
+      first.id,
+      [{ receiptId: 'receipt', quantity: 0.5 }],
+      date,
+    )
+    workspace.qualityWorkflow.cases[1] = reopenInspection(second)
+    expect(balance(workspace).toReturn).toBe(0.5)
+    expect(
+      pendingCustomerReturns(workspace.qualityWorkflow, first)[0]!.quantity,
+    ).toBe(0.5)
+    expect(
+      pendingCustomerReturns(
+        workspace.qualityWorkflow,
+        workspace.qualityWorkflow.cases[1],
+      ),
+    ).toEqual([])
+  })
+
   it('returns excess before inspection without reopening the request or making returned stock available to ZNI', () => {
     const workspace = fixture()
     workspace.qualityWorkflow.cases = []

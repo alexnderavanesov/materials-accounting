@@ -1,4 +1,5 @@
 import { materialNumberContext } from './document-numbering'
+import { documentNumberLabel } from './document-number'
 import { useDocumentNumber } from './document-numbering-context'
 import { useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
@@ -69,9 +70,12 @@ export function CustomerReturnModal({
         className="grid max-h-[90vh] w-full max-w-3xl gap-4 overflow-auto rounded-xl bg-white p-6 shadow-xl"
       >
         <h2 className="text-xl font-semibold">
-          Возврат заказчику · ЗНИ №{entry.revisions.at(-1)?.zni.number}
+          Возврат заказчику ·{' '}
+          {documentNumberLabel('ЗНИ', entry.revisions.at(-1)?.zni.number ?? '')}
         </h2>
         <p className="text-sm text-slate-600">
+          {entry.revisions.at(-1)?.avk?.rejection?.kind === 'materials' &&
+            `${documentNumberLabel('АВК', entry.revisions.at(-1)!.avk!.number)}: есть непринятое количество. `}
           Укажите фактически возвращённое количество. После сохранения оно
           уменьшит остаток на складе и снова станет доступно к получению по
           исходной заявке.

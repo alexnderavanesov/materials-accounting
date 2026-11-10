@@ -228,7 +228,7 @@ it('keeps checkbox selections when search is cleared and combines numeric/blank 
     popup
       .getAllByRole('checkbox')
       .map((input) => input.closest('label')?.textContent),
-  ).toEqual(['Выбрать все', '(Пустые)', '0', '2,5', '10'])
+  ).toEqual(['Выбрать все', 'Пусто', '0', '2,5', '10'])
   fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
   fireEvent.change(popup.getByRole('textbox'), { target: { value: '2,5' } })
   fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать найденные' }))
@@ -248,11 +248,11 @@ it('keeps checkbox selections when search is cleared and combines numeric/blank 
   fireEvent.click(popup.getByRole('button', { name: 'Очистить' }))
   expect(api.getDisplayedRowCount()).toBe(1)
   fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
-  fireEvent.click(popup.getByRole('checkbox', { name: '(Пустые)' }))
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Пусто' }))
   apply()
   await waitFor(() => expect(api.getDisplayedRowAtIndex(0)?.id).toBe('e'))
   popup = await open('Количество')
-  fireEvent.click(popup.getByRole('checkbox', { name: '(Пустые)' }))
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Пусто' }))
   apply()
   await waitFor(() => expect(api.getDisplayedRowCount()).toBe(0))
   popup = await open('Количество')
@@ -289,6 +289,49 @@ it('preserves saved text/number conditions when applying unchanged filters and w
   await waitFor(() => expect(api.getDisplayedRowCount()).toBe(4))
 })
 
+it('offers Пусто without existing blanks and matches newly loaded empty cells', async () => {
+  const view = render(<Harness />)
+  const api = await operationGridApi('filter-test')
+  const popup = await open('Группа')
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Пусто' }))
+  apply()
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(0))
+  expect(api.getFilterModel().group).toEqual({
+    filterType: 'set',
+    values: [null],
+  })
+  view.rerender(
+    <Harness
+      data={[
+        ...rows,
+        { id: 'empty', name: 'Без документа', group: '', quantity: 0 },
+      ]}
+    />,
+  )
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+  expect(api.getDisplayedRowAtIndex(0)?.id).toBe('empty')
+})
+
+it('keeps an explicit empty-only filter when every current cell is empty', async () => {
+  const data = [{ id: 'empty', name: 'Без документа', group: '', quantity: 0 }]
+  const view = render(<Harness data={data} />)
+  const api = await operationGridApi('filter-test')
+  const popup = await open('Группа')
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Пусто' }))
+  apply()
+  await waitFor(() =>
+    expect(api.getFilterModel().group).toEqual({
+      filterType: 'set',
+      values: [null],
+    }),
+  )
+  view.rerender(<Harness data={[...data, rows[0]!]} />)
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+  expect(api.getDisplayedRowAtIndex(0)?.id).toBe('empty')
+})
+
 it('virtualizes 10,000 distinct values and keeps selections across search and row refresh', async () => {
   const data = Array.from(
     { length: 10000 },
@@ -302,7 +345,7 @@ it('virtualizes 10,000 distinct values and keeps selections across search and ro
   const view = render(<Harness data={data} />)
   const api = await operationGridApi('filter-test')
   const popup = await open()
-  expect(popup.getByText('Значений: 10000')).toBeTruthy()
+  expect(popup.getByText('Значений: 10001')).toBeTruthy()
   expect(popup.getAllByRole('checkbox').length).toBeLessThan(20)
   fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
   fireEvent.change(popup.getByRole('textbox'), {
@@ -325,7 +368,7 @@ it('virtualizes 10,000 distinct values and keeps selections across search and ro
     />,
   )
   const reopened = await open()
-  expect(reopened.getByText('Значений: 10001')).toBeTruthy()
+  expect(reopened.getByText('Значений: 10002')).toBeTruthy()
   fireEvent.change(reopened.getByRole('textbox'), {
     target: { value: 'Новый материал' },
   })

@@ -39,7 +39,11 @@ function MaterialsColumnFilter({
   const opened = useRef(false)
   const matches = useMemo(() => compileMaterialsFilter(draft), [draft])
   const refreshValues = () => {
-    const values = new Map<string | null, ValueOption>()
+    // Keep the absence filter available even when the current rows have no
+    // blanks, so it can also match empty cells after a refresh.
+    const values = new Map<string | null, ValueOption>([
+      [null, { key: null, value: null, label: 'Пусто' }],
+    ])
     api.forEachLeafNode((node) => {
       const value = getValue(node)
       const key = filterValueKey(value)
@@ -49,7 +53,7 @@ function MaterialsColumnFilter({
           value,
           label:
             key === null
-              ? '(Пустые)'
+              ? 'Пусто'
               : api.getCellValue({
                   rowNode: node,
                   colKey: column,
@@ -114,7 +118,7 @@ function MaterialsColumnFilter({
       else selected.delete(value.key)
     }
     setDraft(
-      options.length > 0 && options.every((option) => selected.has(option.key))
+      options.length > 1 && options.every((option) => selected.has(option.key))
         ? null
         : { filterType: 'set', values: [...selected] },
     )

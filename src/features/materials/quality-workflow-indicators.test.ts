@@ -22,6 +22,7 @@ it('tracks ZNI signing, AVK creation and signing as separate work stages', () =>
     avkCreated: 0,
     avkSigned: 0,
     avkPending: 0,
+    avkRejected: 0,
     avkNeeded: 0,
   })
   const revision = currentInspection(entry)
@@ -53,7 +54,7 @@ it('tracks ZNI signing, AVK creation and signing as separate work stages', () =>
   })
 })
 
-it('counts current documents once, excluding historical acts and wholly rejected ZNI from acts to create', () => {
+it('counts the latest edition of each act even during a pending reinspection, excluding wholly rejected ZNI from acts to create', () => {
   const signed = acceptFixture().qualityWorkflow.cases[0]!
   const rejected = acceptFixture(0).qualityWorkflow.cases[0]!
   const reopened = historicalReinspection(signed)
@@ -68,13 +69,14 @@ it('counts current documents once, excluding historical acts and wholly rejected
     zniCreated: 3,
     zniSigned: 2,
     zniPending: 1,
-    avkCreated: 1,
-    avkSigned: 1,
+    avkCreated: 2,
+    avkSigned: 2,
     avkPending: 0,
+    avkRejected: 0,
     avkNeeded: 0,
   })
   expect(cases).toEqual(before)
   expect(Object.values(summarizeInspectionDocuments([]))).toEqual(
-    Array(7).fill(0),
+    Array(8).fill(0),
   )
 })

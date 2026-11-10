@@ -1,4 +1,8 @@
-import { currentInspection } from './quality-workflow'
+import {
+  currentInspection,
+  latestInspectionAct,
+  isBlockedInspectionAct,
+} from './quality-workflow'
 import type { InspectionCase } from './quality-workflow'
 
 export const inspectionDocumentIndicators = [
@@ -20,17 +24,24 @@ export const inspectionDocumentIndicators = [
   {
     key: 'avkCreated',
     label: 'Создано АВК',
-    details: 'АВК текущих редакций ЗНИ, включая подписанные.',
+    details:
+      'Все созданные АВК, включая подписанные и отклонённые. Редакции одного акта учитываются один раз.',
   },
   {
     key: 'avkSigned',
     label: 'Подписано АВК',
-    details: 'Подписанные АВК текущих редакций ЗНИ.',
+    details: 'АВК с подписанной последней редакцией.',
   },
   {
     key: 'avkPending',
     label: 'Осталось подписать АВК',
-    details: 'Уже созданные АВК, которые ещё не подписаны.',
+    details: 'АВК в работе, в том числе на частично принятое количество.',
+  },
+  {
+    key: 'avkRejected',
+    label: 'Отклонено АВК',
+    details:
+      'АВК, последняя редакция которых отклонена из-за документа или непринятия материала.',
   },
   {
     key: 'avkNeeded',
@@ -65,13 +76,20 @@ function documentIndicators(
   entry: InspectionCase,
 ): Record<IndicatorKey, boolean> {
   const rev = currentInspection(entry)
+  const act = latestInspectionAct(entry)?.avk
+  const actRevision = latestInspectionAct(entry)
   return {
     zniCreated: true,
     zniSigned: !!rev.zni.signedOn,
     zniPending: !rev.zni.signedOn,
-    avkCreated: !!rev.avk,
-    avkSigned: !!rev.avk?.signedOn,
-    avkPending: !!rev.avk && !rev.avk.signedOn,
+    avkCreated: !!act,
+    avkSigned: !!act?.signedOn,
+    avkPending:
+      !!act &&
+      !act.signedOn &&
+      !!actRevision &&
+      !isBlockedInspectionAct(actRevision),
+    avkRejected: !!actRevision && isBlockedInspectionAct(actRevision),
     avkNeeded: canCreateAct(entry),
   }
 }
@@ -86,6 +104,7 @@ export function summarizeInspectionDocuments(
     avkCreated: 0,
     avkSigned: 0,
     avkPending: 0,
+    avkRejected: 0,
     avkNeeded: 0,
   }
   for (const entry of cases) {

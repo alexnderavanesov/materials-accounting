@@ -11,9 +11,11 @@ export type InspectionAction = {
 
 export function InspectionActionsMenu({
   number,
+  kind = 'ЗНИ',
   actions,
 }: {
   number: string
+  kind?: 'ЗНИ' | 'АВК'
   actions: Array<InspectionAction>
 }) {
   const id = useId()
@@ -51,7 +53,7 @@ export function InspectionActionsMenu({
         ref={trigger}
         variant="ghost"
         size="icon"
-        aria-label={`Действия ЗНИ ${number}`}
+        aria-label={`Действия ${kind} ${number}`}
         aria-haspopup="menu"
         aria-expanded={!!position}
         aria-controls={position ? id : undefined}
@@ -82,7 +84,7 @@ export function InspectionActionsMenu({
             ref={menu}
             id={id}
             role="menu"
-            aria-label={`Действия ЗНИ ${number}`}
+            aria-label={`Действия ${kind} ${number}`}
             style={position}
             className="fixed z-[80] grid max-h-[calc(100dvh-1.5rem)] w-66 max-w-[calc(100vw-1.5rem)] overflow-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
             onBlur={(event) => {

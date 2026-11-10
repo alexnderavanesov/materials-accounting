@@ -1,9 +1,20 @@
-import { receiptDocumentLabel } from './receipt-documents'
+import {
+  receiptDocumentLabel,
+  receiptDocumentNumberLabel,
+} from './receipt-documents'
+import { normalizeDocumentNumber } from './document-number'
 import { getOperationAlternative, getOperationConversion } from './domain'
 import type { SubobjectMaterialMetric } from './types'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 import type { QualityPrintData, QualityPrintKind } from './quality-print'
-import { findInspectionMaterial, resultLabels } from './quality-workflow'
+import {
+  findInspectionMaterial,
+  inspectionSourceRevision,
+  acceptedAfterInspection,
+  rejectedByAct,
+  isPartiallyRejectedAct,
+  resultLabels,
+} from './quality-workflow'
 
 const dateText = (value: string | null) =>
   value ? value.split('-').reverse().join('.') : ''
@@ -16,17 +27,25 @@ export function buildQualityPrintData(
   const entry = workspace.qualityWorkflow?.cases.find(
     (item) => item.id === caseId,
   )
-  const revision = entry?.revisions.find(
+  const selectedRevision = entry?.revisions.find(
     (item) => item.revision === revisionNumber,
   )
-  if (!entry || !revision) throw new Error('Документ или ревизия не найдены.')
+  if (!entry || !selectedRevision)
+    throw new Error('Документ или ревизия не найдены.')
+  const revision =
+    kind === 'zni'
+      ? inspectionSourceRevision(entry, selectedRevision)
+      : selectedRevision
   const { zni, avk } = revision
   if (kind === 'avk' && !avk) throw new Error('АВК этой ревизии ещё не создан.')
   const lines = workspace.lines as unknown as Array<SubobjectMaterialMetric>
   const acceptedAct = kind === 'avk'
   const materials = zni.rows
-    .filter((row) => !acceptedAct || (row.accepted ?? 0) > 0)
+    .filter((row) => !acceptedAct || acceptedAfterInspection(revision, row) > 0)
     .map((row, index) => {
+      const accepted = acceptedAct
+        ? acceptedAfterInspection(revision, row)
+        : row.accepted
       const receipt = workspace.materialReceipts.find(
         (item) => item.id === row.receiptId,
       )
@@ -45,12 +64,12 @@ export function buildQualityPrintData(
         previous,
       )
       const alternative = getOperationAlternative(
-        acceptedAct ? row.accepted : row.presented,
+        acceptedAct ? accepted : row.presented,
         conversion,
         previous,
       )
       const acceptedAlternative = getOperationAlternative(
-        row.accepted,
+        accepted,
         conversion,
         row.accepted === null ? null : previous,
       )
@@ -62,8 +81,8 @@ export function buildQualityPrintData(
         cipher: row.cipher,
         factoryNumber: row.factoryNumber,
         heatBatch: row.heatBatch,
-        quantity: acceptedAct ? row.accepted : row.presented,
-        accepted: row.accepted,
+        quantity: acceptedAct ? accepted : row.presented,
+        accepted,
         unit: row.unit,
         altQuantity: alternative.altQuantity,
         altAccepted: acceptedAlternative.altQuantity,
@@ -71,9 +90,9 @@ export function buildQualityPrintData(
         document: row.document,
         alloy: row.alloy,
         remarks: row.remarks,
-        receiptDocument: `${entry.basis.kind === 'app' ? 'АПП' : 'М-15'} №${entry.basis.number}`,
+        receiptDocument: receiptDocumentNumberLabel(entry.basis),
         receiptDocumentDate: dateText(entry.basis.date),
-        appNumber: row.appNumber ?? '',
+        appNumber: normalizeDocumentNumber(row.appNumber ?? '').trim(),
         appDate: dateText(row.appDate ?? ''),
       }
     })
@@ -115,7 +134,9 @@ export function buildQualityPrintData(
   const fields: QualityPrintData['fields'] = {
     ...zni.details,
     processVersion: entry.processVersion,
-    number: kind === 'zni' ? zni.number : avk!.number,
+    number: normalizeDocumentNumber(
+      kind === 'zni' ? zni.number : avk!.number,
+    ).trim(),
     date: dateText(documentDate),
     day: Number(documentDate.slice(8)),
     month: [
@@ -136,11 +157,11 @@ export function buildQualityPrintData(
     signatureLine: `Дата ${dateText(kind === 'zni' ? zni.signedOn : avk!.signedOn) || '__________'}  Подпись __________`,
     revision: `РЕВИЗИЯ ${revision.revision}`,
     signedOn: dateText(kind === 'zni' ? zni.signedOn : avk!.signedOn),
-    zniNumber: zni.number,
+    zniNumber: normalizeDocumentNumber(zni.number).trim(),
     zniDate: dateText(zni.date),
     zniSignedOn: dateText(zni.signedOn),
     basisLabel: receiptDocumentLabel(entry.basis),
-    basisNumber: entry.basis.number,
+    basisNumber: normalizeDocumentNumber(entry.basis.number).trim(),
     basisDate: dateText(entry.basis.date),
     appNumber: appNumbers,
     appDate: appDates,
@@ -164,6 +185,17 @@ ${materialDescription}`,
     manufacturer: avk?.manufacturer ?? '',
     standards: avk?.standards ?? '',
     conclusion: [
+      avk?.rejection &&
+        `${isPartiallyRejectedAct(revision) ? 'ЧАСТИЧНОЕ ПРИНЯТИЕ ПО АВК' : 'АВК ОТКЛОНЁН'} ${dateText(avk.rejection.date)}. ${avk.rejection.kind === 'materials' ? 'Материал не принят' : 'Документ требует исправления'}: ${avk.rejection.reason}`,
+      acceptedAct &&
+        avk?.rejection?.kind === 'materials' &&
+        zni.rows
+          .filter((row) => rejectedByAct(revision, row) > 0)
+          .map(
+            (row) =>
+              `${row.name}: принято по АВК ${acceptedAfterInspection(revision, row)} ${row.unit}; не принято по АВК ${rejectedByAct(revision, row)} ${row.unit}.`,
+          )
+          .join('\n'),
       `Основание: ${receiptDocumentLabel(entry.basis)}.`,
       avk?.conclusion,
       partial,

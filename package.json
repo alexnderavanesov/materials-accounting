@@ -19,7 +19,15 @@
     "lint": "eslint",
     "format": "prettier --write . && eslint --fix",
     "check": "prettier --check .",
-    "start": "vite preview --host 127.0.0.1 --port 43187 --strictPort"
+    "start": "vite preview --host 127.0.0.1 --port 43187 --strictPort",
+    "db:local:start": "tsx scripts/database-local.ts start",
+    "db:local:stop": "tsx scripts/database-local.ts stop",
+    "db:workspace:migrate": "tsx scripts/database-workspace.ts migrate",
+    "db:workspace:import": "tsx scripts/database-workspace.ts import",
+    "db:test:prepare": "tsx scripts/database-workspace.ts migrate-test",
+    "user:add": "tsx scripts/workspace-user.ts",
+    "test:postgres": "MATERIALS_POSTGRES_TEST=1 vitest run src/features/materials/workspace-postgres.test.ts --maxWorkers=1",
+    "db:backup": "tsx scripts/database-backup.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
@@ -62,6 +70,7 @@
     "eslint": "^9.20.0",
     "jsdom": "^28.1.0",
     "prettier": "^3.8.1",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.2",
     "vite": "^8.0.0",
     "vitest": "^4.1.5"

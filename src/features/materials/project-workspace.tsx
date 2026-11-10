@@ -1,5 +1,9 @@
+import { SiteReturnForm, SiteReturnsWorkspace } from './site-returns'
+import { netIssued, siteReturned } from './material-issues'
+import type { IssueMovement, SiteReturn } from './material-issues'
 import { AppSelect } from '#/components/ui/app-select'
 import { RequestMaterialTypeSelect } from './request-material-type-select'
+import { DocumentsSection } from './documents-section'
 import {
   WorkspaceNavigationProvider,
   useWorkspaceNavigation,
@@ -77,6 +81,7 @@ import type { MaterialProgress } from './material-progress'
 import { ReturnsWorkspace } from './returns-workspace'
 import { ReceiptDocumentInputs } from './receipt-document-inputs'
 import { receiptChronologyError } from './operation-chronology'
+import { allocateIssue, issueAvailability } from './issue-allocation'
 import { ReceiptReferencesDialog } from './receipt-references-dialog'
 import { validateProjectUnitChanges } from './project-unit-guard'
 import {
@@ -120,6 +125,7 @@ import {
   Pencil,
   FileInput,
   FileSpreadsheet,
+  Files,
   FolderKanban,
   PackageCheck,
   PanelLeftClose,
@@ -172,19 +178,33 @@ import {
 } from './workspace-snapshot'
 import type { LoadedWorkspace } from './workspace-snapshot'
 import { createWorkspaceSaver } from './workspace-saver'
+import {
+  createCollaborativeSaver,
+  editJournalKey,
+  workspaceClientIdentity,
+} from './workspace-collaboration'
+import type { EditConflict, EditJournal } from './workspace-collaboration'
+import { WorkspaceConflicts } from './workspace-conflicts'
+import { WorkspaceAccount, WorkspaceLogin } from './workspace-account'
 import { RequestPrintButton, RequestPrintSettings } from './request-print-ui'
 import {
   emptyQualityWorkflow,
   currentInspection,
   inspectionApprovals,
   customerReturnTotals,
+  customerReturnReason,
+  rejectedReturnAllocations,
   approvedCustomerReturnTotals,
   validateQualityWorkspace,
 } from './quality-workflow'
 import type { QualityWorkflow } from './quality-workflow'
 import { InspectionWorkspace, QualitySettings } from './quality-workflow-ui'
 import type { WorkspaceSaveStatus } from './workspace-saver'
-import { saveProjectWorkspaceSnapshot } from './functions'
+import {
+  saveProjectWorkspaceSnapshot,
+  saveProjectWorkspaceChanges,
+  loadProjectWorkspaceChanges,
+} from './functions'
 import type {
   MaterialReceiptImportRowInput,
   MaterialRequestImportRowInput,
@@ -327,7 +347,7 @@ type MaterialReceiptImportDraft = {
     total: number
   }
 }
-type MaterialIssueEntry = {
+type MaterialIssueEntry = IssueMovement & {
   altQuantity: number | null
   altUnit?: string
   altUnitFactor?: number | null
@@ -570,8 +590,9 @@ function ProjectWorkspaceContent({
   initialStoredData: LoadedWorkspace
 }) {
   const lastHorizontalScrollRef = useRef(0)
+  const collaborative = initialStoredData.storage === 'postgres'
   const [loadedWorkspace] = useState(() => {
-    if (typeof window === 'undefined')
+    if (collaborative || typeof window === 'undefined')
       return {
         workspace: initialStoredData.workspace,
         recovery: null,
@@ -629,6 +650,8 @@ function ProjectWorkspaceContent({
   const [materialImportOpen, setMaterialImportOpen] = useState(false)
   const [materialImportDraft, setMaterialImportDraft] =
     useState<MaterialImportDraft | null>(null)
+  const [materialImportError, setMaterialImportError] = useState('')
+  const [materialImportLoading, setMaterialImportLoading] = useState(false)
   const [pendingDeleteMaterial, setPendingDeleteMaterial] =
     useState<PendingDeleteMaterial | null>(null)
   useEffect(() => {
@@ -815,40 +838,166 @@ function ProjectWorkspaceContent({
   )
   const [lastAction, setLastAction] = useState('')
 
-  const [workspaceClientId] = useState(() => crypto.randomUUID())
-  const [saveStatus, setSaveStatus] = useState<WorkspaceSaveStatus>('saved')
-  const [workspaceSaver] = useState(() =>
-    createWorkspaceSaver({
-      initial: toWorkspaceSnapshot({
-        configuredAlloys,
-        configuredCiphers,
-        configuredDocuments,
-        configuredUnits,
-        lines,
-        materialTypeSettings,
-        materialIssues,
-        materialReceipts,
-        materialRequests,
-        qualityWorkflow,
-        documentNumbering,
-      }),
-      revision: initialStoredData.revision,
-      pending: loadedWorkspace.pending,
-      save: (workspace, expectedRevision) =>
-        saveProjectWorkspaceSnapshot({ data: { workspace, expectedRevision } }),
-      cache: (workspace, revision, pending) => {
-        if (loadedWorkspace.cacheEnabled)
-          writeWorkspaceCache(
-            window.localStorage,
-            workspace,
-            revision,
-            pending,
-            workspaceClientId,
-          )
-      },
-      onStatus: setSaveStatus,
-    }),
+  const [workspaceClientId] = useState(() =>
+    workspaceClientIdentity(initialStoredData.user?.id),
   )
+  const [saveStatus, setSaveStatus] = useState<WorkspaceSaveStatus>('saved')
+  const [saveMessage, setSaveMessage] = useState('')
+  const [editConflicts, setEditConflicts] = useState<EditConflict[]>([])
+  const [cacheWarning, setCacheWarning] = useState(false)
+  const [reauthenticate, setReauthenticate] = useState(false)
+  const [pendingJournal] = useState<EditJournal | null>(() => {
+    if (!collaborative) return null
+    try {
+      return JSON.parse(
+        localStorage.getItem(editJournalKey(workspaceClientId)) ?? 'null',
+      ) as EditJournal | null
+    } catch {
+      return null
+    }
+  })
+  const [collaborationReady, setCollaborationReady] = useState(!pendingJournal)
+  const restoreStarted = useRef(false)
+  const [workspaceSaver] = useState<
+    | ReturnType<typeof createCollaborativeSaver>
+    | ReturnType<typeof createWorkspaceSaver>
+  >(() =>
+    collaborative
+      ? createCollaborativeSaver({
+          initial: {
+            configuredAlloys,
+            configuredCiphers,
+            configuredDocuments,
+            configuredUnits,
+            lines,
+            materialTypeSettings,
+            materialIssues,
+            materialReceipts,
+            materialRequests,
+            qualityWorkflow,
+            documentNumbering,
+          },
+          revision: initialStoredData.revision!,
+          versions: initialStoredData.versions!,
+          groups: initialStoredData.groups!,
+          save: (patch) => saveProjectWorkspaceChanges({ data: patch }),
+          changes: (revision) =>
+            loadProjectWorkspaceChanges({ data: { revision } }),
+          onWorkspace: (workspace) => {
+            const next = normalizeStoredProjectWorkspace(workspace)
+            setLines(next.lines ?? [])
+            setMaterialRequests(next.materialRequests ?? [])
+            setMaterialReceipts(next.materialReceipts ?? [])
+            setMaterialIssues(next.materialIssues ?? [])
+            setQualityWorkflow(next.qualityWorkflow)
+            setDocumentNumbering(next.documentNumbering)
+            setConfiguredAlloys(next.configuredAlloys ?? [])
+            setConfiguredCiphers(next.configuredCiphers ?? [])
+            setConfiguredDocuments(next.configuredDocuments ?? [])
+            setConfiguredUnits(next.configuredUnits ?? [])
+            setMaterialTypeSettings(next.materialTypeSettings ?? [])
+          },
+          onStatus: (status, message, conflicts) => {
+            setSaveStatus(status)
+            setSaveMessage(message)
+            setEditConflicts(conflicts)
+          },
+          writeJournal: (journal) => {
+            if (journal)
+              localStorage.setItem(
+                editJournalKey(workspaceClientId),
+                JSON.stringify(journal),
+              )
+            else localStorage.removeItem(editJournalKey(workspaceClientId))
+          },
+          onCacheError: () => setCacheWarning(true),
+          canApplyRemote: () =>
+            !document.querySelector(
+              '[aria-modal="true"], .ag-cell-inline-editing',
+            ) &&
+            !document.activeElement?.matches(
+              'input,textarea,select,[contenteditable="true"]',
+            ),
+        })
+      : createWorkspaceSaver({
+          initial: toWorkspaceSnapshot({
+            configuredAlloys,
+            configuredCiphers,
+            configuredDocuments,
+            configuredUnits,
+            lines,
+            materialTypeSettings,
+            materialIssues,
+            materialReceipts,
+            materialRequests,
+            qualityWorkflow,
+            documentNumbering,
+          }),
+          revision: initialStoredData.revision,
+          pending: loadedWorkspace.pending,
+          save: (workspace, expectedRevision) =>
+            saveProjectWorkspaceSnapshot({
+              data: { workspace, expectedRevision },
+            }),
+          cache: (workspace, revision, pending) => {
+            if (loadedWorkspace.cacheEnabled)
+              writeWorkspaceCache(
+                window.localStorage,
+                workspace,
+                revision,
+                pending,
+                workspaceClientId,
+              )
+          },
+          onStatus: setSaveStatus,
+        }),
+  )
+  useEffect(() => {
+    if (!('poll' in workspaceSaver)) return
+    if (!restoreStarted.current) {
+      restoreStarted.current = true
+      void workspaceSaver
+        .restore(pendingJournal)
+        .catch((error: unknown) => {
+          setSaveMessage(
+            error instanceof Error
+              ? error.message
+              : 'Не удалось восстановить правки вкладки.',
+          )
+          setSaveStatus('error')
+        })
+        .finally(() => setCollaborationReady(true))
+    }
+    const poll = () => {
+      if (
+        !collaborationReady ||
+        document.hidden ||
+        document.querySelector(
+          '[aria-modal="true"], .ag-cell-inline-editing',
+        ) ||
+        document.activeElement?.matches(
+          'input,textarea,select,[contenteditable="true"]',
+        )
+      )
+        return
+      void workspaceSaver.poll()
+    }
+    const interval = setInterval(poll, 2000)
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (workspaceSaver.hasPending()) {
+        event.preventDefault()
+        event.returnValue = ''
+      }
+    }
+    window.addEventListener('focus', poll)
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', poll)
+      window.removeEventListener('beforeunload', beforeUnload)
+      workspaceSaver.dispose()
+    }
+  }, [workspaceSaver, pendingJournal, collaborationReady])
   function downloadWorkspaceCopy(raw: string) {
     const url = URL.createObjectURL(
       new Blob([raw], { type: 'application/json' }),
@@ -860,23 +1009,27 @@ function ProjectWorkspaceContent({
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
   useEffect(() => {
+    if (!collaborationReady) return
+    const snapshot = {
+      configuredAlloys,
+      configuredCiphers,
+      configuredDocuments,
+      configuredUnits,
+      lines,
+      materialTypeSettings,
+      materialIssues,
+      materialReceipts,
+      materialRequests,
+      qualityWorkflow,
+      documentNumbering,
+    }
     workspaceSaver.update(
-      toWorkspaceSnapshot({
-        configuredAlloys,
-        configuredCiphers,
-        configuredDocuments,
-        configuredUnits,
-        lines,
-        materialTypeSettings,
-        materialIssues,
-        materialReceipts,
-        materialRequests,
-        qualityWorkflow,
-        documentNumbering,
-      }),
+      collaborative ? snapshot : toWorkspaceSnapshot(snapshot),
     )
   }, [
     workspaceSaver,
+    collaborative,
+    collaborationReady,
     configuredAlloys,
     configuredCiphers,
     configuredDocuments,
@@ -972,6 +1125,10 @@ function ProjectWorkspaceContent({
   }, [materialImportOpen, materialModalOpen, pendingDeleteMaterial, section])
 
   const selectedLine = lines.find((line) => line.id === selectedLineId)
+  const importedKeySet = useMemo(
+    () => new Set(importedCombinationKeys),
+    [importedCombinationKeys],
+  )
   const filteredLines = useMemo(
     () =>
       lines.filter((line) => {
@@ -980,12 +1137,12 @@ function ProjectWorkspaceContent({
         const matchesCombination =
           selectedCombinationKey !== null
             ? getMaterialIdentityKey(line) === selectedCombinationKey
-            : importedCombinationKeys.length === 0 ||
-              importedCombinationKeys.includes(getMaterialIdentityKey(line))
+            : importedKeySet.size === 0 ||
+              importedKeySet.has(getMaterialIdentityKey(line))
 
         return matchesCipher && matchesCombination
       }),
-    [cipherFilter, importedCombinationKeys, lines, selectedCombinationKey],
+    [cipherFilter, importedKeySet, lines, selectedCombinationKey],
   )
   // Zero allocations retain stable IDs for document history, but must not
   // resurrect ciphers that the user removed from the reference list.
@@ -1417,23 +1574,36 @@ function ProjectWorkspaceContent({
   }
 
   async function handleMaterialImportFile(file: File) {
-    const { parseProjectMaterialsWorkbook } = await import('./excel')
-    const workbookRows = parseProjectMaterialsWorkbook(await file.arrayBuffer())
-    const draft = createMaterialImportDraft(workbookRows, {
-      alloys: alloysForSelect,
-      ciphers: ciphersForSelect,
-      documents: documentsForSelect,
-      existingMaterials: materialCombinations,
-      units: unitsForSelect,
-    })
+    setMaterialImportDraft(null)
+    setMaterialImportError('')
+    setMaterialImportLoading(true)
+    try {
+      const { parseProjectMaterialsWorkbook } = await import('./excel')
+      const workbookRows = parseProjectMaterialsWorkbook(
+        await file.arrayBuffer(),
+      )
+      const draft = createMaterialImportDraft(workbookRows, {
+        alloys: alloysForSelect,
+        ciphers: ciphersForSelect,
+        documents: documentsForSelect,
+        existingMaterials: materialCombinations,
+        units: unitsForSelect,
+      })
 
-    setMaterialImportDraft(draft)
-    const message =
-      draft.summary.totalRows === 0
-        ? 'В файле не найдены позиции с количеством. Укажите шифры и проектные количества на первом листе Excel.'
-        : `Черновик материала: ${draft.summary.validRows} можно импортировать, ${draft.summary.errorRows} требуют правки.`
-    setNotice(message)
-    setLastAction(message)
+      setMaterialImportDraft(draft)
+      const message =
+        draft.summary.totalRows === 0
+          ? 'В файле не найдены позиции с количеством. Укажите шифры и проектные количества на первом листе Excel.'
+          : `Черновик материала: ${draft.summary.validRows} можно импортировать, ${draft.summary.errorRows} требуют правки.`
+      setNotice(message)
+      setLastAction(message)
+    } catch (error) {
+      setMaterialImportError(
+        `Не удалось прочитать файл. ${error instanceof Error ? error.message : 'Проверьте файл и повторите загрузку.'}`,
+      )
+    } finally {
+      setMaterialImportLoading(false)
+    }
   }
 
   async function downloadExcelTemplate() {
@@ -1731,6 +1901,25 @@ function ProjectWorkspaceContent({
     setLastAction(message)
   }
 
+  function addSiteReturn(issueId: string, value: SiteReturn) {
+    if (!materialIssues.some((issue) => issue.id === issueId))
+      throw new Error('Выдача удалена. Обновите список.')
+    const updated = materialIssues.map((issue) =>
+      issue.id === issueId
+        ? { ...issue, siteReturns: [...(issue.siteReturns ?? []), value] }
+        : issue,
+    )
+    const previous = {
+      qualityWorkflow,
+      materialReceipts,
+      materialRequests,
+      materialIssues,
+    }
+    validateQualityWorkspace({ ...previous, materialIssues: updated }, previous)
+    setMaterialIssues(updated)
+    setNotice('Возврат с площадки сохранён. Складской остаток увеличен.')
+  }
+
   function deleteOperation(target: OperationDeletion) {
     const error = getOperationDeletionError(
       target,
@@ -1756,11 +1945,49 @@ function ProjectWorkspaceContent({
     return ''
   }
 
+  const fillViewport = section === 'database' || section === 'documents'
   return (
     <DocumentNumberingContext value={numberingContext}>
       <main
-        className={`bg-stone-50 text-stone-900 ${section === 'database' ? 'flex h-dvh min-h-[32rem] flex-col' : 'min-h-screen'}`}
+        className={`bg-stone-50 text-stone-900 ${fillViewport ? 'flex h-dvh min-h-[32rem] flex-col' : 'min-h-screen'}`}
       >
+        {initialStoredData.user && (
+          <WorkspaceAccount
+            user={initialStoredData.user}
+            prepare={() => workspaceSaver.waitUntilSaved()}
+          />
+        )}
+        {reauthenticate && initialStoredData.user && (
+          <div
+            className="fixed inset-0 z-[300] overflow-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Повторный вход"
+          >
+            <button
+              className="absolute right-6 top-6 underline"
+              onClick={() => setReauthenticate(false)}
+            >
+              Закрыть
+            </button>
+            <WorkspaceLogin
+              userLogin={initialStoredData.user.login}
+              onSignedIn={() => {
+                setReauthenticate(false)
+                void workspaceSaver.retry()
+              }}
+            />
+          </div>
+        )}
+        {cacheWarning && (
+          <div
+            role="alert"
+            className="shrink-0 border-b bg-amber-50 p-3 text-sm"
+          >
+            Браузер не смог сохранить резервную копию правок. Дождитесь
+            сохранения на сервере перед закрытием страницы.
+          </div>
+        )}
         {exhaustedCounters.length > 0 && (
           <div
             role="alert"
@@ -1795,9 +2022,11 @@ function ProjectWorkspaceContent({
           >
             {saveStatus === 'saving'
               ? 'Сохранение…'
-              : saveStatus === 'conflict'
-                ? 'Данные изменены в другой вкладке. Эта версия не перезаписана на сервере. Скачайте свою копию и обновите страницу.'
-                : 'Не удалось сохранить на сервере. Не закрывайте страницу; повторите сохранение или скачайте свою копию.'}
+              : saveMessage
+                ? saveMessage
+                : saveStatus === 'conflict'
+                  ? 'Данные изменены в другой вкладке. Эта версия не перезаписана на сервере. Скачайте свою копию и обновите страницу.'
+                  : 'Не удалось сохранить на сервере. Не закрывайте страницу; повторите сохранение или скачайте свою копию.'}
             {saveStatus !== 'saving' ? (
               <>
                 <Button
@@ -1812,23 +2041,40 @@ function ProjectWorkspaceContent({
                   Скачать текущую копию
                 </Button>
                 {saveStatus === 'error' ? (
-                  <Button
-                    variant="outline"
-                    className="ml-3"
-                    onClick={() => void workspaceSaver.retry()}
-                  >
-                    Повторить сохранение
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      className="ml-3"
+                      onClick={() => void workspaceSaver.retry()}
+                    >
+                      Повторить сохранение
+                    </Button>
+                    {initialStoredData.user && (
+                      <Button
+                        variant="outline"
+                        className="ml-3"
+                        onClick={() => setReauthenticate(true)}
+                      >
+                        Войти снова
+                      </Button>
+                    )}
+                  </>
                 ) : null}
               </>
             ) : null}
           </div>
         ) : null}
+        {editConflicts.length > 0 && 'resolve' in workspaceSaver && (
+          <WorkspaceConflicts
+            conflicts={editConflicts}
+            resolve={workspaceSaver.resolve}
+          />
+        )}
         <div
-          className={`flex ${section === 'database' ? 'min-h-0 flex-1' : 'min-h-screen'}`}
+          className={`flex ${fillViewport ? 'min-h-0 flex-1' : 'min-h-screen'}`}
         >
           <aside
-            className={`sticky left-0 top-0 z-40 ${section === 'database' ? 'h-full' : 'h-screen'} shrink-0 overflow-hidden border-r border-stone-200 bg-stone-100/90 py-6 transition-[width,padding] duration-300 ease-out ${
+            className={`sticky left-0 top-0 z-40 ${fillViewport ? 'h-full' : 'h-screen'} shrink-0 overflow-hidden border-r border-stone-200 bg-stone-100/90 py-6 transition-[width,padding] duration-300 ease-out ${
               sidebarCollapsed ? 'w-[68px] px-2.5' : 'w-[280px] px-5'
             }`}
           >
@@ -1901,6 +2147,16 @@ function ProjectWorkspaceContent({
                 }}
               />
               <NavButton
+                active={section === 'documents'}
+                collapsed={sidebarCollapsed}
+                icon={<Files size={17} />}
+                label="Документы"
+                onClick={() => {
+                  setSection('documents')
+                  setExcelMenuOpen(false)
+                }}
+              />
+              <NavButton
                 active={section === 'settings'}
                 collapsed={sidebarCollapsed}
                 icon={<Settings size={17} />}
@@ -1911,7 +2167,7 @@ function ProjectWorkspaceContent({
           </aside>
 
           <div
-            className={`min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 ${section === 'database' ? 'flex min-h-0 flex-col' : ''}`}
+            className={`min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 ${fillViewport ? 'flex min-h-0 flex-col' : ''}`}
           >
             <header className="flex shrink-0 flex-col gap-4 border-b border-stone-200 pb-5 xl:flex-row xl:items-end xl:justify-between">
               <div>
@@ -1920,7 +2176,9 @@ function ProjectWorkspaceContent({
                     ? 'Проектная база материалов'
                     : section === 'settings'
                       ? 'Настройки'
-                      : 'Операции'}
+                      : section === 'documents'
+                        ? 'Документы'
+                        : 'Операции'}
                 </h1>
               </div>
 
@@ -2011,6 +2269,10 @@ function ProjectWorkspaceContent({
                 onUpdateQuantity={updateProjectQuantity}
                 onGridReady={setProjectGrid}
               />
+            ) : section === 'documents' ? (
+              <DocumentsSection
+                prepare={() => workspaceSaver.waitUntilSaved()}
+              />
             ) : section === 'operations' ? (
               <OperationsSection
                 qualityWorkflow={qualityWorkflow}
@@ -2025,6 +2287,7 @@ function ProjectWorkspaceContent({
                 qualityControls={qualityControls}
                 onAdjustProjectQuantity={setProjectLineQuantity}
                 onCreateIssues={addMaterialIssueEntries}
+                onSiteReturn={addSiteReturn}
                 onCreateReceipts={addMaterialReceiptEntries}
                 onCreateRequests={addMaterialRequestEntries}
                 onDeleteRequests={deleteMaterialRequestEntries}
@@ -2077,6 +2340,8 @@ function ProjectWorkspaceContent({
 
             <MaterialImportModal
               draft={materialImportDraft}
+              error={materialImportError}
+              loading={materialImportLoading}
               currentLines={lines}
               open={materialImportOpen}
               onAddMissingReferences={addMissingImportReferences}
@@ -2333,6 +2598,7 @@ function OperationsSection({
   qualityControls,
   onAdjustProjectQuantity,
   onCreateIssues,
+  onSiteReturn,
   onCreateReceipts,
   onCreateRequests,
   onDeleteRequests,
@@ -2351,6 +2617,7 @@ function OperationsSection({
   materialRequests: Array<MaterialRequestEntry>
   qualityControls: Array<InspectionApproval>
   onAdjustProjectQuantity: (lineId: string, quantity: number) => void
+  onSiteReturn: (issueId: string, value: SiteReturn) => void
   onCreateIssues: (entries: Array<MaterialIssueEntry>) => void
   onCreateReceipts: (
     entries: Array<MaterialReceiptEntry>,
@@ -2374,6 +2641,20 @@ function OperationsSection({
   const setActiveTab = (tab: OperationDocumentTab) => navigate({ tab })
   const viewScrollRef = useWorkspaceViewScroll(`operations:${activeTab}`)
   const [modal, setModal] = useState<OperationActionTab | null>(null)
+  const [siteReturnIssueId, setSiteReturnIssueId] = useState<string | null>(
+    null,
+  )
+  const siteReturnIssue = materialIssues.find(
+    (item) => item.id === siteReturnIssueId,
+  )
+  const [returnDirection, setReturnDirection] = useWorkspaceViewState<
+    'customer' | 'site'
+  >(
+    'returns.direction',
+    'customer',
+    (value): value is 'customer' | 'site' =>
+      value === 'customer' || value === 'site',
+  )
   const [pendingDelete, setPendingDelete] = useState<OperationDeletion | null>(
     null,
   )
@@ -2742,6 +3023,34 @@ function OperationsSection({
             />
           )}
           {activeTab === 'returns' && (
+            <div className="flex gap-2 border-b p-4">
+              <Button
+                variant={returnDirection === 'customer' ? 'default' : 'outline'}
+                onClick={() => setReturnDirection('customer')}
+              >
+                Заказчику
+              </Button>
+              <Button
+                variant={returnDirection === 'site' ? 'default' : 'outline'}
+                onClick={() => setReturnDirection('site')}
+              >
+                С площадки
+              </Button>
+            </div>
+          )}
+          {activeTab === 'returns' && returnDirection === 'site' && (
+            <SiteReturnsWorkspace
+              issues={materialIssues}
+              receipts={materialReceipts}
+              lines={lines}
+              requests={materialRequests}
+              search={returnSearch}
+              view={listView}
+              priority={priority}
+              onReturn={(issue) => setSiteReturnIssueId(issue.id)}
+            />
+          )}
+          {activeTab === 'returns' && returnDirection === 'customer' && (
             <ReturnsWorkspace
               indicatorIndex={indicatorIndex}
               search={returnSearch}
@@ -2890,6 +3199,8 @@ function OperationsSection({
               }
               lineById={lineById}
               receipts={materialReceipts}
+              balances={balancesByReceipt}
+              onReturn={(entry) => setSiteReturnIssueId(entry.id)}
               onDelete={(entry) =>
                 requestDelete({
                   kind: 'issues',
@@ -3050,6 +3361,32 @@ function OperationsSection({
         }}
       />
 
+      <Modal
+        open={!!siteReturnIssue}
+        title="Возврат с площадки"
+        onClose={() => setSiteReturnIssueId(null)}
+      >
+        {siteReturnIssue && (
+          <SiteReturnForm
+            key={siteReturnIssue.id}
+            issue={siteReturnIssue}
+            name={
+              materialReceipts.find(
+                (receipt) => receipt.id === siteReturnIssue.receiptId,
+              )?.actualName || 'Материал'
+            }
+            unit={
+              siteReturnIssue.projectUnit ||
+              materialReceipts.find(
+                (receipt) => receipt.id === siteReturnIssue.receiptId,
+              )?.projectUnit ||
+              ''
+            }
+            onSubmit={onSiteReturn}
+            onClose={() => setSiteReturnIssueId(null)}
+          />
+        )}
+      </Modal>
       <IssueModal
         workflow={qualityWorkflow}
         requests={materialRequests}
@@ -4842,6 +5179,9 @@ function ReceiptsTable({
   )
   const referenceReturns = useMemo(() => {
     if (references?.kind !== 'returns' || !referenceGroup) return []
+    const returnAllocations = workflow
+      ? rejectedReturnAllocations(workflow)
+      : new Map()
     const receiptById = new Map(
       referenceGroup.entries.map((entry) => [entry.id, entry]),
     )
@@ -4857,8 +5197,11 @@ function ReceiptsTable({
           receiptId: item.receiptId,
           date: formatDate(item.date),
           quantity: `${formatQuantity(item.quantity)} ${receipt.projectUnit}`,
-          reason:
-            item.kind === 'surplus' ? 'Лишний материал' : 'Не принято по ЗНИ',
+          reason: customerReturnReason(
+            item,
+            item.caseId ? caseById.get(item.caseId) : undefined,
+            returnAllocations.get(item.id),
+          ),
           request:
             requestById.get(receipt.requestId)?.number ?? 'Заявка удалена',
           receiptDate: formatDate(receipt.date),
@@ -5376,6 +5719,8 @@ function IssuesTable({
   lineById,
   receipts,
   onDelete,
+  onReturn,
+  balances,
 }: {
   indicatorIndex: OperationIndicatorIndex
   listView: OperationListView
@@ -5385,6 +5730,8 @@ function IssuesTable({
   focusEntryId?: string
   lineById: Map<string, SubobjectMaterialMetric>
   receipts: Array<MaterialReceiptEntry>
+  onReturn: (entry: MaterialIssueEntry) => void
+  balances: ReturnType<typeof receiptBalances>
   onDelete: (entry: MaterialIssueEntry) => void
 }) {
   const orderedEntries = useMemo(
@@ -5466,6 +5813,37 @@ function IssuesTable({
           render: ({ entry }) => <>{formatQuantity(entry.quantity)}</>,
         },
         {
+          id: 'siteReturned',
+          title: 'Возвращено с площадки',
+          value: ({ entry }) => siteReturned(entry),
+          numeric: true,
+        },
+        {
+          id: 'atSite',
+          title: 'У площадки',
+          value: ({ entry }) => netIssued(entry),
+          numeric: true,
+        },
+        {
+          id: 'control',
+          title: 'Входной контроль',
+          value: ({ entry }) =>
+            entry.beforeInspection
+              ? netIssued(entry) === 0
+                ? 'Выдано до ВК · возвращено с площадки'
+                : (balances.get(entry.receiptId)?.issuedBeforeInspection ?? 0) >
+                    0
+                  ? 'Выдано до ВК · контроль не закрыт по партии'
+                  : 'Выдано до ВК · контроль закрыт'
+              : 'По подписанному АВК',
+          width: 240,
+        },
+        {
+          id: 'reason',
+          title: 'Причина выдачи до ВК',
+          value: ({ entry }) => entry.beforeInspection?.reason ?? '',
+        },
+        {
           id: 'altQuantity',
           title: 'Выдано в альтернативной единице',
           value: ({ entry }) => entry.altQuantity,
@@ -5507,10 +5885,21 @@ function IssuesTable({
           id: 'actions',
           title: 'Действия',
           value: (_row) => null,
-          width: 110,
+          width: 170,
           actions: true,
           render: ({ entry }) => (
             <>
+              {netIssued(entry) > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Принять возврат с площадки"
+                  aria-label="Принять возврат с площадки"
+                  onClick={() => onReturn(entry)}
+                >
+                  <Undo2 size={16} />
+                </Button>
+              )}
               <DeleteOperationButton
                 label="Удалить выдачу"
                 onClick={() => onDelete(entry)}
@@ -9597,6 +9986,7 @@ function IssueModal({
   const [manualNumber, setManualNumber] = useState<string | null>(null)
   const [date, setDate] = useState('')
   const [receiver, setReceiver] = useState('')
+  const [reason, setReason] = useState('')
   const [search, setSearch] = useState('')
   const [cipher, setCipher] = useState('')
   const [materialType, setMaterialType] = useState('')
@@ -9615,6 +10005,7 @@ function IssueModal({
     setManualNumber(null)
     setDate(localDateInputValue())
     setReceiver('')
+    setReason('')
     setSearch('')
     setCipher('')
     setMaterialType('')
@@ -9625,11 +10016,14 @@ function IssueModal({
 
   const candidates = useMemo(() => {
     if (!open) return []
-    const balances = receiptBalances(
-      receipts,
-      workflow,
-      qualityControls,
-      issues,
+    const availability = issueAvailability(
+      {
+        materialReceipts: receipts,
+        materialRequests: requests,
+        qualityWorkflow: workflow,
+        materialIssues: issues,
+      },
+      date,
     )
     const requestById = new Map(
       requests.map((request) => [request.id, request]),
@@ -9667,7 +10061,8 @@ function IssueModal({
         avk,
         zni,
         requestNumber: request?.number || '',
-        available: balances.get(receipt.id)?.availableToIssue ?? 0,
+        available: availability.get(receipt.id)?.available ?? 0,
+        approvedAvailable: availability.get(receipt.id)?.approved ?? 0,
         conversion: getOperationConversion(line, receipt.projectUnit, receipt),
         searchText: normalizeSearchValue(
           [
@@ -9688,7 +10083,16 @@ function IssueModal({
         ),
       }
     })
-  }, [open, receipts, workflow, qualityControls, issues, requests, lineById])
+  }, [
+    open,
+    date,
+    receipts,
+    workflow,
+    qualityControls,
+    issues,
+    requests,
+    lineById,
+  ])
 
   function buildRows(values: Record<string, IssueDraft>): Array<IssueTableRow> {
     return candidates
@@ -9747,6 +10151,16 @@ function IssueModal({
     })),
   )
   const errorCount = selectedRows.filter((row) => row.error).length
+  const earlyRows = selectedRows.flatMap((row) => {
+    if (row.error) return []
+    const amount = allocateIssue(
+      parsePositiveNumber(row.quantity),
+      row.approvedAvailable,
+    ).beforeInspection
+    return amount > 0
+      ? [{ quantity: amount, unit: row.receipt.projectUnit }]
+      : []
+  })
 
   function updateDraft(
     receiptId: string,
@@ -9807,24 +10221,46 @@ function IssueModal({
       )
       return
     }
-    const entries = selected.map(({ receipt, quantity, conversion, note }) => {
-      const amount = parsePositiveNumber(quantity)
-      const alternative = getOperationAlternative(amount, conversion)
-      return {
-        altQuantity: alternative.altQuantity,
-        altUnit: alternative.altUnit,
-        altUnitFactor: alternative.altUnitFactor,
-        projectUnit: receipt.projectUnit,
-        date,
-        document: documentNumber.trim(),
-        id: createClientId('issue'),
-        note: note.trim(),
-        projectLineId: receipt.projectLineId,
-        quantity: amount,
-        receiptId: receipt.id,
-        receiver: receiver.trim(),
-      } satisfies MaterialIssueEntry
-    })
+    const needsReason = selected.some(
+      (row) =>
+        allocateIssue(parsePositiveNumber(row.quantity), row.approvedAvailable)
+          .beforeInspection > 0,
+    )
+    if (needsReason && (!reason.trim() || !receiver.trim())) {
+      setSubmitError('Укажите получателя и причину выдачи до ВК.')
+      return
+    }
+    const entries = selected.flatMap(
+      ({ receipt, quantity, approvedAvailable, conversion, note }) => {
+        const allocation = allocateIssue(
+          parsePositiveNumber(quantity),
+          approvedAvailable,
+        )
+        return [
+          { amount: allocation.approved, early: false },
+          { amount: allocation.beforeInspection, early: true },
+        ]
+          .filter(({ amount }) => amount > 0)
+          .map(({ amount, early }) => {
+            const alternative = getOperationAlternative(amount, conversion)
+            return {
+              altQuantity: alternative.altQuantity,
+              altUnit: alternative.altUnit,
+              altUnitFactor: alternative.altUnitFactor,
+              projectUnit: receipt.projectUnit,
+              date,
+              document: documentNumber.trim(),
+              id: createClientId('issue'),
+              note: note.trim(),
+              projectLineId: receipt.projectLineId,
+              quantity: amount,
+              receiptId: receipt.id,
+              receiver: receiver.trim(),
+              ...(early ? { beforeInspection: { reason: reason.trim() } } : {}),
+            } satisfies MaterialIssueEntry
+          })
+      },
+    )
     try {
       const previous = {
         qualityWorkflow: workflow,
@@ -9890,11 +10326,25 @@ function IssueModal({
           }
         }}
       >
-        <p className="text-sm text-slate-500">
-          Доступен материал с подписанным АВК. Каждая строка — отдельное
-          поступление. Введите количество в столбце «Выдать» двойным нажатием.
-          Enter или Tab подтверждает ячейку.
-        </p>
+        {earlyRows.length > 0 && (
+          <div className="grid gap-3 rounded-md bg-amber-50 p-3">
+            <p
+              role="status"
+              aria-label="Выдача до ВК"
+              className="text-sm text-amber-900"
+            >
+              До ВК будет выдано: {formatUnitTotals(earlyRows)}. Входной
+              контроль остаётся незавершённым.
+            </p>
+            <Field label="Причина выдачи до ВК">
+              <Input
+                aria-label="Причина выдачи до ВК"
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </Field>
+          </div>
+        )}
         <div className="grid gap-3 md:grid-cols-3">
           <Field label="Документ передачи">
             <Input
@@ -9992,7 +10442,7 @@ function IssueModal({
           </p>
         ) : null}
         {rows.length === 0 ? (
-          <OperationFormEmpty text="Нет материала с подписанным АВК и остатком к выдаче." />
+          <OperationFormEmpty text="Нет доступного остатка на выбранную дату." />
         ) : (
           <OperationsGrid<IssueTableRow>
             id="issue-selection"
@@ -10053,6 +10503,51 @@ function IssueModal({
                 numeric: true,
                 centered: true,
                 value: (row) => row.available,
+              },
+              {
+                id: 'control',
+                title: 'Входной контроль',
+                width: 220,
+                value: (row) =>
+                  row.approvedAvailable >= row.available
+                    ? 'АВК подписан'
+                    : row.approvedAvailable > 0
+                      ? `АВК на ${formatQuantity(row.approvedAvailable)} ${row.receipt.projectUnit}`
+                      : 'До ВК',
+                render: (row) => {
+                  const allocation = allocateIssue(
+                    parsePositiveNumber(row.quantity),
+                    row.approvedAvailable,
+                  )
+                  return (
+                    <div>
+                      <span
+                        className={
+                          row.approvedAvailable >= row.available
+                            ? 'text-emerald-700'
+                            : 'text-amber-800'
+                        }
+                      >
+                        {row.approvedAvailable >= row.available
+                          ? 'АВК подписан'
+                          : row.approvedAvailable > 0
+                            ? `АВК на ${formatQuantity(row.approvedAvailable)} ${row.receipt.projectUnit}`
+                            : 'До ВК'}
+                      </span>
+                      {row.selected &&
+                        !row.error &&
+                        allocation.beforeInspection > 0 && (
+                          <p className="mt-1 text-xs text-amber-800">
+                            {allocation.approved > 0
+                              ? `По АВК: ${formatQuantity(allocation.approved)} · `
+                              : ''}
+                            До ВК: {formatQuantity(allocation.beforeInspection)}{' '}
+                            {row.receipt.projectUnit}
+                          </p>
+                        )}
+                    </div>
+                  )
+                },
               },
               {
                 id: 'quantity',
@@ -10187,6 +10682,7 @@ type IssueTableRow = {
   zni: string
   requestNumber: string
   available: number
+  approvedAvailable: number
   conversion: ReturnType<typeof getOperationConversion>
   searchText: string
   quantity: string
@@ -11627,7 +12123,14 @@ function getOperationTabCount(
     return context.overviewCount
   }
 
-  if (tab === 'returns') return context.returnDocumentCount
+  if (tab === 'returns')
+    return (
+      context.returnDocumentCount +
+      context.materialIssues.reduce(
+        (sum, issue) => sum + (issue.siteReturns?.length ?? 0),
+        0,
+      )
+    )
 
   if (tab === 'requests') {
     return groupRequestEntries(context.materialRequests).length
@@ -11682,7 +12185,12 @@ function getOperationDeletionError(
       return `Нельзя удалить получение: есть связанные выдачи (${issueCount}). Сначала удалите их.`
     return ''
   }
-  return issues.some((entry) => entry.id === target.id) ? '' : missing
+  const issue = issues.find((entry) => entry.id === target.id)
+  return !issue
+    ? missing
+    : issue.siteReturns?.length
+      ? 'Нельзя удалить выдачу: по ней есть возврат с площадки.'
+      : ''
 }
 
 function createClientId(prefix: string) {
@@ -12170,6 +12678,8 @@ function MaterialModal({
 
 function MaterialImportModal({
   draft,
+  error,
+  loading,
   currentLines,
   open,
   onAddMissingReferences,
@@ -12179,6 +12689,8 @@ function MaterialImportModal({
   onImportFile,
 }: {
   draft: MaterialImportDraft | null
+  error: string
+  loading: boolean
   currentLines: Array<SubobjectMaterialMetric>
   open: boolean
   onAddMissingReferences: () => void
@@ -12188,6 +12700,12 @@ function MaterialImportModal({
   onImportFile: (file: File) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const [fileVersion, setFileVersion] = useState(0)
+  const pagination = useOperationPagination(
+    'material-import',
+    draft?.rows ?? [],
+    String(fileVersion),
+  )
   const previews = useMemo(
     () =>
       previewMaterialImportRows(
@@ -12208,7 +12726,7 @@ function MaterialImportModal({
   ).length
   const isEmptyDraft = draft !== null && draft.summary.totalRows === 0
   const canApply =
-    draft !== null && !isEmptyDraft && draft.summary.errorRows === 0
+    !loading && draft !== null && !isEmptyDraft && draft.summary.errorRows === 0
 
   return (
     <Modal
@@ -12238,6 +12756,7 @@ function MaterialImportModal({
           <Button
             className="justify-center"
             variant="outline"
+            disabled={loading}
             onClick={() => inputRef.current?.click()}
           >
             <FileInput size={16} />
@@ -12247,15 +12766,24 @@ function MaterialImportModal({
             ref={inputRef}
             className="hidden"
             type="file"
+            disabled={loading}
             accept=".xlsx,.xls,.csv"
             onChange={(event) => {
               const file = event.target.files?.[0]
               if (file) {
+                setFileVersion((current) => current + 1)
                 onImportFile(file)
                 event.currentTarget.value = ''
               }
             }}
           />
+
+          {loading && <div role="status">Чтение файла…</div>}
+          {error && (
+            <div role="alert" className="text-sm text-red-700">
+              {error}
+            </div>
+          )}
 
           {draft ? (
             <div className="grid grid-cols-2 gap-2">
@@ -12346,14 +12874,23 @@ function MaterialImportModal({
           </div>
 
           {draft ? (
-            <div className="min-h-0 overflow-auto">
-              {draft.rows.map((entry, index) => (
-                <ImportDraftRowCard
-                  key={`${entry.row.rowNumber}-${entry.identityKey}-${entry.row.cipher}`}
-                  entry={entry}
-                  preview={previews[index]!}
-                />
-              ))}
+            <div className="flex min-h-0 flex-col">
+              <div
+                ref={pagination.containerRef}
+                className="min-h-0 flex-1 overflow-auto"
+              >
+                {pagination.items.map((entry, index) => (
+                  <ImportDraftRowCard
+                    key={`${entry.row.rowNumber}-${entry.identityKey}-${entry.row.cipher}`}
+                    entry={entry}
+                    preview={previews[pagination.start - 1 + index]!}
+                  />
+                ))}
+              </div>
+              <OperationPagination
+                pagination={pagination}
+                label="Импорт проектной базы"
+              />
             </div>
           ) : (
             <div className="grid place-items-center bg-slate-50/50 px-6 text-center">

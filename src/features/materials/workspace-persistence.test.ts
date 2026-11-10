@@ -71,6 +71,49 @@ function memoryStorage(): Storage {
 }
 
 describe('workspace file safety', () => {
+  it('preserves the snapshot when a request quantity is invalid', async () => {
+    const { store } = await setup()
+    const initial = fixture()
+    initial.materialRequests = [
+      { id: 'request', quantity: 10, date: '2026-11-09' },
+    ]
+    await store.save(initial, null)
+    const before = await store.load()
+    const invalid = structuredClone(initial)
+    invalid.materialRequests[0]!.quantity = -1
+    await expect(store.save(invalid, before.revision)).rejects.toThrow(
+      /количество.*заявк/,
+    )
+    expect(await store.load()).toEqual(before)
+  })
+
+  it('detects conflicts between ten users editing different positions from the same revision', async () => {
+    const { dir, store } = await setup()
+    const initial = fixture()
+    initial.lines = Array.from({ length: 10 }, (_, index) => ({
+      id: `line-${index}`,
+      plannedQuantity: 1,
+    }))
+    await store.save(initial, null)
+    const before = await store.load()
+    const results = await Promise.all(
+      initial.lines.map(async (_, index) => {
+        const changed = structuredClone(initial)
+        changed.lines[index]!.plannedQuantity = 2
+        return createWorkspaceStore(dir).save(changed, before.revision)
+      }),
+    )
+    expect(results.filter((result) => result.status === 'saved')).toHaveLength(
+      1,
+    )
+    expect(
+      results.filter((result) => result.status === 'conflict'),
+    ).toHaveLength(9)
+    const after = await store.load()
+    expect(
+      after.workspace!.lines.filter((line) => line.plannedQuantity === 2),
+    ).toHaveLength(1)
+  })
   it('persists AVK and ZNI deletion separately without deleting receipts, and rejects stale deletion', async () => {
     const { dir, store } = await setup()
     const workspace = acceptFixture()

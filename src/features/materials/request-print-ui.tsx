@@ -91,12 +91,14 @@ export function PdfPreview({
   excel,
   pdfError,
   onClose,
+  portalTarget,
 }: {
   pdf: Blob | null
   excel?: Blob
   pdfError?: string
   name: string
   onClose: () => void
+  portalTarget?: Element
 }) {
   const [url, setUrl] = useState('')
   const [excelUrl, setExcelUrl] = useState('')
@@ -206,7 +208,7 @@ export function PdfPreview({
         ) : null}
       </div>
     </div>,
-    document.body,
+    portalTarget ?? document.body,
   )
 }
 

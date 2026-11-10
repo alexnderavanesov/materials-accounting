@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
-const sections = ['operations', 'database', 'settings'] as const
+const sections = ['operations', 'database', 'documents', 'settings'] as const
 const operationTabs = [
   'overview',
   'requests',

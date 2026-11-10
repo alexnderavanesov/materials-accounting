@@ -1,3 +1,10 @@
+import {
+  issueApprovalConsumption,
+  netIssued,
+  validateIssueMovements,
+} from './material-issues'
+import type { IssueMovement } from './material-issues'
+import { validateIssueAllocation } from './issue-allocation'
 import { z } from 'zod'
 import { normalizeCalendarDate } from './calendar-date'
 import { validateProjectUnitChanges } from './project-unit-guard'
@@ -127,11 +134,21 @@ const avkSchema = z
     attachments: text,
     photos: z.enum(['', 'yes', 'no']),
     documents: z.array(qualityDocumentSchema),
+    rejection: z
+      .object({
+        kind: z.enum(['document', 'materials']),
+        date,
+        reason: text,
+        quantities: z.record(id, quantity.positive()).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 const revisionSchema = z
   .object({
     revision: z.number().int().positive(),
+    kind: z.literal('avk-correction').optional(),
     zni: zniSchema,
     avk: avkSchema.nullable(),
   })
@@ -148,6 +165,7 @@ export const customerReturnSchema = z
   .object({
     id,
     kind: z.enum(['rejected', 'surplus']),
+    rejectedAt: z.enum(['zni', 'avk']).optional(),
     source: z.enum(['uninspected', 'accepted']).optional(),
     caseId: id.optional(),
     revision: z.number().int().positive().optional(),
@@ -182,8 +200,101 @@ export const emptyQualityWorkflow = (): QualityWorkflow => ({
 })
 export const currentInspection = (entry: InspectionCase) =>
   entry.revisions[entry.revisions.length - 1]!
+export const latestInspectionAct = (entry: InspectionCase) =>
+  [...entry.revisions].reverse().find((revision) => revision.avk)
 export const activeInspection = (entry: InspectionCase) =>
   [...entry.revisions].reverse().find((revision) => revision.avk?.signedOn)
+/** AVK corrections keep the same signed inspection and stock allocation. */
+export function inspectionSourceRevision(
+  entry: InspectionCase,
+  revision = currentInspection(entry),
+) {
+  let index = entry.revisions.indexOf(revision)
+  while (index > 0 && entry.revisions[index]?.kind === 'avk-correction') index--
+  return entry.revisions[index] ?? revision
+}
+export const rejectedByAct = (
+  revision: InspectionRevision,
+  row: InspectionRow,
+) => {
+  const rejection = revision.avk?.rejection
+  if (rejection?.kind !== 'materials') return 0
+  // Old acts rejected the entire accepted quantity; never reinterpret that history.
+  return rejection.quantities
+    ? (rejection.quantities[row.receiptId] ?? 0)
+    : (row.accepted ?? 0)
+}
+export const acceptedAfterInspection = (
+  revision: InspectionRevision,
+  row: InspectionRow,
+) =>
+  Number(((row.accepted ?? 0) - rejectedByAct(revision, row)).toPrecision(15))
+export const isPartiallyRejectedAct = (revision: InspectionRevision) =>
+  revision.avk?.rejection?.kind === 'materials' &&
+  revision.zni.rows.some((row) => acceptedAfterInspection(revision, row) > 0)
+export const isBlockedInspectionAct = (revision: InspectionRevision) =>
+  !!revision.avk?.rejection && !isPartiallyRejectedAct(revision)
+
+export function customerReturnReason(
+  item: CustomerReturn,
+  entry?: InspectionCase,
+  allocation?: { zni: number; avk: number },
+) {
+  if (item.kind === 'surplus') return 'Лишний материал'
+  if (allocation)
+    return allocation.zni && allocation.avk
+      ? 'Не принято по ЗНИ / АВК'
+      : allocation.avk
+        ? 'Не принято по АВК'
+        : 'Не принято по ЗНИ'
+  if (item.rejectedAt)
+    return item.rejectedAt === 'avk' ? 'Не принято по АВК' : 'Не принято по ЗНИ'
+  const revision = entry?.revisions.find(
+    (rev) => rev.revision === item.revision,
+  )
+  const row = revision?.zni.rows.find(
+    (candidate) => candidate.receiptId === item.receiptId,
+  )
+  if (revision && row && rejectedByAct(revision, row) > 0) {
+    return row.presented === row.accepted
+      ? 'Не принято по АВК'
+      : 'Не принято по ЗНИ / АВК'
+  }
+  return 'Не принято по ЗНИ'
+}
+
+/** Legacy returns consumed the ZNI-rejected part first; new records store the stage. */
+export function rejectedReturnAllocations(workflow: QualityWorkflow) {
+  const result = new Map<string, { zni: number; avk: number }>()
+  const cases = new Map(workflow.cases.map((entry) => [entry.id, entry]))
+  const usedZni = new Map<string, number>()
+  for (const item of workflow.customerReturns ?? []) {
+    if (item.kind !== 'rejected') continue
+    const revision = cases
+      .get(item.caseId ?? '')
+      ?.revisions.find((rev) => rev.revision === item.revision)
+    const row = revision?.zni.rows.find(
+      (candidate) => candidate.receiptId === item.receiptId,
+    )
+    const key = JSON.stringify([item.caseId, item.receiptId])
+    const availableZni = Math.max(
+      0,
+      precise(
+        (row ? row.presented - (row.accepted ?? 0) : item.quantity) -
+          (usedZni.get(key) ?? 0),
+      ),
+    )
+    const zni =
+      item.rejectedAt === 'avk'
+        ? 0
+        : item.rejectedAt === 'zni'
+          ? item.quantity
+          : Math.min(availableZni, item.quantity)
+    usedZni.set(key, precise((usedZni.get(key) ?? 0) + zni))
+    result.set(item.id, { zni, avk: precise(item.quantity - zni) })
+  }
+  return result
+}
 export const localToday = () =>
   new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
     .toISOString()
@@ -208,8 +319,14 @@ export function inspectionMatches(entry: InspectionCase, search: string) {
       avk?.number,
       avk?.date,
       avk?.signedOn,
+      avk?.rejection?.date,
+      avk?.rejection?.reason,
       zni.signedOn ? 'ЗНИ подписана' : 'ЗНИ в работе',
-      avk?.signedOn ? 'АВК подписан' : 'АВК в работе',
+      avk?.rejection
+        ? 'АВК отклонён'
+        : avk?.signedOn
+          ? 'АВК подписан'
+          : 'АВК в работе',
       ...Object.values(zni.details),
       zni.remarks,
       ...zni.documents.flatMap((doc) => [doc.name, doc.number]),
@@ -424,7 +541,7 @@ export function newInspection(
     ],
   }
 }
-function receiptQualityDocument(
+export function receiptQualityDocument(
   value: string | undefined,
   defaultName: string,
 ): QualityDocument | null {
@@ -568,6 +685,8 @@ export function inspectionDeletionError(
   if (kind === 'zni' && entry.revisions.some((revision) => revision.avk))
     return 'Сначала удалите АВК этой ЗНИ.'
   if (kind === 'avk') {
+    if (entry.revisions.some((revision) => revision.avk?.rejection))
+      return 'Отклонённый АВК сохраняется в истории и не удаляется.'
     if (!currentInspection(entry).avk)
       return 'АВК не найден. Обновите страницу.'
     if (entry.revisions.slice(0, -1).some((revision) => revision.avk))
@@ -622,6 +741,92 @@ export function createAcceptedInspectionAct(
   return act
 }
 
+export function rejectInspectionAct(
+  entry: InspectionCase,
+  kind: 'document' | 'materials',
+  rejectionDate: string,
+  reason: string,
+  rows?: Array<InspectionSelection>,
+): InspectionCase {
+  const next = structuredClone(entry)
+  const revision = currentInspection(next)
+  if (!revision.avk || !revision.zni.signedOn)
+    fail('Сначала создайте АВК по подписанной ЗНИ.')
+  if (revision.avk.signedOn) fail('Подписанный АВК нельзя отклонить.')
+  if (revision.avk.rejection) fail('АВК уже отклонён.')
+  if (
+    kind === 'materials' &&
+    entry.revisions.some((item) => item.avk?.signedOn)
+  )
+    fail(
+      'По этой ЗНИ уже есть подписанный АВК. Отклонение материала не может отменять действующую приёмку.',
+    )
+  if (rows)
+    unique(
+      rows.map((row) => row.receiptId),
+      'позиции отклонения АВК',
+    )
+  revision.avk.rejection = {
+    kind,
+    date: rejectionDate,
+    reason: reason.trim(),
+    ...(kind === 'materials' && rows
+      ? {
+          quantities: Object.fromEntries(
+            rows.map((row) => [row.receiptId, row.quantity]),
+          ),
+        }
+      : {}),
+  }
+  validateRevision(revision)
+  return next
+}
+
+export function correctInspectionAct(entry: InspectionCase): InspectionCase {
+  const current = currentInspection(entry)
+  if (current.avk?.rejection?.kind !== 'document')
+    fail(
+      'Исправление доступно для АВК, отклонённого из-за оформления документа.',
+    )
+  const next = structuredClone(current)
+  next.revision++
+  next.kind = 'avk-correction'
+  next.avk!.date = [localToday(), current.avk.rejection.date].sort().at(-1)!
+  next.avk!.signedOn = null
+  delete next.avk!.rejection
+  return { ...entry, revisions: [...entry.revisions, next] }
+}
+
+/** A correction is explicit and retains the original rejection and signed ZNI. */
+export function correctMaterialRejection(
+  entry: InspectionCase,
+  rows: Array<InspectionSelection>,
+  reason: string,
+): InspectionCase {
+  const current = currentInspection(entry)
+  if (current.avk?.rejection?.kind !== 'materials' || current.avk.signedOn)
+    fail(
+      'Уточнение доступно только для неподписанного АВК с непринятым материалом.',
+    )
+  const next = structuredClone(current)
+  next.revision++
+  next.kind = 'avk-correction'
+  // The act date and rejection date remain the original dates for return chronology.
+  unique(
+    rows.map((row) => row.receiptId),
+    'позиции отклонения АВК',
+  )
+  next.avk!.rejection = {
+    ...next.avk!.rejection!,
+    quantities: Object.fromEntries(
+      rows.map((row) => [row.receiptId, row.quantity]),
+    ),
+    reason: reason.trim(),
+  }
+  validateRevision(next)
+  return { ...entry, revisions: [...entry.revisions, next] }
+}
+
 export function receivedByRequest(
   receipts: Array<{ id: string; requestId: string; quantity: number }>,
   workflow?: QualityWorkflow,
@@ -671,6 +876,34 @@ export function rejectedReturnsByCase(workflow: QualityWorkflow) {
   }
   return result
 }
+/** A pending correction does not make a known rejected batch available for early issue. */
+export function rejectedStockTotals(workflow?: QualityWorkflow) {
+  const totals = new Map<string, number>()
+  if (!workflow) return totals
+  const returned = rejectedReturnsByCase(workflow)
+  for (const entry of workflow.cases) {
+    const revision = [...entry.revisions]
+      .reverse()
+      .find((item) => item.zni.signedOn)
+    if (!revision) continue
+    for (const row of revision.zni.rows) {
+      const rejectedQuantity = Math.max(
+        0,
+        precise(
+          row.presented -
+            acceptedAfterInspection(revision, row) -
+            (returned.get(entry.id)?.get(row.receiptId) ?? 0),
+        ),
+      )
+      totals.set(
+        row.receiptId,
+        precise((totals.get(row.receiptId) ?? 0) + rejectedQuantity),
+      )
+    }
+  }
+  return totals
+}
+
 export function pendingCustomerReturns(
   workflow: QualityWorkflow,
   entry: InspectionCase,
@@ -684,7 +917,7 @@ export function pendingCustomerReturns(
       quantity: Number(
         (
           row.presented -
-          (row.accepted ?? 0) -
+          acceptedAfterInspection(revision, row) -
           (returned.get(entry.id)?.get(row.receiptId) ?? 0)
         ).toPrecision(15),
       ),
@@ -712,26 +945,65 @@ export function recordCustomerReturn(
     selection.map((item) => item.receiptId),
     'позиции возврата',
   )
-  const additions = selection.map((item) => {
+  const allocations = rejectedReturnAllocations(workflow)
+  const alreadyReturnedZni = new Map<string, number>()
+  for (const item of workflow.customerReturns ?? []) {
+    if (item.caseId !== caseId || item.kind !== 'rejected') continue
+    alreadyReturnedZni.set(
+      item.receiptId,
+      precise(
+        (alreadyReturnedZni.get(item.receiptId) ?? 0) +
+          (allocations.get(item.id)?.zni ?? 0),
+      ),
+    )
+  }
+  const revision = currentInspection(entry)
+  const additions = selection.flatMap((item) => {
     if (
       !Number.isFinite(item.quantity) ||
       item.quantity <= 0 ||
       item.quantity > (available.get(item.receiptId) ?? 0)
     )
-      fail('Количество возврата превышает непринятый остаток ЗНИ.')
-    if (returnDate < currentInspection(entry).zni.signedOn!)
+      fail('Количество возврата превышает непринятый остаток ЗНИ / АВК.')
+    if (returnDate < revision.zni.signedOn!)
       fail('Дата возврата не может быть раньше подписания ЗНИ.')
-    return customerReturnSchema.parse({
-      id: crypto.randomUUID(),
-      kind: 'rejected',
-      caseId,
-      revision: currentInspection(entry).revision,
-      receiptId: item.receiptId,
-      quantity: item.quantity,
-      date: returnDate,
-      documentNumber,
-      note,
-    })
+    const row = revision.zni.rows.find(
+      (candidate) => candidate.receiptId === item.receiptId,
+    )!
+    const remainingZni = Math.max(
+      0,
+      precise(
+        row.presented -
+          (row.accepted ?? 0) -
+          (alreadyReturnedZni.get(item.receiptId) ?? 0),
+      ),
+    )
+    const zniQuantity = Math.min(item.quantity, remainingZni)
+    const avkQuantity = precise(item.quantity - zniQuantity)
+    const rejection = revision.avk?.rejection
+    if (avkQuantity > 0 && rejection && returnDate < rejection.date)
+      fail('Дата возврата не может быть раньше отклонения АВК.')
+    return (
+      [
+        ['zni', zniQuantity],
+        ['avk', avkQuantity],
+      ] as const
+    )
+      .filter(([, amount]) => amount > 0)
+      .map(([rejectedAt, amount]) =>
+        customerReturnSchema.parse({
+          id: crypto.randomUUID(),
+          kind: 'rejected',
+          rejectedAt,
+          caseId,
+          revision: revision.revision,
+          receiptId: item.receiptId,
+          quantity: amount,
+          date: returnDate,
+          documentNumber,
+          note,
+        }),
+      )
   })
   return {
     ...workflow,
@@ -740,7 +1012,7 @@ export function recordCustomerReturn(
 }
 const precise = (value: number) => Number(value.toPrecision(15))
 export type ReturnReceipt = { id: string; quantity: number; date?: string }
-export type ReturnIssue = { receiptId: string; quantity: number }
+export type ReturnIssue = IssueMovement
 export type SurplusReturnSource = {
   receiptId: string
   source: 'uninspected' | 'accepted'
@@ -761,7 +1033,12 @@ export function approvedCustomerReturnTotals(workflow?: QualityWorkflow) {
   for (const item of workflow?.customerReturns ?? []) {
     if (item.kind !== 'surplus' || item.source !== 'accepted') continue
     const entry = item.caseId ? cases.get(item.caseId) : undefined
-    if (entry && activeInspection(entry)?.revision === item.revision)
+    const active = entry && activeInspection(entry)
+    if (
+      entry &&
+      active &&
+      inspectionSourceRevision(entry, active).revision === item.revision
+    )
       result.set(
         item.receiptId,
         precise((result.get(item.receiptId) ?? 0) + item.quantity),
@@ -800,8 +1077,8 @@ export function surplusReturnSources(
           receiptId: row.receiptId,
           source: 'accepted',
           caseId: entry.id,
-          revision: revision.revision,
-          quantity: row.accepted ?? 0,
+          revision: inspectionSourceRevision(entry, revision).revision,
+          quantity: acceptedAfterInspection(revision, row),
           approved: !!revision.avk?.signedOn,
           availableOn: [dates.get(row.receiptId) ?? '', revision.zni.signedOn]
             .sort()
@@ -835,7 +1112,22 @@ export function surplusReturnSources(
   for (const issue of issues)
     approved.set(
       issue.receiptId,
-      precise((approved.get(issue.receiptId) ?? 0) - issue.quantity),
+      precise(
+        (approved.get(issue.receiptId) ?? 0) - issueApprovalConsumption(issue),
+      ),
+    )
+  const physical = new Map(
+    receipts.map((receipt) => [receipt.id, receipt.quantity]),
+  )
+  for (const item of workflow.customerReturns ?? [])
+    physical.set(
+      item.receiptId,
+      precise((physical.get(item.receiptId) ?? 0) - item.quantity),
+    )
+  for (const issue of issues)
+    physical.set(
+      issue.receiptId,
+      precise((physical.get(issue.receiptId) ?? 0) - netIssued(issue)),
     )
   return [...uninspected, ...sources]
     .map((source) => {
@@ -855,6 +1147,14 @@ export function surplusReturnSources(
           precise((approved.get(source.receiptId) ?? 0) - amount),
         )
       }
+      amount = Math.min(
+        amount,
+        Math.max(0, physical.get(source.receiptId) ?? 0),
+      )
+      physical.set(
+        source.receiptId,
+        precise((physical.get(source.receiptId) ?? 0) - amount),
+      )
       return { ...source, quantity: amount }
     })
     .filter((source) => source.quantity > 0)
@@ -929,6 +1229,10 @@ export function signInspection(
     if (!next.zni.signedOn || !next.avk)
       throw new Error('Сначала подпишите ЗНИ этой ревизии и создайте АВК.')
     if (next.avk.signedOn) throw new Error('АВК уже подписан.')
+    if (isBlockedInspectionAct(next))
+      fail(
+        'Отклонённый АВК нельзя подписать. Для исправления документа создайте новую редакцию.',
+      )
     next.avk.signedOn = signedOn
   }
   validateRevision(next)
@@ -961,6 +1265,47 @@ function validateRevision(rev: InspectionRevision) {
   }
   if (rev.zni.signedOn && rev.zni.signedOn < rev.zni.date)
     fail('Дата подписания ЗНИ не может быть раньше даты документа.')
+  if (rev.avk?.rejection) {
+    const rejection = rev.avk.rejection
+    if (rev.avk.signedOn && !isPartiallyRejectedAct(rev))
+      fail('Подписанный АВК нельзя отклонить.')
+    if (!rev.avk.number.trim()) fail('Укажите номер АВК перед отклонением.')
+    if (!rejection.reason.trim()) fail('Укажите причину отклонения АВК.')
+    if (
+      !date.safeParse(rejection.date).success ||
+      rejection.date < rev.avk.date ||
+      !rev.zni.signedOn ||
+      rejection.date < rev.zni.signedOn
+    )
+      fail(
+        'Дата отклонения АВК не может быть раньше даты акта или подписания ЗНИ.',
+      )
+    if (rejection.quantities) {
+      if (rejection.kind !== 'materials')
+        fail('Количество отклонения относится только к материалам.')
+      const rowsByReceipt = new Map(
+        rev.zni.rows.map((row) => [row.receiptId, row]),
+      )
+      if (!Object.keys(rejection.quantities).length)
+        fail('Укажите непринятое количество хотя бы для одной позиции АВК.')
+      for (const [receiptId, amount] of Object.entries(rejection.quantities)) {
+        const row = rowsByReceipt.get(receiptId)
+        if (
+          !row ||
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          amount > (row.accepted ?? 0)
+        )
+          fail(
+            'Непринятое по АВК количество должно быть больше нуля и не превышать принятое по ЗНИ.',
+          )
+      }
+    }
+    if (rev.avk.signedOn && rev.avk.signedOn < rejection.date)
+      fail(
+        'Подписание АВК не может предшествовать результату проверки материалов.',
+      )
+  }
   if (rev.avk?.signedOn) {
     if (!rev.zni.signedOn || !rev.avk.number.trim())
       fail('Для подписания АВК нужны номер АВК и подписанная ЗНИ этой ревизии.')
@@ -1001,6 +1346,7 @@ export function validateQualityWorkspace(
   next: WorkspaceLike,
   previous?: WorkspaceLike | null,
 ) {
+  validateIssueMovements(next, previous)
   validateProjectUnitChanges(next.lines, previous?.lines, next, previous)
   const workflow = next.qualityWorkflow
   const documents = receiptDocuments(workflow)
@@ -1020,6 +1366,17 @@ export function validateQualityWorkspace(
     next.materialReceipts.map((receipt) => String(receipt.id)),
     'ID поступлений',
   )
+  const previousRequests = new Map(
+    previous?.materialRequests?.map((request) => [request.id, request]),
+  )
+  for (const request of next.materialRequests ?? []) {
+    if (
+      (!Number.isFinite(request.quantity) || Number(request.quantity) <= 0) &&
+      (!previousRequests.has(request.id) ||
+        previousRequests.get(request.id)!.quantity !== request.quantity)
+    )
+      fail('Укажите положительное количество позиции заявки.')
+  }
   for (const receipt of next.materialReceipts) {
     {
       if (!Number.isFinite(receipt.quantity) || Number(receipt.quantity) <= 0)
@@ -1145,19 +1502,41 @@ export function validateQualityWorkspace(
       fail('Укажите положительное количество выдачи.')
     issuedByReceipt.set(
       receiptId,
-      (issuedByReceipt.get(receiptId) ?? 0) + amount,
+      (issuedByReceipt.get(receiptId) ?? 0) +
+        netIssued(issue as unknown as IssueMovement),
     )
+  }
+  // Later inspection results must not invalidate a previously recorded physical issue.
+  // For a new exception, known rejected quantities are never available to issue.
+  const previousIssues = new Map(
+    previous?.materialIssues.map((issue) => [issue.id, issue]),
+  )
+  const rejectedCapacity = rejectedStockTotals(workflow)
+  const returnedTotals = customerReturnTotals(workflow)
+  for (const issue of next.materialIssues) {
+    if (!issue.beforeInspection || same(issue, previousIssues.get(issue.id)))
+      continue
+    const old = previousIssues.get(issue.id)
+    if (
+      old &&
+      ['receiptId', 'quantity', 'date'].every((key) => old[key] === issue[key])
+    )
+      continue
+    const receiptId = String(issue.receiptId)
+    const stock = precise(
+      Number(receipts.get(receiptId)?.quantity) -
+        (returnedTotals.get(receiptId) ?? 0) -
+        (issuedByReceipt.get(receiptId) ?? 0),
+    )
+    if (stock < (rejectedCapacity.get(receiptId) ?? 0))
+      fail(
+        'Выдача до ВК превышает складской остаток без непринятого материала.',
+      )
   }
   const reservedByReceipt = new Map<string, number>()
   const acceptedByReceipt = new Map<string, number>()
   for (const entry of workflow.cases) {
     const old = previousCaseById.get(entry.id)
-    if (
-      entry.revisions.length > (old?.revisions.length ?? 1) &&
-      (old?.revisions.some((revision) => revision.avk) ||
-        entry.revisions.slice(0, -1).some((revision) => revision.avk))
-    )
-      fail(reinspectionWithActError)
     if (!same(documentById.get(entry.basis.id), entry.basis))
       fail('Проверьте основание ЗНИ: выберите АПП или М-15.')
     const firstRows = entry.revisions[0]!.zni.rows
@@ -1166,6 +1545,39 @@ export function validateQualityWorkspace(
       .sort()
     const numberedAct = entry.revisions.find((item) => item.avk?.signedOn)?.avk
     for (const [index, revision] of entry.revisions.entries()) {
+      const previousRevision = entry.revisions[index - 1]
+      if (revision.kind === 'avk-correction') {
+        if (
+          !previousRevision ||
+          !previousRevision.avk?.rejection ||
+          previousRevision.avk.signedOn ||
+          !revision.avk ||
+          !same(revision.zni, previousRevision.zni) ||
+          revision.avk.number !== previousRevision.avk.number ||
+          (previousRevision.avk.rejection.kind === 'document'
+            ? revision.avk.date < previousRevision.avk.rejection.date
+            : revision.avk.rejection?.kind !== 'materials' ||
+              revision.avk.rejection.date !==
+                previousRevision.avk.rejection.date ||
+              revision.avk.date !== previousRevision.avk.date)
+        )
+          fail(
+            'Новая редакция АВК сохраняет подписанную ЗНИ и номер акта; её дата не может быть раньше отклонения.',
+          )
+      } else if (
+        index >= (old?.revisions.length ?? 1) &&
+        (old?.revisions.some((item) => item.avk) ||
+          entry.revisions.slice(0, index).some((item) => item.avk))
+      ) {
+        fail(reinspectionWithActError)
+      }
+      if (
+        revision.avk?.rejection?.kind === 'materials' &&
+        entry.revisions.slice(0, index).some((item) => item.avk?.signedOn)
+      )
+        fail(
+          'Отклонение материала не может отменять действующий подписанный АВК.',
+        )
       if (revision.revision !== index + 1)
         fail('Нарушена последовательность ревизий ЗНИ.')
       if (index < entry.revisions.length - 1 && !revision.zni.signedOn)
@@ -1239,7 +1651,8 @@ export function validateQualityWorkspace(
       acceptedByReceipt.set(
         row.receiptId,
         precise(
-          (acceptedByReceipt.get(row.receiptId) ?? 0) + (row.accepted ?? 0),
+          (acceptedByReceipt.get(row.receiptId) ?? 0) +
+            acceptedAfterInspection(activeInspection(entry)!, row),
         ),
       )
   }
@@ -1250,7 +1663,19 @@ export function validateQualityWorkspace(
       )
   }
   const approvedReturned = approvedCustomerReturnTotals(workflow)
-  for (const [receiptId, issued] of issuedByReceipt) {
+  const regularConsumption = new Map<string, number>()
+  for (const issue of next.materialIssues) {
+    if (issue.beforeInspection) continue
+    const receiptId = String(issue.receiptId)
+    regularConsumption.set(
+      receiptId,
+      precise(
+        (regularConsumption.get(receiptId) ?? 0) +
+          issueApprovalConsumption(issue as unknown as IssueMovement),
+      ),
+    )
+  }
+  for (const [receiptId, issued] of regularConsumption) {
     if (
       Number(issued.toPrecision(15)) >
       precise(
@@ -1281,10 +1706,50 @@ export function validateQualityWorkspace(
         fail('Удаление АВК не должно изменять ЗНИ или историю.')
       if (revision.zni.signedOn && !same(revision.zni, updated.zni))
         fail('Подписанную ЗНИ можно изменить только в новой ревизии.')
+      const editablePartialAct =
+        !revision.avk?.signedOn &&
+        isPartiallyRejectedAct(revision) &&
+        same(revision.avk?.rejection, updated.avk?.rejection) &&
+        revision.avk?.date === updated.avk?.date &&
+        revision.avk?.number === updated.avk?.number &&
+        index === current.revisions.length - 1
       if (
-        (revision.avk?.signedOn || index < current.revisions.length - 1) &&
+        revision.avk &&
+        !revision.avk.rejection &&
+        updated.avk?.rejection &&
+        !isPartiallyRejectedAct(updated) &&
+        !same(
+          {
+            ...revision,
+            avk: { ...revision.avk, rejection: updated.avk.rejection },
+          },
+          updated,
+        )
+      )
+        fail('Отклонение АВК не должно изменять содержание документа.')
+      if (
+        revision.avk &&
+        !revision.avk.rejection &&
+        isPartiallyRejectedAct(updated) &&
+        (revision.avk.number !== updated.avk?.number ||
+          revision.avk.date !== updated.avk.date)
+      )
+        fail('При частичном отклонении сохраняются номер и дата АВК.')
+      // The outbox may combine rejection and correction before the first save.
+      // Only the previously current, unsigned act may acquire rejection metadata.
+      const newlyRejected =
+        index === old.revisions.length - 1 &&
+        !revision.avk?.signedOn &&
+        !revision.avk?.rejection &&
+        !!updated.avk?.rejection
+      if (
+        (revision.avk?.signedOn ||
+          revision.avk?.rejection ||
+          index < current.revisions.length - 1) &&
         !same(revision, updated) &&
-        !deletedAct
+        !deletedAct &&
+        !newlyRejected &&
+        !editablePartialAct
       )
         fail('Историю ревизий и подписанный АВК изменять нельзя.')
     }
@@ -1294,6 +1759,9 @@ export function validateQualityWorkspace(
     'ID возвратов',
   )
   const returnedByCaseReceipt = new Map<string, number>()
+  const returnedBeforeRejection = new Map<string, number>()
+  const returnedByStage = new Map<string, number>()
+  const allocations = rejectedReturnAllocations(workflow)
   const surplusCapacity = new Map(
     surplusReturnSources(
       { ...workflow, customerReturns: [] },
@@ -1308,6 +1776,8 @@ export function validateQualityWorkspace(
   const surplusTotals = new Map<string, number>()
   for (const item of workflow.customerReturns ?? []) {
     if (item.kind === 'surplus') {
+      if (item.rejectedAt)
+        fail('У возврата лишнего материала не может быть причины непринятия.')
       const key = surplusReturnSourceKey(item)
       const capacity = surplusCapacity.get(key)
       if (!capacity || !receipts.has(item.receiptId))
@@ -1337,7 +1807,11 @@ export function validateQualityWorkspace(
       fail('Возврат должен относиться к подписанной ЗНИ и её поступлению.')
     if (item.date < revision.zni.signedOn)
       fail('Возврат не может предшествовать подписанию ЗНИ.')
-    if (currentInspection(entry).revision !== item.revision)
+    const latest = currentInspection(entry)
+    if (
+      inspectionSourceRevision(entry, latest).revision !==
+      inspectionSourceRevision(entry, revision).revision
+    )
       fail(
         'После фактического возврата повторная проверка этой партии недоступна.',
       )
@@ -1345,8 +1819,39 @@ export function validateQualityWorkspace(
     const total = Number(
       ((returnedByCaseReceipt.get(key) ?? 0) + item.quantity).toPrecision(15),
     )
-    if (total > Number((row.presented - (row.accepted ?? 0)).toPrecision(15)))
+    if (total > precise(row.presented - acceptedAfterInspection(latest, row)))
       fail('Суммарный возврат превышает непринятое количество.')
+    for (const stage of ['zni', 'avk'] as const) {
+      const stageKey = JSON.stringify([item.caseId, item.receiptId, stage])
+      const amount = allocations.get(item.id)?.[stage] ?? 0
+      const stageTotal = precise((returnedByStage.get(stageKey) ?? 0) + amount)
+      const capacity =
+        stage === 'zni'
+          ? precise(row.presented - (row.accepted ?? 0))
+          : rejectedByAct(latest, row)
+      if (stageTotal > capacity)
+        fail(
+          'Возврат превышает непринятое количество на указанном этапе проверки.',
+        )
+      returnedByStage.set(stageKey, stageTotal)
+      if (
+        stage === 'avk' &&
+        amount > 0 &&
+        (!latest.avk?.rejection || item.date < latest.avk.rejection.date)
+      )
+        fail('Возврат по АВК не может предшествовать отклонению материала.')
+    }
+    const rejection = latest.avk?.rejection
+    if (rejection?.kind === 'materials' && item.date < rejection.date) {
+      const beforeRejection = precise(
+        (returnedBeforeRejection.get(key) ?? 0) + item.quantity,
+      )
+      if (beforeRejection > precise(row.presented - (row.accepted ?? 0)))
+        fail(
+          'Возврат материала по отклонённому АВК не может предшествовать отклонению.',
+        )
+      returnedBeforeRejection.set(key, beforeRejection)
+    }
     returnedByCaseReceipt.set(key, total)
   }
   for (const [receiptId, total] of customerReturnTotals(workflow)) {
@@ -1380,10 +1885,7 @@ export function validateQualityWorkspace(
         )
     }
   }
-  if (next.materialRequests && previous) {
-    const previousRequests = new Map(
-      previous.materialRequests?.map((request) => [request.id, request]),
-    )
+  if (next.materialRequests) {
     const requestIds = new Set(
       next.materialRequests.map((request) => request.id),
     )
@@ -1403,7 +1905,8 @@ export function validateQualityWorkspace(
     for (const request of next.materialRequests) {
       const oldRequest = previousRequests.get(request.id)
       const changed =
-        (oldRequest && oldRequest.quantity !== request.quantity) ||
+        !oldRequest ||
+        oldRequest.quantity !== request.quantity ||
         changedRequests.has(request.id)
       if (
         changed &&
@@ -1445,6 +1948,7 @@ export function validateQualityWorkspace(
     }
   }
   validateWorkspaceChronology(next, previous)
+  validateIssueAllocation(next, previous)
 }
 
 /** Only the effective signed AVK revision contributes to material approvals. */
@@ -1456,7 +1960,7 @@ export function inspectionApprovals(workflow?: QualityWorkflow) {
       id: `inspection:${entry.id}:${row.receiptId}`,
       receiptId: row.receiptId,
       projectLineId: row.projectLineId,
-      quantity: row.accepted ?? 0,
+      quantity: acceptedAfterInspection(revision, row),
       status: 'signed' as const,
       date: revision.avk!.signedOn!,
       arvkDate: revision.avk!.date,

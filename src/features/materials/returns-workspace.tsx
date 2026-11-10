@@ -22,12 +22,14 @@ import {
 import type { OperationListView, ReceiptPriority } from './operation-list-view'
 import {
   currentInspection,
+  customerReturnReason,
   emptyQualityWorkflow,
   findInspectionMaterial,
   indexInspectionMaterials,
   localToday,
   pendingCustomerReturns,
   rejectedReturnsByCase,
+  rejectedReturnAllocations,
   recordSurplusReturn,
   surplusReturnSources,
 } from './quality-workflow'
@@ -138,6 +140,7 @@ export function ReturnsWorkspace({
       }
     }
     const rejectedReturns = rejectedReturnsByCase(workflow)
+    const returnAllocations = rejectedReturnAllocations(workflow)
     const pendingRows = workflow.cases.flatMap((item) =>
       pendingCustomerReturns(workflow, item, rejectedReturns).map(
         ({ row, quantity }) => ({
@@ -175,6 +178,11 @@ export function ReturnsWorkspace({
         return {
           ...describeReceipt(receipt),
           item,
+          reason: customerReturnReason(
+            item,
+            item.caseId ? caseById.get(item.caseId) : undefined,
+            returnAllocations.get(item.id),
+          ),
           unit: receipt?.projectUnit ?? '',
           alternative,
           zni: zni ?? '',
@@ -244,21 +252,21 @@ export function ReturnsWorkspace({
         row.item.note,
         row.item.date,
         displayDate(row.item.date),
-        row.item.kind === 'surplus' ? 'Лишний материал' : 'Не принято по ЗНИ',
+        row.reason,
       ]) && matchesOperationMaterial(row, listView),
   )
   return (
     <section className="min-w-0 p-4" aria-label="Возврат заказчику">
       <p className="mt-1 text-sm text-slate-600">
-        Непринятое по ЗНИ восстанавливает остаток к получению по заявке. Возврат
-        лишнего уменьшает только складской остаток.
+        Фактический возврат непринятого по ЗНИ или АВК восстанавливает остаток к
+        получению по заявке. Возврат лишнего уменьшает только складской остаток.
       </p>
       <div className="my-4 flex flex-wrap gap-2">
         <Button
           variant={mode === 'rejected' ? 'default' : 'outline'}
           onClick={() => setMode('rejected')}
         >
-          Не принято по ЗНИ ({pending.length})
+          Не принято по ЗНИ / АВК ({pending.length})
         </Button>
         <Button
           variant={mode === 'stock' ? 'default' : 'outline'}
@@ -344,7 +352,7 @@ export function ReturnsWorkspace({
           <p className="rounded-lg border border-dashed p-8 text-center text-slate-500">
             {search || listView.cipher || listView.materialType
               ? 'Материалы по запросу не найдены.'
-              : 'Непринятых материалов к возврату нет. После подписания ЗНИ они появятся здесь автоматически.'}
+              : 'Непринятых материалов к возврату нет. Они появляются после подписания ЗНИ или отклонения материала по АВК.'}
           </p>
         ))}
       {mode === 'stock' && (
@@ -353,7 +361,7 @@ export function ReturnsWorkspace({
             Возвращать можно оставшееся на складе количество. Для позиций в
             неподписанной ЗНИ сначала удалите черновик и создайте его заново на
             нужное количество. Для непринятого материала используйте раздел «Не
-            принято по ЗНИ».
+            принято по ЗНИ / АВК».
           </p>
           {visibleStock.length ? (
             <OperationsGrid
@@ -509,10 +517,7 @@ export function ReturnsWorkspace({
               {
                 id: 'reason',
                 title: 'Причина',
-                value: (row) =>
-                  row.item.kind === 'surplus'
-                    ? 'Лишний материал'
-                    : 'Не принято по ЗНИ',
+                value: (row) => row.reason,
               },
               {
                 id: 'quantity',
