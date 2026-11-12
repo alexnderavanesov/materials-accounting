@@ -1,4 +1,11 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { Ellipsis } from 'lucide-react'
 import { Button } from '#/components/ui/button'
@@ -7,6 +14,7 @@ export type InspectionAction = {
   label: string
   onSelect: () => void
   destructive?: boolean
+  disabledReason?: string
 }
 
 export function InspectionActionsMenu({
@@ -29,6 +37,17 @@ export function InspectionActionsMenu({
     setPosition(null)
     if (restoreFocus) trigger.current?.focus()
   }
+  useLayoutEffect(() => {
+    if (!position || !menu.current) return
+    const top = Math.max(
+      12,
+      Math.min(
+        position.top,
+        window.innerHeight - menu.current.getBoundingClientRect().height - 12,
+      ),
+    )
+    if (top !== position.top) setPosition({ ...position, top })
+  }, [position])
   useEffect(() => {
     if (!position) return
     menu.current?.querySelector<HTMLButtonElement>('button')?.focus()
@@ -123,19 +142,40 @@ export function InspectionActionsMenu({
               }
             }}
           >
-            {actions.map((action) => (
-              <button
-                key={action.label}
-                type="button"
-                role="menuitem"
-                className={`min-h-10 rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 focus:bg-slate-100 focus:outline-none ${action.destructive ? 'text-red-700' : 'text-slate-700'}`}
-                onClick={() => {
-                  close()
-                  action.onSelect()
-                }}
-              >
-                {action.label}
-              </button>
+            {actions.map((action, index) => (
+              <Fragment key={action.label}>
+                {action.destructive && !actions[index - 1]?.destructive && (
+                  <div
+                    role="separator"
+                    className="my-1 border-t border-stone-200"
+                  />
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label={action.label}
+                  aria-disabled={!!action.disabledReason}
+                  aria-describedby={
+                    action.disabledReason ? `${id}-reason-${index}` : undefined
+                  }
+                  className={`min-h-10 rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 focus:bg-slate-100 focus:outline-none ${action.disabledReason ? 'cursor-not-allowed text-stone-400' : action.destructive ? 'text-red-700' : 'text-slate-700'}`}
+                  onClick={() => {
+                    if (action.disabledReason) return
+                    close()
+                    action.onSelect()
+                  }}
+                >
+                  {action.label}
+                  {action.disabledReason && (
+                    <span
+                      id={`${id}-reason-${index}`}
+                      className="mt-1 block text-xs leading-relaxed text-stone-500"
+                    >
+                      {action.disabledReason}
+                    </span>
+                  )}
+                </button>
+              </Fragment>
             ))}
           </div>,
           document.body,

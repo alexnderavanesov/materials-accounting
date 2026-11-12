@@ -7,11 +7,13 @@ export function AppSelect({
   options,
   value,
   onChange,
+  disabled = false,
 }: {
   label: string
   options: Array<{ label: string; value: string }>
   value: string
   onChange: (value: string) => void
+  disabled?: boolean
 }) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
@@ -37,6 +39,7 @@ export function AppSelect({
     if (restoreFocus) trigger.current?.focus()
   }
   const show = () => {
+    if (disabled) return
     setQuery('')
     setActive(
       Math.max(
@@ -47,12 +50,17 @@ export function AppSelect({
     setOpen(true)
   }
   const choose = (next: string) => {
+    if (disabled) return
     onChange(next)
     close(true)
   }
 
   useLayoutEffect(() => {
     if (!open) return
+    if (disabled) {
+      setOpen(false)
+      return
+    }
     const place = () => {
       const rect = trigger.current!.getBoundingClientRect()
       const below = window.innerHeight - rect.bottom - 12
@@ -87,7 +95,7 @@ export function AppSelect({
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)
     }
-  }, [open])
+  }, [open, disabled])
 
   useEffect(() => {
     if (open)
@@ -107,7 +115,8 @@ export function AppSelect({
         aria-haspopup="listbox"
         aria-controls={open ? id : undefined}
         value={value}
-        className="flex h-10 w-full min-w-0 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-left text-sm text-stone-900 outline-none focus-visible:border-stone-400 focus-visible:ring-2 focus-visible:ring-stone-100"
+        disabled={disabled}
+        className="flex h-10 w-full min-w-0 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-left text-sm text-stone-900 outline-none transition-colors focus-visible:border-stone-400 focus-visible:ring-2 focus-visible:ring-stone-100 disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-500"
         onClick={() => (open ? close() : show())}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

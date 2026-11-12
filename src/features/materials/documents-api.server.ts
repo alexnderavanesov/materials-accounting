@@ -10,6 +10,8 @@ import {
 } from './document-files.server'
 import {
   buildDocumentArchive,
+  buildDocumentPhotosArchive,
+  archiveFileStem,
   createDocumentRenderer,
   selectRegistryDocuments,
 } from './document-archive.server'
@@ -19,11 +21,35 @@ import { convertRequestPdf } from './request-print-pdf.server'
 import { printOutput } from './print-output.server'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 import type { DocumentTarget } from './document-registry'
+import {
+  maxDocumentUploadBytes,
+  maxDocumentUploadFiles,
+} from './document-file-limits'
 
 const revision = z.string().min(1).max(200)
 const id = z.string().min(1).max(10000)
 const common = { workspaceRevision: revision, filesRevision: revision }
+const uploadFileSchema = z
+  .object({
+    name: z.string().min(1).max(250),
+    base64: z
+      .string()
+      .min(1)
+      .max(Math.ceil(maxDocumentFileBytes / 3) * 4),
+  })
+  .strict()
+const uploadDocumentSchema = z
+  .object({
+    kind: z.enum(documentCategoryKeys),
+    label: z.string().trim().min(1).max(500),
+    date: z.string().max(10),
+    lineIds: z.array(id).min(1).max(10000),
+  })
+  .strict()
 const bodySchema = z.discriminatedUnion('action', [
+  z
+    .object({ action: z.literal('photos-archive'), ...common, documentId: id })
+    .strict(),
   z
     .object({
       action: z.literal('archive'),
@@ -43,20 +69,17 @@ const bodySchema = z.discriminatedUnion('action', [
       action: z.literal('upload'),
       ...common,
       documentId: id.optional(),
-      name: z.string().min(1).max(250),
-      base64: z
-        .string()
-        .min(1)
-        .max(Math.ceil(maxDocumentFileBytes / 3) * 4),
-      document: z
-        .object({
-          kind: z.enum(documentCategoryKeys),
-          label: z.string().trim().min(1).max(500),
-          date: z.string().max(10),
-          lineIds: z.array(id).min(1).max(10000),
-        })
-        .strict()
-        .optional(),
+      ...uploadFileSchema.shape,
+      document: uploadDocumentSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('upload-files'),
+      ...common,
+      documentId: id.optional(),
+      document: uploadDocumentSchema.optional(),
+      files: z.array(uploadFileSchema).min(1).max(maxDocumentUploadFiles),
     })
     .strict(),
 ])
@@ -75,9 +98,12 @@ async function readBody(request: Request) {
       const { done, value } = await reader.read()
       if (done) break
       size += value.length
-      if (size > 29 * 1024 * 1024) {
+      if (size > Math.ceil(maxDocumentUploadBytes / 3) * 4 + 1024 * 1024) {
         await reader.cancel()
-        throw new PrintError('Размер запроса превышает 29 МБ.', 413)
+        throw new PrintError(
+          'Общий размер запроса с файлами превышает допустимый.',
+          413,
+        )
       }
       chunks.push(value)
     }
@@ -131,6 +157,44 @@ export function createDocumentsHandler(
         if (!fileId.success)
           throw new PrintError('Неверный идентификатор файла.')
         const { file, bytes } = await deps.files.read(fileId.data)
+        if (url.searchParams.get('preview') === '1') {
+          const extension = file.name.toLowerCase().split('.').pop()
+          let content = bytes
+          let type =
+            extension === 'pdf'
+              ? 'application/pdf'
+              : extension === 'png'
+                ? 'image/png'
+                : ['jpg', 'jpeg'].includes(extension ?? '')
+                  ? 'image/jpeg'
+                  : ''
+          if (extension === 'xlsx' || extension === 'docx') {
+            if (rendering)
+              throw new PrintError(
+                'Уже формируется другой документ. Повторите просмотр после завершения.',
+                429,
+              )
+            rendering = true
+            try {
+              content = await deps.convert(bytes, { inputFormat: extension })
+              type = 'application/pdf'
+            } finally {
+              rendering = false
+            }
+          }
+          if (!type)
+            throw new PrintError(
+              'Предпросмотр этого формата не поддерживается.',
+              415,
+            )
+          const name =
+            type === 'application/pdf'
+              ? file.name.replace(/\.[^.]+$/, '.pdf')
+              : file.name
+          return download(content, name, type, {
+            'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(name)}`,
+          })
+        }
         return download(bytes, file.name, 'application/octet-stream')
       }
       if (!['GET', 'POST'].includes(request.method))
@@ -164,7 +228,7 @@ export function createDocumentsHandler(
         return Response.json(
           await deps.files.remove(body.fileId, manifest.revision),
         )
-      if (body.action === 'upload') {
+      if (body.action === 'upload' || body.action === 'upload-files') {
         if (Boolean(body.documentId) === Boolean(body.document))
           throw new PrintError(
             'Выберите существующий документ или создайте новый.',
@@ -198,17 +262,20 @@ export function createDocumentsHandler(
               .flatMap((row) => row.lineIds),
           }
         }
-        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(body.base64))
-          throw new PrintError('Файл повреждён.')
-        const bytes = Buffer.from(body.base64, 'base64')
-        if (bytes.toString('base64') !== body.base64)
-          throw new PrintError('Файл повреждён.')
+        const uploads = body.action === 'upload' ? [body] : body.files
+        const files = uploads.map((file) => {
+          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64))
+            throw new PrintError(`Файл повреждён: ${file.name}`)
+          const bytes = Buffer.from(file.base64, 'base64')
+          if (bytes.toString('base64') !== file.base64)
+            throw new PrintError(`Файл повреждён: ${file.name}`)
+          return { name: file.name, bytes }
+        })
         return Response.json(
-          await deps.files.add({
+          await deps.files.addMany({
             documentId: doc.id,
             document: doc,
-            name: body.name,
-            bytes,
+            files,
             expectedRevision: manifest.revision,
           }),
         )
@@ -220,6 +287,24 @@ export function createDocumentsHandler(
         )
       rendering = true
       try {
+        if (body.action === 'photos-archive') {
+          const doc = registry.documents.find(
+            (entry) => entry.id === body.documentId,
+          )
+          if (!doc)
+            throw new PrintError('Документ не найден. Обновите реестр.', 404)
+          const bytes = await buildDocumentPhotosArchive({
+            documentId: doc.id,
+            manifest,
+            readFile: deps.files.read,
+            signal: request.signal,
+          })
+          return download(
+            bytes,
+            `${archiveFileStem(`Фотографии — ${doc.label}`)}.zip`,
+            'application/zip',
+          )
+        }
         if (body.action === 'preview') {
           const doc = registry.documents.find(
             (entry) => entry.id === body.documentId,

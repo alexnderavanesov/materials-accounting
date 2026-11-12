@@ -6,8 +6,13 @@ import JSZip from 'jszip'
 import { documentCategoryKeys } from './document-registry'
 import type { DocumentFileManifest, ManualDocument } from './document-registry'
 import { PrintError } from './request-print-store.server'
+import {
+  maxDocumentFileBytes,
+  maxDocumentUploadBytes,
+  maxDocumentUploadFiles,
+} from './document-file-limits'
 
-export const maxDocumentFileBytes = 20 * 1024 * 1024
+export { maxDocumentFileBytes } from './document-file-limits'
 const manifestSchema = z
   .object({
     files: z.array(
@@ -121,8 +126,60 @@ export function createDocumentFileStore(directory: string) {
         409,
       )
   }
+  async function addMany(input: {
+    documentId: string
+    files: { name: string; bytes: Buffer }[]
+    expectedRevision: string
+    document?: ManualDocument
+  }) {
+    if (!input.files.length || input.files.length > maxDocumentUploadFiles)
+      throw new PrintError(`Выберите от 1 до ${maxDocumentUploadFiles} файлов.`)
+    if (
+      input.files.reduce((total, file) => total + file.bytes.length, 0) >
+      maxDocumentUploadBytes
+    )
+      throw new PrintError('Общий размер файлов превышает 100 МБ.', 413)
+    for (const file of input.files)
+      await validateDocumentFile(file.name, file.bytes)
+    return queued(async () => {
+      const current = await load()
+      checkRevision(current, input.expectedRevision)
+      const files = input.files.map((file) => ({
+        id: randomUUID(),
+        documentId: input.documentId,
+        name: safeDocumentFilename(file.name),
+        size: file.bytes.length,
+        uploadedAt: new Date().toISOString(),
+      }))
+      await mkdir(folder, { recursive: true, mode: 0o700 })
+      const paths: string[] = []
+      try {
+        for (const [index, file] of files.entries()) {
+          const path = join(folder, `${file.id}.bin`)
+          paths.push(path)
+          await writeFile(path, input.files[index]!.bytes, {
+            flag: 'wx',
+            mode: 0o600,
+          })
+        }
+        await write({
+          files: [...current.files, ...files],
+          documents:
+            input.document &&
+            !current.documents.some((doc) => doc.id === input.document!.id)
+              ? [...current.documents, input.document]
+              : current.documents,
+        })
+      } catch (error) {
+        await Promise.all(paths.map((path) => rm(path, { force: true })))
+        throw error
+      }
+      return load()
+    })
+  }
   return {
     load,
+    addMany,
     async read(id: string) {
       const current = await load()
       const file = current.files.find((entry) => entry.id === id)
@@ -136,34 +193,9 @@ export function createDocumentFileStore(directory: string) {
       expectedRevision: string
       document?: ManualDocument
     }) {
-      await validateDocumentFile(input.name, input.bytes)
-      return queued(async () => {
-        const current = await load()
-        checkRevision(current, input.expectedRevision)
-        const file = {
-          id: randomUUID(),
-          documentId: input.documentId,
-          name: safeDocumentFilename(input.name),
-          size: input.bytes.length,
-          uploadedAt: new Date().toISOString(),
-        }
-        await mkdir(folder, { recursive: true, mode: 0o700 })
-        const path = join(folder, `${file.id}.bin`)
-        try {
-          await writeFile(path, input.bytes, { flag: 'wx', mode: 0o600 })
-          await write({
-            files: [...current.files, file],
-            documents:
-              input.document &&
-              !current.documents.some((doc) => doc.id === input.document!.id)
-                ? [...current.documents, input.document]
-                : current.documents,
-          })
-        } catch (error) {
-          await rm(path, { force: true })
-          throw error
-        }
-        return load()
+      return addMany({
+        ...input,
+        files: [{ name: input.name, bytes: input.bytes }],
       })
     },
     remove(id: string, expectedRevision: string) {

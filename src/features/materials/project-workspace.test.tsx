@@ -4145,9 +4145,12 @@ describe('workspace user workflows', () => {
       expect(
         within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
       ).toBeNull()
-      fireEvent.change(within(dialog).getByLabelText('Результат'), {
-        target: { value: 'remarks' },
-      })
+      fireEvent.click(
+        within(dialog).getByRole('combobox', { name: 'Результат' }),
+      )
+      fireEvent.click(
+        screen.getByRole('option', { name: 'Принято с замечаниями' }),
+      )
       fireEvent.change(within(dialog).getByLabelText('Принято, м'), {
         target: { value: '2' },
       })
@@ -4155,7 +4158,7 @@ describe('workspace user workflows', () => {
         target: { value: 'Остаток требует повторной проверки' },
       })
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить документы' }),
+        within(dialog).getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }),
       )
       fireEvent.click(screen.getByRole('button', { name: /^Действия ЗНИ/ }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Подписать ЗНИ' }))
@@ -4197,7 +4200,7 @@ describe('workspace user workflows', () => {
         target: { value: 'Частичная приёмка' },
       })
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить документы' }),
+        within(dialog).getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }),
       )
       await waitFor(() =>
         expect(lastSaved().qualityWorkflow?.cases).toHaveLength(1),

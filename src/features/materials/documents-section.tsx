@@ -4,17 +4,20 @@ import { createPortal } from 'react-dom'
 import type { ColDef, GridApi, ICellRendererParams } from 'ag-grid-community'
 import {
   Download,
+  FileText,
+  Images,
   LoaderCircle,
   Paperclip,
   Printer,
   RefreshCw,
   Search,
-  Trash2,
   X,
 } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { DocumentFileInput } from './document-file-input'
+import { documentFileSelectionError } from './document-file-limits'
+import { DocumentAttachments } from './document-attachments'
 import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { materialsColumnFilter } from './materials-column-filter'
 import { projectGridLocale } from './project-grid-locale'
@@ -23,6 +26,7 @@ import {
   documentCategories,
   documentCategoryKeys,
   externalDocumentCategories,
+  isDocumentPhoto,
 } from './document-registry'
 import type {
   DocumentCategory,
@@ -67,10 +71,12 @@ function DocumentDialog({
   title,
   children,
   onClose,
+  closeLabel = 'Закрыть документы',
 }: {
   title: string
   children: ReactNode
   onClose: () => void
+  closeLabel?: string
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
@@ -86,10 +92,12 @@ function DocumentDialog({
   return createPortal(
     <dialog
       ref={ref}
+      aria-label={title}
       onCancel={(event) => {
         // A file input also emits a bubbling cancel event when its picker closes.
         if (event.target !== event.currentTarget) return
         event.preventDefault()
+        event.stopPropagation()
         onClose()
       }}
       className="m-auto max-h-[90dvh] w-[min(960px,96vw)] overflow-hidden rounded-xl border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/40"
@@ -100,7 +108,7 @@ function DocumentDialog({
           <Button
             variant="ghost"
             size="icon"
-            aria-label="Закрыть документы"
+            aria-label={closeLabel}
             onClick={onClose}
           >
             <X size={18} />
@@ -137,9 +145,12 @@ export function DocumentsSection({
   >(null)
   const [uploadKind, setUploadKind] = useState<DocumentCategory>('passport')
   const [uploadLabel, setUploadLabel] = useState('')
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadFiles, setUploadFiles] = useState<File[]>([])
   const [bundle, setBundle] = useState<PrintBundle | null>(null)
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
+  const [attachmentGroup, setAttachmentGroup] = useState<{
+    documentId: string
+    photos: boolean
+  } | null>(null)
   const grid = useRef<GridApi<DocumentMaterial> | null>(null)
   const [initialGridState] = useState(() => ({
     ...readDataGridState('documents-registry'),
@@ -211,6 +222,14 @@ export function DocumentsSection({
     }
     return result
   }, [catalog])
+  const attachmentDocument = attachmentGroup
+    ? documentsById.get(attachmentGroup.documentId)
+    : undefined
+  const attachmentFiles = attachmentGroup
+    ? (filesByDocument.get(attachmentGroup.documentId) ?? []).filter(
+        (file) => isDocumentPhoto(file) === attachmentGroup.photos,
+      )
+    : []
   const docsForRow = useCallback(
     (row: DocumentMaterial, kind?: DocumentCategory) =>
       row.documentIds
@@ -236,7 +255,7 @@ export function DocumentsSection({
         ),
       )
       setUploadDocument(null)
-      setConfirmRemove(null)
+      setAttachmentGroup(null)
       setError('')
       setNotice('')
     },
@@ -328,7 +347,7 @@ export function DocumentsSection({
   function startUpload(doc: RegistryDocument | 'new') {
     setNotice('')
     setUploadDocument(doc)
-    setUploadFile(null)
+    setUploadFiles([])
     setUploadLabel('')
     setUploadKind(
       selection?.category &&
@@ -338,13 +357,18 @@ export function DocumentsSection({
     )
   }
   async function upload() {
-    if (!uploadFile || !uploadDocument) return
-    if (uploadFile.size > 20 * 1024 * 1024)
-      throw new Error('Максимальный размер файла — 20 МБ.')
+    if (!uploadFiles.length || !uploadDocument) return
+    const selectionError = documentFileSelectionError(uploadFiles)
+    if (selectionError) throw new Error(selectionError)
+    const files: { name: string; base64: string }[] = []
+    for (const [index, file] of uploadFiles.entries()) {
+      setBusy(`Подготовка файлов: ${index + 1} из ${uploadFiles.length}…`)
+      files.push({ name: file.name, base64: await fileBase64(file) })
+    }
+    setBusy(`Загрузка файлов: ${files.length}…`)
     await post({
-      action: 'upload',
-      name: uploadFile.name,
-      base64: await fileBase64(uploadFile),
+      action: 'upload-files',
+      files,
       ...(uploadDocument === 'new'
         ? {
             document: {
@@ -357,8 +381,9 @@ export function DocumentsSection({
         : { documentId: uploadDocument.id }),
     })
     setUploadDocument(null)
+    setUploadFiles([])
     await refresh()
-    setNotice('Оригинал прикреплён.')
+    setNotice(`Прикреплено файлов: ${files.length}.`)
   }
   async function archive() {
     if (!selection) return
@@ -537,7 +562,7 @@ export function DocumentsSection({
         <DocumentDialog
           title={
             uploadDocument
-              ? 'Прикрепить оригинал'
+              ? 'Прикрепить файлы'
               : selection.category
                 ? documentCategories[selection.category]
                 : 'Документы выбранных материалов'
@@ -546,6 +571,7 @@ export function DocumentsSection({
             if (!busy) {
               setSelection(null)
               setUploadDocument(null)
+              setAttachmentGroup(null)
             }
           }}
         >
@@ -563,6 +589,7 @@ export function DocumentsSection({
                     <label className="grid gap-1 text-sm">
                       Тип документа
                       <select
+                        disabled={Boolean(busy)}
                         className="rounded-md border border-slate-200 bg-white p-2"
                         value={uploadKind}
                         onChange={(event) =>
@@ -579,6 +606,7 @@ export function DocumentsSection({
                     <label className="grid gap-1 text-sm">
                       Наименование и номер
                       <Input
+                        disabled={Boolean(busy)}
                         value={uploadLabel}
                         onChange={(event) => setUploadLabel(event.target.value)}
                         placeholder="Например: Паспорт №221"
@@ -589,8 +617,8 @@ export function DocumentsSection({
                   <p>{uploadDocument.label}</p>
                 )}
                 <DocumentFileInput
-                  file={uploadFile}
-                  onChange={setUploadFile}
+                  files={uploadFiles}
+                  onChange={setUploadFiles}
                   disabled={Boolean(busy)}
                 />
               </>
@@ -631,122 +659,106 @@ export function DocumentsSection({
                     Документов пока нет. Можно прикрепить оригинал.
                   </p>
                 )}
-                {shownDocuments.map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="grid gap-2 rounded-lg border border-slate-200 p-3"
-                  >
-                    <div className="flex items-start gap-3">
-                      <label className="flex min-w-0 flex-1 items-start gap-3">
-                        <input
-                          className="mt-1"
-                          type="checkbox"
-                          checked={checkedIds.has(doc.id)}
-                          onChange={(event) =>
-                            setCheckedIds((current) => {
-                              const next = new Set(current)
-                              if (event.target.checked) next.add(doc.id)
-                              else next.delete(doc.id)
-                              return next
-                            })
-                          }
-                        />
-                        <span className="break-words text-sm">{doc.label}</span>
-                      </label>
-                      {doc.target && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          title="Предпросмотр PDF и Excel"
-                          aria-label={`Просмотр: ${doc.label}`}
-                          disabled={Boolean(busy)}
-                          onClick={() =>
-                            void run('Формирование документа…', async () => {
-                              const next = await readPrintBundle(
-                                await post({
-                                  action: 'preview',
-                                  documentId: doc.id,
-                                }),
-                              )
-                              setBundle(next)
-                            })
-                          }
-                        >
-                          <Printer size={16} />
-                        </Button>
-                      )}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Прикрепить оригинал"
-                        aria-label={`Прикрепить: ${doc.label}`}
-                        disabled={Boolean(busy)}
-                        onClick={() => startUpload(doc)}
-                      >
-                        <Paperclip size={16} />
-                      </Button>
-                    </div>
-                    {!filesByDocument.get(doc.id)?.length && (
-                      <p className="pl-7 text-xs text-slate-500">
-                        {doc.target
-                          ? 'PDF и Excel формируются при скачивании'
-                          : 'Оригинал не прикреплён'}
-                      </p>
-                    )}
-                    {(filesByDocument.get(doc.id) ?? []).map((file) => (
-                      <div
-                        key={file.id}
-                        className="flex items-center gap-2 pl-7 text-sm"
-                      >
-                        <a
-                          className="min-w-0 flex-1 break-words text-blue-700 hover:underline"
-                          href={`${endpoint}?file=${encodeURIComponent(file.id)}`}
-                          download
-                        >
-                          {file.name}
-                        </a>
-                        {confirmRemove === file.id ? (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={Boolean(busy)}
-                              onClick={() =>
-                                void run('Удаление файла…', async () => {
-                                  await post({
-                                    action: 'remove',
-                                    fileId: file.id,
-                                  })
-                                  setConfirmRemove(null)
-                                  await refresh()
-                                })
-                              }
-                            >
-                              Удалить файл
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setConfirmRemove(null)}
-                            >
-                              Отмена
-                            </Button>
-                          </>
-                        ) : (
+                {shownDocuments.map((doc) => {
+                  const files = filesByDocument.get(doc.id) ?? []
+                  const photoCount = files.filter(isDocumentPhoto).length
+                  const otherCount = files.length - photoCount
+                  return (
+                    <div
+                      key={doc.id}
+                      className="grid gap-2 rounded-lg border border-slate-200 p-3"
+                    >
+                      <div className="flex items-start gap-3">
+                        <label className="flex min-w-0 flex-1 items-start gap-3">
+                          <input
+                            className="mt-1"
+                            type="checkbox"
+                            checked={checkedIds.has(doc.id)}
+                            onChange={(event) =>
+                              setCheckedIds((current) => {
+                                const next = new Set(current)
+                                if (event.target.checked) next.add(doc.id)
+                                else next.delete(doc.id)
+                                return next
+                              })
+                            }
+                          />
+                          <span className="break-words text-sm">
+                            {doc.label}
+                          </span>
+                        </label>
+                        {doc.target && (
                           <Button
                             size="icon"
                             variant="ghost"
-                            aria-label={`Удалить файл ${file.name}`}
+                            title="Предпросмотр PDF и Excel"
+                            aria-label={`Просмотр: ${doc.label}`}
                             disabled={Boolean(busy)}
-                            onClick={() => setConfirmRemove(file.id)}
+                            onClick={() =>
+                              void run('Формирование документа…', async () => {
+                                const next = await readPrintBundle(
+                                  await post({
+                                    action: 'preview',
+                                    documentId: doc.id,
+                                  }),
+                                )
+                                setBundle(next)
+                              })
+                            }
                           >
-                            <Trash2 size={14} />
+                            <Printer size={16} />
                           </Button>
                         )}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Прикрепить оригинал"
+                          aria-label={`Прикрепить: ${doc.label}`}
+                          disabled={Boolean(busy)}
+                          onClick={() => startUpload(doc)}
+                        >
+                          <Paperclip size={16} />
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-                ))}
+                      {files.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 pl-7">
+                          {photoCount > 0 && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setAttachmentGroup({
+                                  documentId: doc.id,
+                                  photos: true,
+                                })
+                              }
+                            >
+                              <Images size={15} /> Фотографии · {photoCount}
+                            </Button>
+                          )}
+                          {otherCount > 0 && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setAttachmentGroup({
+                                  documentId: doc.id,
+                                  photos: false,
+                                })
+                              }
+                            >
+                              <FileText size={15} /> Другие файлы · {otherCount}
+                            </Button>
+                          )}
+                        </div>
+                      ) : !doc.target ? (
+                        <p className="pl-7 text-xs text-slate-500">
+                          Оригинал не прикреплён
+                        </p>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </>
             )}
           </div>
@@ -763,18 +775,20 @@ export function DocumentsSection({
                 <Button
                   disabled={
                     Boolean(busy) ||
-                    !uploadFile ||
+                    !uploadFiles.length ||
+                    Boolean(documentFileSelectionError(uploadFiles)) ||
                     (uploadDocument === 'new' && !uploadLabel.trim())
                   }
-                  onClick={() => void run('Загрузка оригинала…', upload)}
+                  onClick={() => void run('Подготовка файлов…', upload)}
                 >
                   Прикрепить
+                  {uploadFiles.length ? ` (${uploadFiles.length})` : ''}
                 </Button>
               </>
             ) : (
               <>
                 <span className="mr-auto text-xs text-slate-500">
-                  PDF + Excel + оригиналы · документы целиком
+                  PDF и Excel формируются при скачивании. Все вложения включены.
                 </span>
                 <Button
                   disabled={
@@ -800,6 +814,71 @@ export function DocumentsSection({
               portalTarget={document.querySelector('dialog[open]') ?? undefined}
               onClose={() => setBundle(null)}
             />
+          )}
+          {attachmentGroup && attachmentDocument && !uploadDocument && (
+            <DocumentDialog
+              title={attachmentGroup.photos ? 'Фотографии' : 'Другие файлы'}
+              closeLabel="Закрыть вложения"
+              onClose={() => {
+                if (!busy) setAttachmentGroup(null)
+              }}
+            >
+              <div className="grid gap-4 overflow-y-auto p-4">
+                {status}
+                <p className="text-sm text-stone-600">
+                  {attachmentDocument.label}
+                </p>
+                <DocumentAttachments
+                  key={`${attachmentGroup.documentId}:${attachmentGroup.photos}`}
+                  files={attachmentFiles}
+                  photos={attachmentGroup.photos}
+                  busy={Boolean(busy)}
+                  onRemove={(file) =>
+                    run('Удаление файла…', async () => {
+                      await post({ action: 'remove', fileId: file.id })
+                      await refresh()
+                    })
+                  }
+                />
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-stone-200 p-4">
+                <span className="mr-auto text-sm text-stone-500">
+                  Всего: {attachmentFiles.length}
+                </span>
+                {attachmentGroup.photos && (
+                  <Button
+                    variant="outline"
+                    disabled={Boolean(busy) || !attachmentFiles.length}
+                    onClick={() =>
+                      void run('Собираем фотографии…', async () => {
+                        const response = await post({
+                          action: 'photos-archive',
+                          documentId: attachmentDocument.id,
+                        })
+                        const filename = response.headers
+                          .get('Content-Disposition')
+                          ?.match(/filename\*=UTF-8''(.+)/i)?.[1]
+                        downloadBlob(
+                          await response.blob(),
+                          filename
+                            ? decodeURIComponent(filename)
+                            : 'Фотографии.zip',
+                        )
+                        setNotice('Архив фотографий скачан.')
+                      })
+                    }
+                  >
+                    <Download size={16} /> Скачать все фото
+                  </Button>
+                )}
+                <Button
+                  disabled={Boolean(busy)}
+                  onClick={() => startUpload(attachmentDocument)}
+                >
+                  <Paperclip size={16} /> Добавить файлы
+                </Button>
+              </div>
+            </DocumentDialog>
           )}
         </DocumentDialog>
       )}

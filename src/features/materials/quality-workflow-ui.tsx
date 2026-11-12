@@ -27,9 +27,11 @@ import {
   useOperationPagination,
 } from './operation-pagination'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { ChevronDown, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
+import { AppSelect } from '#/components/ui/app-select'
 import {
   activeInspection,
   latestInspectionAct,
@@ -74,7 +76,18 @@ import type { SubobjectMaterialMetric } from './types'
 import { QualityPrintButton, useQualityPrint } from './quality-print-ui'
 import { InspectionActionsMenu } from './inspection-actions-menu'
 import type { InspectionAction } from './inspection-actions-menu'
+import {
+  inspectionDocumentEditable,
+  inspectionDocumentRevisions,
+  inspectionSigningError,
+} from './quality-workflow-actions'
 import { getOperationAlternative, getOperationConversion } from './domain'
+import {
+  InspectionPhotoPicker,
+  inspectionPhotoDocumentId,
+  inspectionPhotoError,
+  uploadInspectionPhotos,
+} from './inspection-photos'
 
 type Receipt = {
   appDocumentId?: string
@@ -143,10 +156,12 @@ export function QualityModal({
   title,
   children,
   onClose,
+  busy = false,
 }: {
   title: string
   children: React.ReactNode
   onClose: () => void
+  busy?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -164,7 +179,7 @@ export function QualityModal({
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.stopPropagation()
-          onClose()
+          if (!busy) onClose()
         }
         if (event.key === 'Tab') {
           const elements = ref.current?.querySelectorAll<HTMLElement>(
@@ -190,6 +205,7 @@ export function QualityModal({
             variant="ghost"
             size="icon"
             aria-label="Закрыть документ"
+            disabled={busy}
             onClick={onClose}
           >
             <X size={20} />
@@ -200,6 +216,8 @@ export function QualityModal({
     </div>
   )
 }
+const fieldLabelClassName =
+  'flex min-w-0 flex-col gap-1.5 text-sm text-stone-600'
 function Field({
   label,
   value,
@@ -214,12 +232,13 @@ function Field({
   disabled?: boolean
 }) {
   return (
-    <label className="grid gap-1 text-sm text-slate-600">
+    <label className={fieldLabelClassName}>
       {label}
       <Input
         type={type}
         value={value}
         disabled={disabled}
+        className="disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-500 [&[type=number]]:[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         onChange={(e) => onChange(e.target.value)}
       />
     </label>
@@ -230,17 +249,20 @@ function TextField({
   value,
   onChange,
   disabled = false,
+  rows = 3,
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   disabled?: boolean
+  rows?: number
 }) {
   return (
-    <label className="grid gap-1 text-sm text-slate-600">
+    <label className={fieldLabelClassName}>
       {label}
       <textarea
-        className="min-h-20 rounded-lg border p-2 text-slate-900"
+        rows={rows}
+        className={`w-full resize-y rounded-md border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-900 outline-none transition-colors focus:border-stone-400 focus:ring-2 focus:ring-stone-100 disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-500 ${rows === 1 ? 'h-10 min-h-10' : rows === 2 ? 'min-h-16' : 'min-h-20'}`}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
@@ -773,13 +795,77 @@ export function InspectionWorkspace({
   const [draft, setDraft] = useState<InspectionCase | null>(null),
     [error, setError] = useState(''),
     [choosingMaterials, setChoosingMaterials] = useState(false),
-    [history, setHistory] = useState<InspectionCase | null>(null)
+    [history, setHistory] = useState<{
+      entry: InspectionCase
+      kind: 'zni' | 'avk'
+    } | null>(null)
   const [signing, setSigning] = useState<{
     entry: InspectionCase
     kind: 'zni' | 'avk'
     date: string
   } | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [photoDraft, setPhotoDraft] = useState<{
+    documentId: string
+    files: File[]
+  } | null>(null)
+  const [photoPickerOpen, setPhotoPickerOpen] = useState(false)
+  const [savingPhotos, setSavingPhotos] = useState(false)
+  const savingPhotosRef = useRef(false)
+  const draftBaseline = useRef<string | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const hasDraftChanges =
+    !!draft &&
+    !draftReadOnly &&
+    (JSON.stringify(draft) !== draftBaseline.current ||
+      (photoDraft?.files.length ?? 0) > 0)
+  const dismissDraft = () => {
+    if (savingPhotosRef.current) return
+    setDraft(null)
+    draftBaseline.current = null
+    setPhotoDraft(null)
+    setPhotoPickerOpen(false)
+    setConfirmDiscard(false)
+  }
+  const closeDraft = () => {
+    if (savingPhotosRef.current) return
+    if (hasDraftChanges) setConfirmDiscard(true)
+    else dismissDraft()
+  }
+  function beginDraft(
+    entry: InspectionCase,
+    kind: 'zni' | 'avk',
+    baseline: InspectionCase | null,
+    readOnly = false,
+  ) {
+    setError('')
+    setEditorKind(kind)
+    setDraftReadOnly(readOnly)
+    draftBaseline.current = baseline ? JSON.stringify(baseline) : null
+    setPhotoDraft(null)
+    setConfirmDiscard(false)
+    setDraft(entry)
+  }
+  function openDocument(
+    entry: InspectionCase,
+    kind: 'zni' | 'avk',
+    revision: InspectionRevision,
+  ) {
+    const next = structuredClone({
+      ...entry,
+      revisions: entry.revisions.slice(0, revision.revision),
+    })
+    beginDraft(next, kind, next, revision !== currentInspection(entry))
+  }
+  useEffect(() => {
+    if (!hasDraftChanges) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [hasDraftChanges])
   const save = (entry: InspectionCase) => {
     onChange({
       ...workflow,
@@ -838,13 +924,69 @@ export function InspectionWorkspace({
     run(() => {
       const next = structuredClone(entry)
       currentInspection(next).avk = makeAct(next)
-      setEditorKind('avk')
       setDocumentSection('avk')
-      setDraftReadOnly(false)
-      setDraft(next)
+      beginDraft(next, 'avk', entry)
       setChoosingAct(false)
     })
   const revision = draft && currentInspection(draft)
+  const photoDocumentId =
+    draft && revision?.avk
+      ? inspectionPhotoDocumentId(draft.id, revision.revision)
+      : ''
+  const pendingPhotos =
+    photoDraft?.documentId === photoDocumentId ? photoDraft.files : []
+  const editableKind =
+    revision &&
+    (inspectionDocumentEditable(revision, 'avk')
+      ? 'avk'
+      : inspectionDocumentEditable(revision, 'zni')
+        ? 'zni'
+        : null)
+  async function saveDraft() {
+    if (
+      !draft ||
+      draftReadOnly ||
+      !editableKind ||
+      !hasDraftChanges ||
+      savingPhotosRef.current
+    )
+      return
+    if (!pendingPhotos.length) {
+      run(() => {
+        save(draft)
+        dismissDraft()
+      })
+      return
+    }
+    const selectionError = inspectionPhotoError(pendingPhotos)
+    if (selectionError) {
+      setError(selectionError)
+      return
+    }
+    savingPhotosRef.current = true
+    setSavingPhotos(true)
+    setError('')
+    let persisted = false
+    try {
+      // Commit React state so the parent's persistence effect enqueues this AVK before prepare().
+      flushSync(() => save(draft))
+      await prepare()
+      persisted = true
+      draftBaseline.current = JSON.stringify(draft)
+      await uploadInspectionPhotos(photoDocumentId, pendingPhotos)
+      setPhotoDraft(null)
+      setPhotoPickerOpen(false)
+      setDraft(null)
+      draftBaseline.current = null
+    } catch (cause) {
+      setError(
+        `${persisted ? 'АВК сохранён, фотографии не загружены. Выбранные файлы оставлены для повторной попытки. ' : ''}${message(cause)}`,
+      )
+    } finally {
+      savingPhotosRef.current = false
+      setSavingPhotos(false)
+    }
+  }
   const focused = useRef<string | undefined>(undefined)
   useEffect(() => {
     const entry = value?.cases.find((item) =>
@@ -1071,58 +1213,53 @@ export function InspectionWorkspace({
               ? inspectionSourceRevision(entry, rev).revision
               : rev.revision
           const returns = pendingCustomerReturns(workflow, entry)
+          const revisions = inspectionDocumentRevisions(entry, documentSection)
+          const currentKindLabel = documentSection === 'zni' ? 'ЗНИ' : 'АВК'
+          const editable =
+            isCurrent && inspectionDocumentEditable(rev, documentSection)
+          const relatedRevision =
+            documentSection === 'avk'
+              ? inspectionSourceRevision(entry, rev)
+              : entry.revisions
+                  .filter(
+                    (candidate) =>
+                      candidate.avk &&
+                      inspectionSourceRevision(entry, candidate).revision ===
+                        documentRevision,
+                  )
+                  .at(-1)
+          const relatedKind = documentSection === 'zni' ? 'avk' : 'zni'
           const actions: Array<InspectionAction> = [
             {
-              label:
-                rev.avk?.signedOn || isBlockedInspectionAct(rev) || !isCurrent
-                  ? 'Просмотр'
-                  : 'Открыть документы',
-              onSelect: () => {
-                setError('')
-                setEditorKind(documentSection)
-                setDraftReadOnly(!isCurrent)
-                setDraft(
-                  structuredClone({
-                    ...entry,
-                    revisions: entry.revisions.slice(0, rev.revision),
-                  }),
-                )
-              },
+              label: `${editable ? 'Редактировать' : 'Просмотр'} ${currentKindLabel}`,
+              onSelect: () => openDocument(entry, documentSection, rev),
             },
             {
-              label: 'Печать ЗНИ',
+              label: `Печать ${currentKindLabel}`,
               onSelect: () =>
                 void printing.print({
-                  kind: 'zni',
+                  kind: documentSection,
                   caseId: entry.id,
-                  revision: inspectionSourceRevision(entry, rev).revision,
+                  revision: documentRevision,
                 }),
             },
           ]
-          if (rev.avk)
-            actions.push({
-              label: 'Печать АВК',
-              onSelect: () =>
-                void printing.print({
-                  kind: 'avk',
-                  caseId: entry.id,
-                  revision: rev.revision,
-                }),
-            })
-          if (isCurrent && !rev.zni.signedOn)
+          if (documentSection === 'zni' && isCurrent && !rev.zni.signedOn)
             actions.push({
               label: 'Подписать ЗНИ',
+              disabledReason: inspectionSigningError(rev, 'zni'),
               onSelect: () => {
                 setError('')
                 setSigning({ entry, kind: 'zni', date: localToday() })
               },
             })
-          if (canCreateAct(entry))
+          if (documentSection === 'zni' && canCreateAct(entry))
             actions.push({
               label: 'Создать АВК',
               onSelect: () => openAct(entry),
             })
           if (
+            documentSection === 'avk' &&
             isCurrent &&
             rev.avk &&
             !rev.avk.signedOn &&
@@ -1131,6 +1268,7 @@ export function InspectionWorkspace({
           ) {
             actions.push({
               label: 'Подписать АВК',
+              disabledReason: inspectionSigningError(rev, 'avk'),
               onSelect: () => {
                 setError('')
                 setSigning({ entry, kind: 'avk', date: localToday() })
@@ -1157,6 +1295,7 @@ export function InspectionWorkspace({
               })
           }
           if (
+            documentSection === 'avk' &&
             isCurrent &&
             !rev.avk?.signedOn &&
             rev.avk?.rejection?.kind === 'materials'
@@ -1180,16 +1319,18 @@ export function InspectionWorkspace({
                 })
               },
             })
-          if (isCurrent && rev.avk?.rejection?.kind === 'document')
+          if (
+            documentSection === 'avk' &&
+            isCurrent &&
+            rev.avk?.rejection?.kind === 'document'
+          )
             actions.push({
               label: 'Исправить АВК',
               onSelect: () =>
                 run(() => {
                   const next = correctInspectionAct(entry)
                   setDocumentSection('avk')
-                  setEditorKind('avk')
-                  setDraftReadOnly(false)
-                  setDraft(next)
+                  beginDraft(next, 'avk', entry)
                 }),
             })
           if (returns.length)
@@ -1197,8 +1338,13 @@ export function InspectionWorkspace({
               label: 'Оформить возврат заказчику',
               onSelect: () => setReturnCase(entry),
             })
-          actions.push({ label: 'История', onSelect: () => setHistory(entry) })
+          if (revisions.length > 1)
+            actions.push({
+              label: `Редакции · ${revisions.length}`,
+              onSelect: () => setHistory({ entry, kind: documentSection }),
+            })
           if (
+            documentSection === 'zni' &&
             canReopenInspection(entry) &&
             !(workflow.customerReturns ?? []).some(
               (item) => item.caseId === entry.id,
@@ -1209,19 +1355,16 @@ export function InspectionWorkspace({
               onSelect: () =>
                 run(() => {
                   const next = reopenInspection(entry)
-                  save(next)
-                  setEditorKind('zni')
-                  setDraftReadOnly(false)
-                  setDraft(next)
+                  beginDraft(next, 'zni', entry)
                 }),
             })
-          for (const kind of !isCurrent
-            ? []
-            : rev.avk
-              ? (['avk', 'zni'] as const)
-              : (['zni'] as const))
+          if (
+            isCurrent &&
+            !inspectionDeletionError(entry, documentSection, workflow, issues)
+          ) {
+            const kind = documentSection
             actions.push({
-              label: kind === 'avk' ? 'Удалить АВК' : 'Удалить ЗНИ',
+              label: `Удалить ${currentKindLabel}`,
               destructive: true,
               onSelect: () =>
                 run(() => {
@@ -1247,6 +1390,7 @@ export function InspectionWorkspace({
                     )
                 }),
             })
+          }
           return (
             <article
               key={entry.id}
@@ -1326,6 +1470,22 @@ export function InspectionWorkspace({
                       </span>
                     )}
                   </div>
+                  {relatedRevision && (
+                    <button
+                      type="button"
+                      className="mt-2 text-sm text-slate-600 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
+                      onClick={() => {
+                        setDocumentSection(relatedKind)
+                        openDocument(entry, relatedKind, relatedRevision)
+                      }}
+                    >
+                      Открыть{' '}
+                      {documentNumberLabel(
+                        relatedKind === 'zni' ? 'ЗНИ' : 'АВК',
+                        relatedRevision[relatedKind]!.number,
+                      )}
+                    </button>
+                  )}
                   {rev.avk?.rejection && (
                     <p className="mt-2 text-sm text-red-800">
                       {rev.avk.rejection.kind === 'materials'
@@ -1461,8 +1621,7 @@ export function InspectionWorkspace({
               date: zni.date,
               ...numberContext(currentInspection(created), 'zni'),
             })
-            setEditorKind('zni')
-            setDraft(created)
+            beginDraft(created, 'zni', null)
             setChoosingMaterials(false)
           }}
         />
@@ -1474,9 +1633,10 @@ export function InspectionWorkspace({
               ? `${documentNumberLabel('АВК', revision.avk?.number || '…')} · ${documentNumberLabel('ЗНИ', revision.zni.number)}`
               : `${documentNumberLabel('ЗНИ', revision.zni.number)} · ревизия ${inspectionSourceRevision(draft, revision).revision}`
           }
-          onClose={() => setDraft(null)}
+          onClose={closeDraft}
+          busy={savingPhotos}
         >
-          <div className="grid gap-5">
+          <fieldset disabled={savingPhotos} className="grid min-w-0 gap-5">
             {revision.avk && (
               <div
                 className="flex gap-2"
@@ -1501,7 +1661,7 @@ export function InspectionWorkspace({
                   <Field
                     label="Номер ЗНИ"
                     value={revision.zni.number}
-                    disabled={!!revision.zni.signedOn}
+                    disabled={draftReadOnly || !!revision.zni.signedOn}
                     onChange={(number) =>
                       updateRevision({
                         ...revision,
@@ -1513,7 +1673,7 @@ export function InspectionWorkspace({
                     label="Дата ЗНИ"
                     type="date"
                     value={revision.zni.date}
-                    disabled={!!revision.zni.signedOn}
+                    disabled={draftReadOnly || !!revision.zni.signedOn}
                     onChange={(date) =>
                       updateRevision({
                         ...revision,
@@ -1525,7 +1685,7 @@ export function InspectionWorkspace({
                     label="Дата инспекции"
                     type="date"
                     value={revision.zni.inspectionDate}
-                    disabled={!!revision.zni.signedOn}
+                    disabled={draftReadOnly || !!revision.zni.signedOn}
                     onChange={(inspectionDate) =>
                       updateRevision({
                         ...revision,
@@ -1537,7 +1697,7 @@ export function InspectionWorkspace({
                     label="Время инспекции"
                     type="time"
                     value={revision.zni.inspectionTime}
-                    disabled={!!revision.zni.signedOn}
+                    disabled={draftReadOnly || !!revision.zni.signedOn}
                     onChange={(inspectionTime) =>
                       updateRevision({
                         ...revision,
@@ -1548,7 +1708,7 @@ export function InspectionWorkspace({
                 </div>
                 <DetailsFields
                   value={revision.zni.details}
-                  disabled={!!revision.zni.signedOn}
+                  disabled={draftReadOnly || !!revision.zni.signedOn}
                   onChange={(details) =>
                     updateRevision({
                       ...revision,
@@ -1558,7 +1718,7 @@ export function InspectionWorkspace({
                 />
                 <DocumentsEditor
                   value={revision.zni.documents}
-                  disabled={!!revision.zni.signedOn}
+                  disabled={draftReadOnly || !!revision.zni.signedOn}
                   onChange={(documents) =>
                     updateRevision({
                       ...revision,
@@ -1582,15 +1742,21 @@ export function InspectionWorkspace({
                       Зав. № {row.factoryNumber || '—'} · Партия:{' '}
                       {row.heatBatch || '—'}
                     </p>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <label className="grid gap-1 text-sm text-slate-600">
+                    <div className="grid items-start gap-3 md:grid-cols-3">
+                      <label className={fieldLabelClassName}>
                         Результат
-                        <select
-                          className="rounded-lg border p-2"
-                          disabled={!!revision.zni.signedOn}
+                        <AppSelect
+                          label="Результат"
+                          options={Object.entries(resultLabels).map(
+                            ([resultValue, label]) => ({
+                              value: resultValue,
+                              label,
+                            }),
+                          )}
+                          disabled={draftReadOnly || !!revision.zni.signedOn}
                           value={row.result}
-                          onChange={(e) => {
-                            const result = e.target.value as typeof row.result
+                          onChange={(nextResult) => {
+                            const result = nextResult as typeof row.result
                             updateRevision({
                               ...revision,
                               zni: {
@@ -1612,13 +1778,7 @@ export function InspectionWorkspace({
                               },
                             })
                           }}
-                        >
-                          {Object.entries(resultLabels).map(([key, label]) => (
-                            <option key={key} value={key}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </label>
                       <Field
                         label={`Принято, ${row.unit}`}
@@ -1626,7 +1786,7 @@ export function InspectionWorkspace({
                         value={
                           row.accepted === null ? '' : String(row.accepted)
                         }
-                        disabled={!!revision.zni.signedOn}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
                         onChange={(accepted) =>
                           updateRevision({
                             ...revision,
@@ -1649,8 +1809,9 @@ export function InspectionWorkspace({
                       />
                       <TextField
                         label="Замечания по позиции"
+                        rows={1}
                         value={row.remarks}
-                        disabled={!!revision.zni.signedOn}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
                         onChange={(remarks) =>
                           updateRevision({
                             ...revision,
@@ -1669,7 +1830,7 @@ export function InspectionWorkspace({
                 <TextField
                   label="Общие замечания ЗНИ"
                   value={revision.zni.remarks}
-                  disabled={!!revision.zni.signedOn}
+                  disabled={draftReadOnly || !!revision.zni.signedOn}
                   onChange={(remarks) =>
                     updateRevision({
                       ...revision,
@@ -1685,41 +1846,75 @@ export function InspectionWorkspace({
                 onChange={updateRevision}
                 acceptedOnly
                 readOnly={draftReadOnly}
+                onPhotosChange={(photos) => {
+                  if (photos === 'yes') setPhotoPickerOpen(true)
+                  else {
+                    setPhotoDraft(null)
+                    updateRevision({
+                      ...revision,
+                      avk: { ...revision.avk!, photos },
+                    })
+                  }
+                }}
+                photoAttachments={
+                  revision.avk.photos === 'yes' && (
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
+                      <Button
+                        variant="outline"
+                        onClick={() => setPhotoPickerOpen(true)}
+                      >
+                        Фотографии АВК
+                      </Button>
+                      {pendingPhotos.length > 0 && (
+                        <span>
+                          Выбрано: {pendingPhotos.length}. Загрузятся при
+                          сохранении АВК.
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
               />
             )}
-            {!revision.avk &&
-              revision.zni.signedOn &&
-              revision.zni.rows.some((row) => (row.accepted ?? 0) > 0) && (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    updateRevision({ ...revision, avk: makeAct(draft) })
-                    setEditorKind('avk')
-                  }}
-                >
-                  Создать АВК на принятые позиции
-                </Button>
-              )}
             {error && (
               <p role="alert" className="text-red-700">
                 {error}
               </p>
             )}
-            {!draftReadOnly &&
-              !revision.avk?.signedOn &&
-              !isBlockedInspectionAct(revision) && (
-                <Button
-                  onClick={() =>
-                    run(() => {
-                      save(draft)
-                      setDraft(null)
-                    })
-                  }
-                >
-                  Сохранить документы
-                </Button>
-              )}
-          </div>
+            {!draftReadOnly && editableKind && hasDraftChanges && (
+              <Button disabled={savingPhotos} onClick={() => void saveDraft()}>
+                {savingPhotos
+                  ? 'Сохранение АВК и фотографий…'
+                  : `Сохранить ${editableKind === 'zni' ? 'ЗНИ' : 'АВК'}`}
+              </Button>
+            )}
+          </fieldset>
+        </QualityModal>
+      )}
+      {draft && revision?.avk && photoPickerOpen && (
+        <QualityModal
+          title="Фотоматериалы АВК"
+          onClose={() => setPhotoPickerOpen(false)}
+        >
+          <InspectionPhotoPicker
+            key={photoDocumentId}
+            documentId={photoDocumentId}
+            initialFiles={pendingPhotos}
+            readOnly={
+              draftReadOnly ||
+              !!revision.avk.signedOn ||
+              isBlockedInspectionAct(revision)
+            }
+            onCancel={() => setPhotoPickerOpen(false)}
+            onConfirm={(files) => {
+              setPhotoDraft({ documentId: photoDocumentId, files })
+              updateRevision({
+                ...revision,
+                avk: { ...revision.avk!, photos: 'yes' },
+              })
+              setPhotoPickerOpen(false)
+            }}
+          />
         </QualityModal>
       )}
       {signing && (
@@ -1903,59 +2098,79 @@ export function InspectionWorkspace({
       )}
       {history && (
         <QualityModal
-          title="История ЗНИ и АВК"
+          title={`Редакции ${history.kind === 'zni' ? 'ЗНИ' : 'АВК'}`}
           onClose={() => setHistory(null)}
         >
           <div className="grid gap-4">
-            {history.revisions.map((rev) => (
-              <section key={rev.revision} className="rounded-lg border p-4">
-                <h3 className="font-semibold">
-                  Ревизия {rev.revision} ·{' '}
-                  {documentNumberLabel('ЗНИ', rev.zni.number)} ·{' '}
-                  {documentNumberLabel('АВК', rev.avk?.number || '—')}
-                </h3>
-                <p>
-                  ЗНИ подписана: {displayDate(rev.zni.signedOn)} · АВК подписан:{' '}
-                  {displayDate(rev.avk?.signedOn ?? null)}
-                </p>
-                {rev.avk?.rejection && (
-                  <p className="mt-2 text-sm text-red-800">
-                    АВК: {actStatus(rev)} ·{' '}
-                    {rev.avk.rejection.kind === 'materials'
-                      ? 'Материал не принят'
-                      : 'Документ требует исправления'}
-                    : {rev.avk.rejection.reason}
+            {inspectionDocumentRevisions(history.entry, history.kind).map(
+              (rev) => (
+                <section key={rev.revision} className="rounded-lg border p-4">
+                  <h3 className="font-semibold">
+                    Редакция {rev.revision} ·{' '}
+                    {documentNumberLabel(
+                      history.kind === 'zni' ? 'ЗНИ' : 'АВК',
+                      rev[history.kind]!.number,
+                    )}
+                  </h3>
+                  <p>
+                    Дата подписания:{' '}
+                    {displayDate(rev[history.kind]?.signedOn ?? null)}
                   </p>
-                )}
-                {rev.kind === 'avk-correction' && (
-                  <p className="text-sm text-slate-500">
-                    Исправление АВК. Подписанная ЗНИ сохранена.
-                  </p>
-                )}
-                <InspectionRows
-                  gridId={`inspection-history:${history.id}:${rev.revision}`}
-                  revision={rev}
-                  lines={lines}
-                  receipts={receipts}
-                />
-                <div className="mt-3 flex gap-2">
-                  <QualityPrintButton
-                    kind="zni"
-                    caseId={history.id}
-                    revision={rev.revision}
-                    prepare={prepare}
+                  {history.kind === 'avk' && rev.avk?.rejection && (
+                    <p className="mt-2 text-sm text-red-800">
+                      АВК: {actStatus(rev)} ·{' '}
+                      {rev.avk.rejection.kind === 'materials'
+                        ? 'Материал не принят'
+                        : 'Документ требует исправления'}
+                      : {rev.avk.rejection.reason}
+                    </p>
+                  )}
+                  {history.kind === 'avk' && rev.kind === 'avk-correction' && (
+                    <p className="text-sm text-slate-500">
+                      Исправление АВК. Подписанная ЗНИ сохранена.
+                    </p>
+                  )}
+                  <InspectionRows
+                    gridId={`inspection-history:${history.entry.id}:${rev.revision}`}
+                    revision={rev}
+                    acceptedOnly={history.kind === 'avk'}
+                    lines={lines}
+                    receipts={receipts}
                   />
-                  {rev.avk && (
+                  <div className="mt-3 flex gap-2">
                     <QualityPrintButton
-                      kind="avk"
-                      caseId={history.id}
+                      kind={history.kind}
+                      caseId={history.entry.id}
                       revision={rev.revision}
                       prepare={prepare}
                     />
-                  )}
-                </div>
-              </section>
-            ))}
+                  </div>
+                </section>
+              ),
+            )}
+          </div>
+        </QualityModal>
+      )}
+      {confirmDiscard && (
+        <QualityModal
+          title="Несохранённые изменения"
+          onClose={() => setConfirmDiscard(false)}
+        >
+          <p className="text-sm text-stone-600">
+            Изменения документа и выбранные для загрузки фотографии не
+            сохранятся. Выйти из формы?
+          </p>
+          <div className="mt-5 flex flex-wrap justify-end gap-3">
+            <Button onClick={() => setConfirmDiscard(false)}>
+              Продолжить редактирование
+            </Button>
+            <Button
+              variant="outline"
+              className="border-red-200 text-red-700 hover:bg-red-50"
+              onClick={dismissDraft}
+            >
+              Выйти без сохранения
+            </Button>
           </div>
         </QualityModal>
       )}
@@ -2092,11 +2307,15 @@ function ActEditor({
   readOnly = false,
   revision,
   onChange,
+  onPhotosChange,
+  photoAttachments,
 }: {
   acceptedOnly?: boolean
   readOnly?: boolean
   revision: InspectionRevision
   onChange: (next: InspectionRevision) => void
+  onPhotosChange: (photos: '' | 'yes' | 'no') => void
+  photoAttachments?: React.ReactNode
 }) {
   const act = revision.avk!
   const disabled =
@@ -2178,6 +2397,7 @@ function ActEditor({
           <TextField
             key={label}
             label={`${index + 1}. ${label}`}
+            rows={2}
             value={act.checks[index]!}
             disabled={disabled}
             onChange={(value) =>
@@ -2202,19 +2422,21 @@ function ActEditor({
         disabled={disabled}
         onChange={(attachments) => set({ attachments })}
       />
-      <label className="grid gap-1 text-sm">
+      <label className={fieldLabelClassName}>
         Фотоматериалы приложены
-        <select
-          className="rounded-lg border p-2"
+        <AppSelect
+          label="Фотоматериалы приложены"
           value={act.photos}
           disabled={disabled}
-          onChange={(e) => set({ photos: e.target.value as typeof act.photos })}
-        >
-          <option value="">Не указано</option>
-          <option value="yes">Да</option>
-          <option value="no">Нет</option>
-        </select>
+          options={[
+            { value: '', label: 'Не указано' },
+            { value: 'yes', label: 'Да' },
+            { value: 'no', label: 'Нет' },
+          ]}
+          onChange={(photos) => onPhotosChange(photos as typeof act.photos)}
+        />
       </label>
+      {photoAttachments}
     </section>
   )
 }

@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDocumentFileStore } from './document-files.server'
 import { createDocumentsHandler } from './documents-api.server'
 import { buildDocumentRegistry } from './document-registry'
-import { buildDocumentArchive } from './document-archive.server'
+import {
+  archiveLimits,
+  buildDocumentArchive,
+  buildDocumentPhotosArchive,
+} from './document-archive.server'
 import { documentRegistryFixture } from './document-registry.fixtures'
 import { buildRequestPrintData } from './request-print-data'
 import { builtinPrintTemplate } from './request-print-store.server'
@@ -70,6 +74,265 @@ afterEach(async () => {
 })
 
 describe('document originals and on-demand archives', () => {
+  it('downloads only this document’s 20 original photos with distinct flat names and no rendering', async () => {
+    const f = await fixture()
+    const docs = buildDocumentRegistry(f.workspace).documents
+    const avk = docs.find((doc) => doc.kind === 'avk')!
+    const zni = docs.find((doc) => doc.kind === 'zni')!
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    const photos = Array.from({ length: 20 }, (_, i) => ({
+      name: i < 2 ? 'Фото.png' : `Фото ${i}.PNG`,
+      bytes: png,
+    }))
+    await f.files.addMany({
+      documentId: avk.id,
+      expectedRevision: (await f.files.load()).revision,
+      files: [...photos, { name: 'Паспорт.pdf', bytes: pdf }],
+    })
+    await f.files.add({
+      documentId: zni.id,
+      expectedRevision: (await f.files.load()).revision,
+      name: 'Фото ЗНИ.png',
+      bytes: png,
+    })
+    const before = await f.files.load()
+    const response = await f.post({
+      action: 'photos-archive',
+      documentId: avk.id,
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toBe('application/zip')
+    expect(
+      decodeURIComponent(response.headers.get('Content-Disposition')!),
+    ).toContain('Фотографии — АВК')
+    const zip = await JSZip.loadAsync(await response.arrayBuffer())
+    const names = Object.keys(zip.files)
+    expect(names).toHaveLength(20)
+    expect(names).toContain('Фото.png')
+    expect(names).toContain('Фото (2).png')
+    expect(
+      names.every((name) => !name.includes('/') && /\.png$/i.test(name)),
+    ).toBe(true)
+    for (const entry of Object.values(zip.files))
+      expect(await entry.async('nodebuffer')).toEqual(png)
+    expect(f.renderer).not.toHaveBeenCalled()
+    expect(f.convert).not.toHaveBeenCalled()
+    expect(await f.files.load()).toEqual(before)
+  })
+  it('rejects an empty, missing or stale photo selection and does not silently skip missing originals', async () => {
+    const f = await fixture()
+    const doc = buildDocumentRegistry(f.workspace).documents.find(
+      (entry) => entry.kind === 'avk',
+    )!
+    expect(
+      (await f.post({ action: 'photos-archive', documentId: doc.id })).status,
+    ).toBe(404)
+    expect(
+      (await f.post({ action: 'photos-archive', documentId: 'missing' }))
+        .status,
+    ).toBe(404)
+    expect(
+      (
+        await f.post({
+          action: 'photos-archive',
+          documentId: doc.id,
+          filesRevision: 'stale',
+        })
+      ).status,
+    ).toBe(409)
+    await f.files.add({
+      documentId: doc.id,
+      name: 'Фото.png',
+      bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      expectedRevision: (await f.files.load()).revision,
+    })
+    vi.spyOn(f.files, 'read').mockRejectedValueOnce(
+      new Error('missing original'),
+    )
+    const response = await f.post({
+      action: 'photos-archive',
+      documentId: doc.id,
+    })
+    expect(response.status).toBe(409)
+    expect((await response.json()).error).toContain(
+      'Не удалось прочитать фотографию',
+    )
+    expect(
+      (await f.post({ action: 'photos-archive', documentId: doc.id })).status,
+    ).toBe(200)
+  })
+  it('limits photo archives before reading and honors cancellation', async () => {
+    const read = vi.fn(async () => ({ bytes: Buffer.from('photo') }))
+    const manifest = {
+      revision: 'files',
+      documents: [],
+      files: [
+        {
+          id: 'photo',
+          documentId: 'avk',
+          name: 'Фото.png',
+          uploadedAt: '',
+          size: archiveLimits.bytes + 1,
+        },
+      ],
+    }
+    await expect(
+      buildDocumentPhotosArchive({
+        manifest,
+        documentId: 'avk',
+        readFile: read,
+      }),
+    ).rejects.toMatchObject({ status: 413 })
+    manifest.files[0]!.size = 5
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      buildDocumentPhotosArchive({
+        manifest,
+        documentId: 'avk',
+        readFile: read,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ status: 499 })
+    expect(read).not.toHaveBeenCalled()
+  })
+  it.each(['existing', 'new'])(
+    'attaches a batch to one %s document, persists it and rejects stale retries',
+    async (target) => {
+      const f = await fixture()
+      const registry = buildDocumentRegistry(f.workspace)
+      const doc = registry.documents.find((entry) => entry.kind === 'avk')!
+      const before = (await f.files.load()).revision
+      const body = {
+        action: 'upload-files',
+        filesRevision: before,
+        ...(target === 'existing'
+          ? { documentId: doc.id }
+          : {
+              document: {
+                kind: 'quality',
+                label: 'Фотоматериалы',
+                date: '',
+                lineIds: registry.materials[0]!.lineIds,
+              },
+            }),
+        files: [1, 2, 3].map((n) => ({
+          name: `Фото${n}.pdf`,
+          base64: pdf.toString('base64'),
+        })),
+      }
+      const result = await f.post(body)
+      expect(result.status).toBe(200)
+      const saved = await f.files.load()
+      expect(saved.files).toHaveLength(3)
+      expect(new Set(saved.files.map((file) => file.documentId)).size).toBe(1)
+      expect(saved.documents).toHaveLength(1)
+      for (const file of saved.files)
+        expect((await f.files.read(file.id)).bytes).toEqual(pdf)
+      expect((await f.post(body)).status).toBe(409)
+      expect(await createDocumentFileStore(f.directory).load()).toEqual(saved)
+    },
+  )
+  it('rejects the entire batch before writing if any file is damaged or the batch is oversized', async () => {
+    const f = await fixture()
+    const doc = buildDocumentRegistry(f.workspace).documents.find(
+      (entry) => entry.kind === 'avk',
+    )!
+    const good = { name: 'Акт.pdf', base64: pdf.toString('base64') }
+    const body = {
+      action: 'upload-files',
+      documentId: doc.id,
+      files: [
+        good,
+        { name: 'Фото.png', base64: Buffer.from('invalid').toString('base64') },
+      ],
+    }
+    expect((await f.post(body)).status).toBe(400)
+    expect(await readdir(f.directory)).toEqual([])
+    expect(
+      (await f.post({ ...body, files: Array.from({ length: 51 }, () => good) }))
+        .status,
+    ).toBe(400)
+    expect(await readdir(f.directory)).toEqual([])
+  })
+  it('serializes concurrent batches so only one commits against the same revision', async () => {
+    const f = await fixture()
+    const expectedRevision = (await f.files.load()).revision
+    const batch = {
+      documentId: 'avk',
+      expectedRevision,
+      files: [1, 2].map((n) => ({ name: `${n}.pdf`, bytes: pdf })),
+    }
+    const results = await Promise.allSettled([
+      f.files.addMany(batch),
+      f.files.addMany(batch),
+    ])
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect((await f.files.load()).files).toHaveLength(2)
+    expect(await readdir(join(f.directory, 'document-files'))).toHaveLength(3)
+  })
+  it.each([
+    ['pdf', 'application/pdf', pdf],
+    ['png', 'image/png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])],
+    ['jpg', 'image/jpeg', Buffer.from([255, 216, 255])],
+  ])(
+    'previews %s inline while preserving the original download and storage',
+    async (extension, type, bytes) => {
+      const f = await fixture()
+      const manifest = await f.files.add({
+        documentId: 'avk',
+        name: `Файл.${extension}`,
+        bytes,
+        expectedRevision: (await f.files.load()).revision,
+      })
+      const url = `http://localhost/api/documents?file=${manifest.files[0]!.id}`
+      const response = await f.handle(new Request(`${url}&preview=1`))
+      expect(response.status).toBe(200)
+      expect(response.headers.get('Content-Type')).toBe(type)
+      expect(response.headers.get('Content-Disposition')).toMatch(/^inline;/)
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes)
+      const original = await f.handle(new Request(url))
+      expect(original.headers.get('Content-Disposition')).toMatch(
+        /^attachment;/,
+      )
+      expect(Buffer.from(await original.arrayBuffer())).toEqual(bytes)
+      expect(await f.files.load()).toEqual(manifest)
+      expect(f.load).not.toHaveBeenCalled()
+      expect(f.convert).not.toHaveBeenCalled()
+    },
+  )
+  it.each(['xlsx', 'docx'] as const)(
+    'converts only a temporary %s preview and leaves original bytes intact',
+    async (extension) => {
+      const f = await fixture()
+      const zip = new JSZip()
+      zip.file(
+        extension === 'xlsx' ? 'xl/workbook.xml' : 'word/document.xml',
+        '<fixture/>',
+      )
+      const bytes = await zip.generateAsync({ type: 'nodebuffer' })
+      const manifest = await f.files.add({
+        documentId: 'avk',
+        name: `Файл.${extension}`,
+        bytes,
+        expectedRevision: (await f.files.load()).revision,
+      })
+      const url = `http://localhost/api/documents?file=${manifest.files[0]!.id}`
+      const response = await f.handle(new Request(`${url}&preview=1`))
+      expect(response.headers.get('Content-Type')).toBe('application/pdf')
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(pdf)
+      expect(f.convert).toHaveBeenCalledWith(bytes, { inputFormat: extension })
+      expect(
+        Buffer.from(await (await f.handle(new Request(url))).arrayBuffer()),
+      ).toEqual(bytes)
+      expect(await f.files.load()).toEqual(manifest)
+      f.convert.mockRejectedValueOnce(new Error('Ошибка конвертера'))
+      expect((await f.handle(new Request(`${url}&preview=1`))).status).toBe(500)
+      expect((await f.handle(new Request(`${url}&preview=1`))).status).toBe(200)
+    },
+  )
   it('opening the registry generates no forms and creates no files', async () => {
     const f = await fixture(),
       before = JSON.stringify(f.workspace)

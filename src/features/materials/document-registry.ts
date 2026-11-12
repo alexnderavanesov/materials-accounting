@@ -50,6 +50,8 @@ export type DocumentFile = {
   size: number
   uploadedAt: string
 }
+export const isDocumentPhoto = (file: { name: string }) =>
+  /\.(png|jpe?g)$/i.test(file.name)
 export type ManualDocument = {
   id: string
   kind: DocumentCategory

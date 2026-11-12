@@ -1,7 +1,7 @@
 import { extname } from 'node:path'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
-import { documentCategories } from './document-registry'
+import { documentCategories, isDocumentPhoto } from './document-registry'
 import type {
   DocumentFileManifest,
   DocumentRegistry,
@@ -114,6 +114,95 @@ export function selectRegistryDocuments(
   return docs
 }
 
+export function archiveFileStem(label: string) {
+  let name = ''
+  for (const character of safeDocumentFilename(label)) {
+    if (Buffer.byteLength(name + character) > 220) break
+    name += character
+  }
+  return name.replace(/[. ]+$/, '') || 'Документ'
+}
+function createArchivePathAllocator() {
+  const reservedPaths = new Set<string>()
+  return (folder: string, label: string, extensions: string[]) => {
+    // Leave room for extensions and duplicate suffixes on filesystems with a 255-byte limit.
+    const name = archiveFileStem(label)
+    let counter = 1
+    let candidates: string[]
+    do {
+      const suffix = counter === 1 ? '' : ` (${counter})`
+      candidates = extensions.map(
+        (extension) =>
+          `${folder ? `${folder}/` : ''}${name}${suffix}${extension}`,
+      )
+      counter++
+    } while (
+      candidates.some((path) => reservedPaths.has(path.toLocaleLowerCase('ru')))
+    )
+    for (const path of candidates)
+      reservedPaths.add(path.toLocaleLowerCase('ru'))
+    return candidates
+  }
+}
+
+/** Only the chosen document's original photos, without generated forms or extra folders. */
+export async function buildDocumentPhotosArchive(
+  input: Pick<ArchiveInput, 'manifest' | 'readFile' | 'signal'> & {
+    documentId: string
+  },
+) {
+  const files = input.manifest.files.filter(
+    (file) => file.documentId === input.documentId && isDocumentPhoto(file),
+  )
+  if (!files.length)
+    throw new PrintError('У документа нет прикреплённых фотографий.', 404)
+  if (files.reduce((sum, file) => sum + file.size, 0) > archiveLimits.bytes)
+    throw new PrintError(
+      'Общий размер фотографий превышает 150 МБ. Скачайте оригиналы по отдельности.',
+      413,
+    )
+  const zip = new JSZip()
+  const reservePaths = createArchivePathAllocator()
+  let bytesUsed = 0
+  const deadline = Date.now() + archiveLimits.milliseconds
+  const check = () => {
+    if (input.signal?.aborted) throw new PrintError('Скачивание отменено.', 499)
+    if (Date.now() > deadline)
+      throw new PrintError(
+        'Превышено время формирования архива. Повторите скачивание.',
+        503,
+      )
+  }
+  for (const file of files) {
+    check()
+    let bytes: Buffer
+    try {
+      bytes = (await input.readFile(file.id)).bytes
+    } catch {
+      throw new PrintError(
+        `Не удалось прочитать фотографию «${file.name}». Обновите список и повторите скачивание.`,
+        409,
+      )
+    }
+    bytesUsed += bytes.length
+    if (bytesUsed > archiveLimits.bytes)
+      throw new PrintError(
+        'Общий размер фотографий превышает 150 МБ. Скачайте оригиналы по отдельности.',
+        413,
+      )
+    const extension = extname(file.name)
+    const [path] = reservePaths('', file.name.slice(0, -extension.length), [
+      extension,
+    ])
+    zip.file(path!, bytes)
+  }
+  check()
+  return zip.generateAsync(
+    { type: 'nodebuffer', compression: 'STORE', streamFiles: true },
+    check,
+  )
+}
+
 /** The ZIP and generated forms exist in memory only; conversion cleans up its temporary directory. */
 export async function buildDocumentArchive(input: ArchiveInput) {
   const selected = new Set(input.materialIds)
@@ -141,34 +230,7 @@ export async function buildDocumentArchive(input: ArchiveInput) {
     warnings: string[] = []
   const paths = new Map<string, string[]>(),
     statuses = new Map<string, string[]>()
-  const reservedPaths = new Set<string>()
-  const reservePaths = (
-    folder: string,
-    label: string,
-    extensions: string[],
-  ) => {
-    // Leave room for extensions and duplicate suffixes on filesystems with a 255-byte limit.
-    let name = ''
-    for (const character of safeDocumentFilename(label)) {
-      if (Buffer.byteLength(name + character) > 220) break
-      name += character
-    }
-    name = name.replace(/[. ]+$/, '') || 'Документ'
-    let counter = 1
-    let candidates: string[]
-    do {
-      const suffix = counter === 1 ? '' : ` (${counter})`
-      candidates = extensions.map(
-        (extension) => `${folder}/${name}${suffix}${extension}`,
-      )
-      counter++
-    } while (
-      candidates.some((path) => reservedPaths.has(path.toLocaleLowerCase('ru')))
-    )
-    for (const path of candidates)
-      reservedPaths.add(path.toLocaleLowerCase('ru'))
-    return candidates
-  }
+  const reservePaths = createArchivePathAllocator()
   let bytesUsed = 0
   const deadline = Date.now() + archiveLimits.milliseconds
   const put = (path: string, bytes: Buffer) => {

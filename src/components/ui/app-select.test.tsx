@@ -79,3 +79,27 @@ it('keeps the selection on Escape, outside click and an empty search; supports m
   fireEvent.click(screen.getByRole('option', { name: 'ШИФР-Б' }))
   expect(change).toHaveBeenCalledExactlyOnceWith('ШИФР-Б')
 })
+
+it('prevents changes when disabled and closes a menu if its document becomes read-only', () => {
+  const change = vi.fn()
+  const props = {
+    label: 'Результат',
+    options,
+    value: 'ТКМ-1',
+    onChange: change,
+  }
+  const view = render(<AppSelect {...props} disabled />)
+  const trigger = screen.getByRole<HTMLButtonElement>('combobox', {
+    name: 'Результат',
+  })
+  expect(trigger.disabled).toBe(true)
+  fireEvent.click(trigger)
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+  expect(screen.queryByRole('listbox')).toBeNull()
+  view.rerender(<AppSelect {...props} />)
+  fireEvent.click(trigger)
+  expect(screen.getByRole('listbox')).toBeTruthy()
+  view.rerender(<AppSelect {...props} disabled />)
+  expect(screen.queryByRole('listbox')).toBeNull()
+  expect(change).not.toHaveBeenCalled()
+})

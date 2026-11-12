@@ -23,13 +23,19 @@ export async function findSoffice() {
 }
 export async function convertRequestPdf(
   bytes: Buffer,
-  options: { executable?: string; timeout?: number; tempRoot?: string } = {},
+  options: {
+    executable?: string
+    timeout?: number
+    tempRoot?: string
+    inputFormat?: 'xlsx' | 'docx'
+  } = {},
 ) {
   const directory = await mkdtemp(
     join(options.tempRoot ?? tmpdir(), 'materials-print-'),
   )
   try {
-    const input = join(directory, 'request.xlsx')
+    const inputFormat = options.inputFormat ?? 'xlsx'
+    const input = join(directory, `request.${inputFormat}`)
     await writeFile(input, bytes, { mode: 0o600 })
     const profile = join(directory, 'profile')
     // A private profile prevents concurrent conversions from attaching to a user's office process.
@@ -42,7 +48,9 @@ export async function convertRequestPdf(
         '--nodefault',
         '--norestore',
         '--convert-to',
-        'pdf:calc_pdf_Export',
+        inputFormat === 'docx'
+          ? 'pdf:writer_pdf_Export'
+          : 'pdf:calc_pdf_Export',
         '--outdir',
         directory,
         input,
