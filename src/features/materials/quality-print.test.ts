@@ -52,6 +52,7 @@ describe('quality templates and PDF endpoint', () => {
       Object.assign(currentInspection(entry).zni.rows[0]!, {
         accepted: 2.5,
         result: 'accepted',
+        nameAddition: 'с покрытием',
       })
       entry.revisions[0] = signInspection(
         currentInspection(entry),
@@ -59,6 +60,9 @@ describe('quality templates and PDF endpoint', () => {
         localToday(),
       )
       currentInspection(entry).avk = createAcceptedInspectionAct(entry)
+      currentInspection(entry).avk!.nameAdditions = {
+        receipt: 'с уточнением для АВК',
+      }
       const before = JSON.stringify(workspace)
       const data = buildQualityPrintData(workspace, entry.id, 1, kind)
       const template = await builtinQualityTemplate(kind)
@@ -82,6 +86,7 @@ describe('quality templates and PDF endpoint', () => {
         )
         expect(sheet.getCell('C11').text).toContain('2,5 шт')
         expect(sheet.getCell('C11').text).toContain('зав. №123')
+        expect(sheet.getCell('C11').text).toContain('Клапан, с покрытием')
       } else {
         const row = template.config.tables.find(
           (table) => table.kind === 'materials',
@@ -89,6 +94,9 @@ describe('quality templates and PDF endpoint', () => {
         expect(sheet.getCell(`M${row}`).value).toBe(2.5)
         expect(sheet.getCell(`O${row}`).text).toContain('АПП')
         expect(sheet.getCell(`P${row}`).text).not.toBe('')
+        expect(sheet.getCell(`D${row}`).text).toBe(
+          'Клапан, с уточнением для АВК',
+        )
       }
       expect(JSON.stringify(workspace)).toBe(before)
     },

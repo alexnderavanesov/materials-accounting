@@ -45,7 +45,28 @@ type Catalog = DocumentRegistry & {
   manifest: DocumentFileManifest
   workspaceRevision: string
 }
-type DocumentSelection = { materialIds: string[]; category?: DocumentCategory }
+type DocumentSelection = {
+  materialIds: string[]
+  category?: DocumentCategory
+  documentIds?: string[]
+}
+type DocumentView = 'all' | DocumentCategory
+type DocumentGridRow = DocumentMaterial & {
+  materialId: string
+  document?: RegistryDocument
+}
+const documentViews: DocumentView[] = [
+  'all',
+  'request',
+  'issue',
+  'm15',
+  'app',
+  'zni',
+  'avk',
+  ...documentCategoryKeys.filter(
+    (kind) => !['request', 'issue', 'm15', 'app', 'zni', 'avk'].includes(kind),
+  ),
+]
 const endpoint = '/api/documents'
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : 'Не удалось выполнить действие.'
@@ -136,8 +157,10 @@ export function DocumentsSection({
   const [busy, setBusy] = useState('')
   const pending = useRef(false)
   const [query, setQuery] = useState('')
-  const [onlyWithDocuments, setOnlyWithDocuments] = useState(false)
+  const [view, setView] = useState<DocumentView>('all')
+  const [onlyWithoutDocuments, setOnlyWithoutDocuments] = useState(false)
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([])
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
   const [selection, setSelection] = useState<DocumentSelection | null>(null)
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [uploadDocument, setUploadDocument] = useState<
@@ -151,11 +174,25 @@ export function DocumentsSection({
     documentId: string
     photos: boolean
   } | null>(null)
-  const grid = useRef<GridApi<DocumentMaterial> | null>(null)
-  const [initialGridState] = useState(() => ({
-    ...readDataGridState('documents-registry'),
-    partialColumnState: true,
-  }))
+  const grid = useRef<GridApi<DocumentGridRow> | null>(null)
+  const gridId =
+    view === 'all' ? 'documents-registry' : `documents-registry-${view}`
+  const initialGridState = useMemo(() => {
+    const state = readDataGridState(gridId)
+    const order = state.columnOrder?.orderedColIds
+    // Add the new name beside the project name in previously saved layouts.
+    if (order && !order.includes('receivedNames')) {
+      const next = [...order]
+      const projectIndex = next.indexOf('name')
+      next.splice(
+        projectIndex < 0 ? next.length : projectIndex + 1,
+        0,
+        'receivedNames',
+      )
+      state.columnOrder = { orderedColIds: next }
+    }
+    return { ...state, partialColumnState: true }
+  }, [gridId])
   const [hasFilters, setHasFilters] = useState(false)
   const loadGeneration = useRef(0)
   const refresh = useCallback(async () => {
@@ -240,15 +277,21 @@ export function DocumentsSection({
     [documentsById],
   )
   const openDocuments = useCallback(
-    (materialIds: string[], category?: DocumentCategory) => {
+    (
+      materialIds: string[],
+      category?: DocumentCategory,
+      documentIds?: string[],
+    ) => {
       const ids = new Set(materialIds)
-      setSelection({ materialIds, category })
+      const documents = documentIds ? new Set(documentIds) : null
+      setSelection({ materialIds, category, documentIds })
       setCheckedIds(
         new Set(
           catalogRef.current?.documents
             .filter(
               (doc) =>
                 (!category || doc.kind === category) &&
+                (!documents || documents.has(doc.id)) &&
                 doc.materialIds.some((id) => ids.has(id)),
             )
             .map((doc) => doc.id),
@@ -261,57 +304,101 @@ export function DocumentsSection({
     },
     [],
   )
-  const columns = useMemo<ColDef<DocumentMaterial>[]>(
+  const columns = useMemo<ColDef<DocumentGridRow>[]>(
     () => [
       {
         field: 'name',
-        headerName: 'Материал',
-        width: 340,
-        pinned: 'left',
+        headerName: 'Наименование по проекту',
+        initialWidth: 340,
+        initialPinned: 'left',
         minWidth: 200,
+      },
+      {
+        colId: 'receivedNames',
+        headerName: 'Наименование при получении',
+        initialWidth: 340,
+        minWidth: 220,
+        autoHeight: true,
+        valueGetter: ({ data }) =>
+          (data?.receivedNames ?? []).map((item) => item.name).join('\n'),
+        getQuickFilterText: ({ data, value }) =>
+          `${value ?? ''} ${data.receivedNames.some((item) => item.replacement) ? 'замена' : ''}`,
+        cellRenderer: ({ data }: ICellRendererParams<DocumentGridRow>) =>
+          data?.receivedNames.length ? (
+            <div className="grid w-full gap-1">
+              {data.receivedNames.map((item) => (
+                <div key={item.name} className="flex items-start gap-2">
+                  <span
+                    className="min-w-0 flex-1 line-clamp-2"
+                    title={item.name}
+                  >
+                    {item.name}
+                  </span>
+                  {item.replacement && (
+                    <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-800">
+                      Замена
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="text-slate-400">—</span>
+          ),
       },
       {
         field: 'type',
         headerName: 'Тип материала',
-        width: 230,
+        initialWidth: 230,
         initialHide: true,
       },
       {
         field: 'cipher',
         headerName: 'Шифр',
-        width: 220,
+        initialWidth: 220,
       },
       {
         field: 'standard',
         headerName: 'Нормативный документ',
-        width: 220,
+        initialWidth: 220,
         initialHide: true,
       },
-      ...documentCategoryKeys.map(
-        (kind): ColDef<DocumentMaterial> => ({
+      ...(view === 'all' ? documentCategoryKeys : [view]).map(
+        (kind): ColDef<DocumentGridRow> => ({
           colId: kind,
           headerName: documentCategories[kind],
-          width: ['app', 'm15', 'zni', 'avk', 'arvk'].includes(kind)
-            ? 170
-            : 190,
+          initialWidth:
+            view !== 'all'
+              ? 380
+              : ['app', 'm15', 'zni', 'avk', 'arvk'].includes(kind)
+                ? 170
+                : 190,
           valueGetter: ({ data }) =>
             data
               ? docsForRow(data, kind)
                   .map((doc) => doc.label)
                   .join('\n')
               : '',
-          cellRenderer: ({ data }: ICellRendererParams<DocumentMaterial>) => {
+          cellRenderer: ({ data }: ICellRendererParams<DocumentGridRow>) => {
             if (!data) return null
             const docs = docsForRow(data, kind)
             return docs.length ? (
               <button
                 type="button"
                 className="w-full cursor-pointer text-left text-blue-700 hover:underline"
-                onClick={() => openDocuments([data.id], kind)}
+                onClick={() =>
+                  openDocuments(
+                    [data.materialId],
+                    kind,
+                    data.document ? [data.document.id] : undefined,
+                  )
+                }
                 title={docs.map((doc) => doc.label).join('\n')}
-                aria-label={`${documentCategories[kind]}: ${data.name}`}
+                aria-label={`${data.document?.label ?? documentCategories[kind]}: ${data.name}`}
               >
-                <span className="block truncate">
+                <span
+                  className={view === 'all' ? 'block truncate' : 'line-clamp-2'}
+                >
                   {docs.length === 1 ? docs[0]!.label : `${docs.length} док.`}
                 </span>
               </button>
@@ -322,21 +409,51 @@ export function DocumentsSection({
         }),
       ),
     ],
-    [docsForRow, openDocuments],
+    [docsForRow, openDocuments, view],
   )
-  const rows = useMemo(
+  const rows = useMemo<DocumentGridRow[]>(() => {
+    const materials = catalog?.materials ?? []
+    if (view === 'all')
+      return materials
+        .filter((row) =>
+          onlyWithoutDocuments
+            ? row.documentIds.length === 0
+            : row.documentIds.length > 0,
+        )
+        .map((row) => ({ ...row, materialId: row.id }))
+    return materials.flatMap((row) =>
+      docsForRow(row, view).map((document) => ({
+        ...row,
+        id: JSON.stringify([row.id, document.id]),
+        materialId: row.id,
+        document,
+        documentIds: [document.id],
+      })),
+    )
+  }, [catalog, onlyWithoutDocuments, view, docsForRow])
+  // Keep the material/document pair visible first, including on narrow screens.
+  const displayedColumns = useMemo(
     () =>
-      (catalog?.materials ?? []).filter(
-        (row) => !onlyWithDocuments || row.documentIds.length > 0,
-      ),
-    [catalog, onlyWithDocuments],
+      view === 'all'
+        ? columns
+        : [
+            columns[0]!,
+            columns[columns.length - 1]!,
+            columns[1]!,
+            ...columns.slice(2, -1),
+          ],
+    [columns, view],
   )
   const shownDocuments = useMemo(() => {
     if (!selection) return []
     const ids = new Set(selection.materialIds)
+    const documents = selection.documentIds
+      ? new Set(selection.documentIds)
+      : null
     return (catalog?.documents ?? []).filter(
       (doc) =>
         (!selection.category || selection.category === doc.kind) &&
+        (!documents || documents.has(doc.id)) &&
         doc.materialIds.some((id) => ids.has(id)),
     )
   }, [catalog, selection])
@@ -344,6 +461,14 @@ export function DocumentsSection({
     const ids = new Set(selection?.materialIds ?? selectedMaterials)
     return (catalog?.materials ?? []).filter((row) => ids.has(row.id))
   }, [catalog, selection, selectedMaterials])
+  function changeView(next: DocumentView) {
+    if (next === view) return
+    setSelectedMaterials([])
+    setSelectedDocumentIds([])
+    setHasFilters(false)
+    grid.current = null
+    setView(next)
+  }
   function startUpload(doc: RegistryDocument | 'new') {
     setNotice('')
     setUploadDocument(doc)
@@ -380,6 +505,9 @@ export function DocumentsSection({
           }
         : { documentId: uploadDocument.id }),
     })
+    if (uploadDocument === 'new' && selection?.documentIds) {
+      setSelection({ materialIds: selection.materialIds, category: uploadKind })
+    }
     setUploadDocument(null)
     setUploadFiles([])
     await refresh()
@@ -436,6 +564,23 @@ export function DocumentsSection({
       className="mt-5 flex min-h-0 min-w-0 flex-1 flex-col gap-4"
       aria-label="Документы по материалам"
     >
+      <div
+        role="group"
+        aria-label="Вид документов"
+        className="flex shrink-0 flex-wrap gap-2"
+      >
+        {documentViews.map((kind) => (
+          <Button
+            key={kind}
+            size="sm"
+            variant={view === kind ? 'default' : 'outline'}
+            aria-pressed={view === kind}
+            onClick={() => changeView(kind)}
+          >
+            {kind === 'all' ? 'Все документы' : documentCategories[kind]}
+          </Button>
+        ))}
+      </div>
       <div className="flex shrink-0 flex-wrap items-center gap-3">
         <label className="relative min-w-60 flex-1">
           <Search size={17} className="absolute left-3 top-3 text-slate-400" />
@@ -444,17 +589,21 @@ export function DocumentsSection({
             className="pl-9"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Материал, шифр или номер документа"
+            placeholder="Проектное или фактическое наименование, шифр, документ"
           />
         </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={onlyWithDocuments}
-            onChange={(event) => setOnlyWithDocuments(event.target.checked)}
-          />
-          С документами
-        </label>
+        {view === 'all' && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={onlyWithoutDocuments}
+              onChange={(event) =>
+                setOnlyWithoutDocuments(event.target.checked)
+              }
+            />
+            Без документов
+          </label>
+        )}
         <Button
           variant="outline"
           aria-label="Обновить реестр"
@@ -484,28 +633,35 @@ export function DocumentsSection({
         </Button>
         <Button
           disabled={!selectedMaterials.length || Boolean(busy)}
-          onClick={() => openDocuments(selectedMaterials)}
+          onClick={() =>
+            openDocuments(
+              selectedMaterials,
+              view === 'all' ? undefined : view,
+              view === 'all' ? undefined : selectedDocumentIds,
+            )
+          }
         >
           <Download size={16} />
           Скачать архив
-          {selectedMaterials.length ? ` · ${selectedMaterials.length}` : ''}
+          {selectedMaterials.length
+            ? ` · ${view === 'all' ? selectedMaterials.length : selectedDocumentIds.length}`
+            : ''}
         </Button>
       </div>
       {!selection && status}
       <div className="operations-grid documents-grid min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <MaterialsGridView<DocumentMaterial>
-          gridId="documents-registry"
+        <MaterialsGridView<DocumentGridRow>
+          key={gridId}
+          gridId={gridId}
           initialState={initialGridState}
-          onStateUpdated={({ state }) =>
-            saveDataGridState('documents-registry', state)
-          }
+          onStateUpdated={({ state }) => saveDataGridState(gridId, state)}
           onFilterChanged={({ api }) =>
             setHasFilters(api.isColumnFilterPresent())
           }
           statusBar={{ statusPanels: [] }}
           theme={materialsGridTheme}
           localeText={projectGridLocale}
-          columnDefs={columns}
+          columnDefs={displayedColumns}
           rowData={rows}
           getRowId={({ data }) => data.id}
           quickFilterText={query}
@@ -529,9 +685,7 @@ export function DocumentsSection({
             wrapText: true,
             wrapHeaderText: true,
             autoHeaderHeight: true,
-            cellRenderer: ({
-              value,
-            }: ICellRendererParams<DocumentMaterial>) => (
+            cellRenderer: ({ value }: ICellRendererParams<DocumentGridRow>) => (
               <span className="line-clamp-2">{value}</span>
             ),
             tooltipValueGetter: ({ value }) => String(value ?? ''),
@@ -541,14 +695,29 @@ export function DocumentsSection({
           onGridReady={({ api }) => {
             grid.current = api
           }}
-          onSelectionChanged={({ api }) =>
-            setSelectedMaterials(api.getSelectedRows().map((row) => row.id))
-          }
+          onSelectionChanged={({ api }) => {
+            const selected = api.getSelectedRows()
+            setSelectedMaterials([
+              ...new Set(selected.map((row) => row.materialId)),
+            ])
+            setSelectedDocumentIds([
+              ...new Set(
+                selected.flatMap((row) =>
+                  row.document ? [row.document.id] : [],
+                ),
+              ),
+            ])
+          }}
         />
       </div>
       {selectedMaterials.length > 0 && (
         <div className="flex shrink-0 gap-3 text-sm text-slate-500">
-          <span>Выбрано материалов: {selectedMaterials.length}</span>
+          <span>
+            {view === 'all' ? 'Выбрано материалов' : 'Материалов'}:{' '}
+            {selectedMaterials.length}
+            {view !== 'all' &&
+              ` · Выбрано документов: ${selectedDocumentIds.length}`}
+          </span>
           <button
             type="button"
             className="hover:underline"
@@ -651,7 +820,9 @@ export function DocumentsSection({
                     onClick={() => startUpload('new')}
                   >
                     <Paperclip size={14} />
-                    Добавить документ
+                    {selectedRows.length === 1
+                      ? 'Добавить документ к материалу'
+                      : 'Добавить документ к материалам'}
                   </Button>
                 </div>
                 {!shownDocuments.length && (

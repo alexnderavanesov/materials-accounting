@@ -77,6 +77,7 @@ const rowSchema = z
     receiptId: id,
     projectLineId: id,
     name: text,
+    nameAddition: text.optional(),
     cipher: text,
     unit: text,
     factoryNumber: text,
@@ -134,6 +135,8 @@ const avkSchema = z
     attachments: text,
     photos: z.enum(['', 'yes', 'no']),
     documents: z.array(qualityDocumentSchema),
+    // Overrides the signed ZNI addition for this act only; an empty string clears it.
+    nameAdditions: z.record(id, text).optional(),
     rejection: z
       .object({
         kind: z.enum(['document', 'materials']),
@@ -193,6 +196,19 @@ export type InspectionRevision = z.infer<typeof revisionSchema>
 export type InspectionRow = z.infer<typeof rowSchema>
 export type InspectionAct = z.infer<typeof avkSchema>
 export type QualityDocument = z.infer<typeof qualityDocumentSchema>
+export function inspectionNameAddition(
+  row: InspectionRow,
+  act?: InspectionAct | null,
+) {
+  return act?.nameAdditions?.[row.receiptId] ?? row.nameAddition ?? ''
+}
+export function inspectionMaterialName(
+  row: InspectionRow,
+  act?: InspectionAct | null,
+) {
+  const addition = inspectionNameAddition(row, act).trim()
+  return addition ? `${row.name}, ${addition}` : row.name
+}
 export const emptyQualityWorkflow = (): QualityWorkflow => ({
   version: 1,
   defaults: { ...emptyQualityDefaults },
@@ -331,7 +347,8 @@ export function inspectionMatches(entry: InspectionCase, search: string) {
       zni.remarks,
       ...zni.documents.flatMap((doc) => [doc.name, doc.number]),
       ...zni.rows.flatMap((row) => [
-        row.name,
+        inspectionMaterialName(row),
+        avk && inspectionMaterialName(row, avk),
         row.cipher,
         row.factoryNumber,
         row.heatBatch,
@@ -1251,6 +1268,17 @@ function validateRevision(rev: InspectionRevision) {
     rev.zni.rows.map((row) => row.receiptId),
     'позиции ЗНИ',
   )
+  const actReceiptIds = new Set(
+    rev.zni.rows
+      .filter((row) => (row.accepted ?? 0) > 0)
+      .map((row) => row.receiptId),
+  )
+  for (const receiptId of Object.keys(rev.avk?.nameAdditions ?? {})) {
+    if (!actReceiptIds.has(receiptId))
+      fail(
+        'Дополнение к наименованию АВК должно относиться к принятой позиции ЗНИ.',
+      )
+  }
   for (const row of rev.zni.rows) {
     if (row.accepted !== null && row.accepted > row.presented)
       fail('Принятое количество превышает предъявленное.')

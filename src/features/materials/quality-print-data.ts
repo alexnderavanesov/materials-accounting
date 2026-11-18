@@ -13,6 +13,7 @@ import {
   acceptedAfterInspection,
   rejectedByAct,
   isPartiallyRejectedAct,
+  inspectionMaterialName,
   resultLabels,
 } from './quality-workflow'
 
@@ -38,6 +39,8 @@ export function buildQualityPrintData(
       : selectedRevision
   const { zni, avk } = revision
   if (kind === 'avk' && !avk) throw new Error('АВК этой ревизии ещё не создан.')
+  const materialName = (row: (typeof zni.rows)[number]) =>
+    inspectionMaterialName(row, kind === 'avk' ? avk : null)
   const lines = workspace.lines as unknown as Array<SubobjectMaterialMetric>
   const acceptedAct = kind === 'avk'
   const materials = zni.rows
@@ -77,7 +80,7 @@ export function buildQualityPrintData(
         throw new Error(alternative.error || acceptedAlternative.error)
       return {
         index: index + 1,
-        name: row.name,
+        name: materialName(row),
         cipher: row.cipher,
         factoryNumber: row.factoryNumber,
         heatBatch: row.heatBatch,
@@ -100,7 +103,7 @@ export function buildQualityPrintData(
     .filter((row) => row.result && (row.result !== 'accepted' || row.remarks))
     .map(
       (row) =>
-        `${row.name}${row.factoryNumber ? ` (зав. №${row.factoryNumber})` : ''}: предъявлено ${row.presented} ${row.unit}; принято ${row.accepted ?? '—'} ${row.unit}; не принято ${row.accepted === null ? '—' : Number((row.presented - row.accepted).toPrecision(15))} ${row.unit}. ${resultLabels[row.result]}. ${row.remarks}`,
+        `${materialName(row)}${row.factoryNumber ? ` (зав. №${row.factoryNumber})` : ''}: предъявлено ${row.presented} ${row.unit}; принято ${row.accepted ?? '—'} ${row.unit}; не принято ${row.accepted === null ? '—' : Number((row.presented - row.accepted).toPrecision(15))} ${row.unit}. ${resultLabels[row.result]}. ${row.remarks}`,
     )
     .join('\n')
   const complete = zni.rows.every((row) => row.result && row.accepted !== null)
@@ -114,7 +117,7 @@ export function buildQualityPrintData(
   const materialDescription = zni.rows
     .map((row) =>
       [
-        `${row.name} — ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(row.presented)} ${row.unit}`,
+        `${materialName(row)} — ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(row.presented)} ${row.unit}`,
         row.requestNumber ? `заявка ${row.requestNumber}` : '',
         row.cipher ? `шифр ${row.cipher}` : '',
         row.factoryNumber ? `зав. №${row.factoryNumber}` : '',
@@ -193,7 +196,7 @@ ${materialDescription}`,
           .filter((row) => rejectedByAct(revision, row) > 0)
           .map(
             (row) =>
-              `${row.name}: принято по АВК ${acceptedAfterInspection(revision, row)} ${row.unit}; не принято по АВК ${rejectedByAct(revision, row)} ${row.unit}.`,
+              `${materialName(row)}: принято по АВК ${acceptedAfterInspection(revision, row)} ${row.unit}; не принято по АВК ${rejectedByAct(revision, row)} ${row.unit}.`,
           )
           .join('\n'),
       `Основание: ${receiptDocumentLabel(entry.basis)}.`,

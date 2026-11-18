@@ -2,6 +2,7 @@ import type { SiteReturn } from './material-issues'
 import { getMaterialIdentityKey } from './project-material-data'
 import { documentNumberLabel } from './document-number'
 import { receiptDocumentLabel } from './receipt-documents'
+import { normalizeOperationSearch } from './operation-list-view'
 import {
   receiptQualityDocument,
   isBlockedInspectionAct,
@@ -67,6 +68,7 @@ export type DocumentFileManifest = {
 export type DocumentMaterial = {
   id: string
   name: string
+  receivedNames: { name: string; replacement: boolean }[]
   type: string
   cipher: string
   standard: string
@@ -114,6 +116,7 @@ export function buildDocumentRegistry(
       material = {
         id: identity,
         name: line.projectMaterialName || line.material || 'Материал',
+        receivedNames: [],
         type: line.materialType || line.category || '',
         cipher: '',
         standard: line.normativeDocument || '',
@@ -134,6 +137,7 @@ export function buildDocumentRegistry(
       row = {
         id: key('deleted', lineId),
         name: name || 'Удалённый материал',
+        receivedNames: [],
         type: '',
         cipher: '',
         standard: '',
@@ -160,6 +164,7 @@ export function buildDocumentRegistry(
     for (const row of rows) links.get(doc.id)!.add(row.id)
   }
   const requests = new Map<string, DocumentMaterial>()
+  const requestedNames = new Map<string, string>()
   for (const entry of workspace.materialRequests) {
     const row = materialFor(
       text(entry, 'projectLineId'),
@@ -167,6 +172,7 @@ export function buildDocumentRegistry(
       text(entry, 'projectUnit'),
     )
     requests.set(text(entry, 'id'), row)
+    requestedNames.set(text(entry, 'id'), text(entry, 'projectMaterialName'))
     const number = text(entry, 'number'),
       date = text(entry, 'date')
     add(
@@ -181,6 +187,10 @@ export function buildDocumentRegistry(
     )
   }
   const receiptMaterials = new Map<string, DocumentMaterial>()
+  const receivedNames = new Map<
+    string,
+    Map<string, DocumentMaterial['receivedNames'][number]>
+  >()
   const qualitySources = new Map<string, Set<string>>()
   const qualityKey = (doc: { name: string; number: string; date: string }) =>
     key(
@@ -201,6 +211,23 @@ export function buildDocumentRegistry(
       )
     const receiptId = text(receipt, 'id')
     receiptMaterials.set(receiptId, row)
+    const actualName = text(receipt, 'actualName').trim()
+    if (actualName) {
+      let names = receivedNames.get(row.id)
+      if (!names) {
+        names = new Map()
+        receivedNames.set(row.id, names)
+      }
+      const normalized = normalizeOperationSearch(actualName)
+      const replacement =
+        normalized !==
+        normalizeOperationSearch(
+          requestedNames.get(text(receipt, 'requestId')) || row.name,
+        )
+      const existing = names.get(normalized)
+      if (existing) existing.replacement ||= replacement
+      else names.set(normalized, { name: actualName, replacement })
+    }
     for (const field of ['appDocumentId', 'm15DocumentId']) {
       const doc = receiptDocs.get(text(receipt, field))
       if (doc)
@@ -357,10 +384,14 @@ export function buildDocumentRegistry(
     for (const id of doc.materialIds)
       materials.get(id)!.documentIds.push(doc.id)
   }
-  for (const material of materials.values())
+  for (const material of materials.values()) {
     material.cipher = [...(ciphers.get(material.id) ?? [])]
       .filter(Boolean)
       .join(', ')
+    material.receivedNames = [
+      ...(receivedNames.get(material.id)?.values() ?? []),
+    ]
+  }
   return {
     materials: [...materials.values()],
     documents: [...documents.values()].sort(

@@ -52,6 +52,7 @@ const data = {
     {
       id: 'pipe',
       name: 'Труба 108х3',
+      receivedNames: [{ name: 'Труба 108х3', replacement: false }],
       type: 'Труба',
       cipher: 'ТК1',
       standard: 'ГОСТ',
@@ -356,7 +357,7 @@ it('explains how to recover when another tab saved a newer workspace', async () 
   expect(screen.queryByRole('button', { name: 'Труба 108х3' })).toBeNull()
 })
 
-it('includes materials without documents by default and can explicitly hide them', async () => {
+it('shows materials with documents by default and switches to only materials without documents', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () =>
@@ -376,17 +377,19 @@ it('includes materials without documents by default and can explicitly hide them
   )
   render(<DocumentsSection prepare={async () => 'saved'} />)
   expect(
-    await screen.findByRole('button', { name: 'Без документов' }),
+    await screen.findByRole('button', { name: 'Труба 108х3' }),
   ).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Без документов' })).toBeNull()
   const checkbox = screen.getByRole<HTMLInputElement>('checkbox', {
-    name: 'С документами',
+    name: 'Без документов',
   })
   expect(checkbox.checked).toBe(false)
   fireEvent.click(checkbox)
+  expect(screen.getByRole('button', { name: 'Без документов' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Труба 108х3' })).toBeNull()
+  fireEvent.click(checkbox)
   expect(screen.queryByRole('button', { name: 'Без документов' })).toBeNull()
   expect(screen.getByRole('button', { name: 'Труба 108х3' })).toBeTruthy()
-  fireEvent.click(checkbox)
-  expect(screen.getByRole('button', { name: 'Без документов' })).toBeTruthy()
 })
 
 it('adds multiple dropped and picked files, removes individual entries and uploads them together after confirmation', async () => {

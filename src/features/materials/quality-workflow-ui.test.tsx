@@ -146,6 +146,89 @@ function chooseAction(kind: 'ЗНИ' | 'АВК', label: string) {
   fireEvent.click(screen.getByRole('menuitem', { name: label }))
 }
 
+it('edits and previews the ZNI name addition, saves it separately and restores it on reopening', () => {
+  const fixture = inspectionFixture()
+  const save = vi.fn()
+  render(<ActionsHarness fixture={fixture} save={save} />)
+  chooseAction('ЗНИ', 'Редактировать ЗНИ')
+  const field = screen.getByLabelText<HTMLTextAreaElement>(
+    'Дополнение к наименованию',
+  )
+  fireEvent.change(field, { target: { value: 'с покрытием' } })
+  expect(
+    screen.getByText('Наименование в документе:').parentElement!.textContent,
+  ).toContain('Клапан, с покрытием')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить ЗНИ' }))
+  const saved = save.mock.calls[0]![0]
+  expect(
+    currentInspection(saved.qualityWorkflow.cases[0]).zni.rows[0],
+  ).toMatchObject({ name: 'Клапан', nameAddition: 'с покрытием' })
+  expect(saved.materialReceipts).toEqual(fixture.materialReceipts)
+  chooseAction('ЗНИ', 'Редактировать ЗНИ')
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
+      .value,
+  ).toBe('с покрытием')
+  fireEvent.change(screen.getByLabelText('Дополнение к наименованию'), {
+    target: { value: '' },
+  })
+  fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+  fireEvent.click(screen.getByRole('button', { name: 'Выйти без сохранения' }))
+  chooseAction('ЗНИ', 'Редактировать ЗНИ')
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
+      .value,
+  ).toBe('с покрытием')
+  expect(save).toHaveBeenCalledTimes(1)
+})
+
+it('inherits, overrides and clears the AVK addition without editing the signed ZNI', () => {
+  const fixture = acceptFixture(10)
+  const original = currentInspection(fixture.qualityWorkflow.cases[0]!)
+  original.zni.rows[0]!.nameAddition = 'из ЗНИ'
+  original.avk!.signedOn = null
+  const save = vi.fn()
+  render(<ActionsHarness fixture={fixture} save={save} />)
+  chooseAction('АВК', 'Редактировать АВК')
+  const field = screen.getByLabelText<HTMLTextAreaElement>(
+    'Дополнение к наименованию',
+  )
+  expect(field.value).toBe('из ЗНИ')
+  fireEvent.change(field, { target: { value: 'для АВК' } })
+  expect(
+    screen.getByText('Наименование в документе:').parentElement!.textContent,
+  ).toContain('Клапан, для АВК')
+  fireEvent.change(field, { target: { value: 'из ЗНИ' } })
+  expect(screen.queryByRole('button', { name: 'Сохранить АВК' })).toBeNull()
+  fireEvent.change(field, { target: { value: 'для АВК' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить АВК' }))
+  chooseAction('АВК', 'Редактировать АВК')
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
+      .value,
+  ).toBe('для АВК')
+  fireEvent.change(screen.getByLabelText('Дополнение к наименованию'), {
+    target: { value: '' },
+  })
+  expect(
+    screen.getByText('Наименование в документе:').parentElement!.textContent,
+  ).toBe('Наименование в документе: Клапан')
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить АВК' }))
+  const saved = save.mock.calls[1]![0]
+  const revision = currentInspection(saved.qualityWorkflow.cases[0])
+  expect(revision.avk!.nameAdditions).toEqual({ receipt: '' })
+  expect(revision.zni).toEqual(original.zni)
+  chooseAction('ЗНИ', 'Просмотр ЗНИ')
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
+      .disabled,
+  ).toBe(true)
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
+      .value,
+  ).toBe('из ЗНИ')
+})
+
 it('protects unsaved fields on Escape and X, preserves edits when continuing and saves only actual changes', () => {
   const fixture = acceptFixture(10)
   currentInspection(fixture.qualityWorkflow.cases[0]!).avk!.signedOn = null

@@ -55,6 +55,8 @@ import {
   indexInspectionMaterials,
   inspectionChecks,
   inspectionMatches,
+  inspectionNameAddition,
+  inspectionMaterialName,
   inspectionAvailableQuantities,
   localToday,
   newInspection,
@@ -66,6 +68,8 @@ import {
 } from './quality-workflow'
 import type {
   InspectionCase,
+  InspectionAct,
+  InspectionRow,
   InspectionRevision,
   InspectionSelection,
   QualityDefaults,
@@ -268,6 +272,33 @@ function TextField({
         onChange={(e) => onChange(e.target.value)}
       />
     </label>
+  )
+}
+function MaterialNameAddition({
+  row,
+  act,
+  disabled,
+  onChange,
+}: {
+  row: InspectionRow
+  act?: InspectionAct
+  disabled: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="grid min-w-0 gap-2">
+      <TextField
+        label="Дополнение к наименованию"
+        rows={2}
+        value={inspectionNameAddition(row, act)}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <p className="whitespace-pre-wrap break-words text-sm text-stone-600">
+        <span className="font-medium">Наименование в документе:</span>{' '}
+        {inspectionMaterialName(row, act)}
+      </p>
+    </div>
   )
 }
 function DetailsFields({
@@ -1742,6 +1773,26 @@ export function InspectionWorkspace({
                       Зав. № {row.factoryNumber || '—'} · Партия:{' '}
                       {row.heatBatch || '—'}
                     </p>
+                    <MaterialNameAddition
+                      row={row}
+                      disabled={draftReadOnly || !!revision.zni.signedOn}
+                      onChange={(nameAddition) =>
+                        updateRevision({
+                          ...revision,
+                          zni: {
+                            ...revision.zni,
+                            rows: revision.zni.rows.map((item, n) =>
+                              n === index
+                                ? {
+                                    ...item,
+                                    nameAddition: nameAddition || undefined,
+                                  }
+                                : item,
+                            ),
+                          },
+                        })
+                      }
+                    />
                     <div className="grid items-start gap-3 md:grid-cols-3">
                       <label className={fieldLabelClassName}>
                         Результат
@@ -2203,6 +2254,7 @@ function InspectionRows({
         : row.accepted
       const displayedRow = {
         ...row,
+        name: inspectionMaterialName(row, acceptedOnly ? revision.avk : null),
         presented: acceptedOnly ? (row.accepted ?? 0) : row.presented,
         accepted,
         result: rejectedMaterial
@@ -2340,17 +2392,38 @@ function ActEditor({
         укажите «Не применимо».
       </p>
       {acceptedOnly && (
-        <div className="rounded-lg border bg-emerald-50 p-3 text-sm">
+        <div className="grid gap-3 rounded-lg border bg-stone-50 p-3 text-sm">
           <strong>Материалы в АВК</strong>
           {revision.zni.rows
             .filter((row) => (row.accepted ?? 0) > 0)
             .map((row) => (
-              <p key={row.receiptId}>
-                {row.name}: {fmt(acceptedAfterInspection(revision, row))}{' '}
-                {row.unit}
-                {rejectedByAct(revision, row) > 0 &&
-                  ` · Не принято по АВК: ${fmt(rejectedByAct(revision, row))} ${row.unit}`}
-              </p>
+              <div
+                key={row.receiptId}
+                className="grid min-w-0 gap-2 rounded-lg border bg-white p-3"
+              >
+                <p className="font-medium">
+                  {row.name}: {fmt(acceptedAfterInspection(revision, row))}{' '}
+                  {row.unit}
+                  {rejectedByAct(revision, row) > 0 &&
+                    ` · Не принято по АВК: ${fmt(rejectedByAct(revision, row))} ${row.unit}`}
+                </p>
+                <MaterialNameAddition
+                  row={row}
+                  act={act}
+                  disabled={disabled}
+                  onChange={(addition) => {
+                    const nameAdditions = { ...act.nameAdditions }
+                    if (addition === (row.nameAddition ?? ''))
+                      delete nameAdditions[row.receiptId]
+                    else nameAdditions[row.receiptId] = addition
+                    set({
+                      nameAdditions: Object.keys(nameAdditions).length
+                        ? nameAdditions
+                        : undefined,
+                    })
+                  }}
+                />
+              </div>
             ))}
         </div>
       )}

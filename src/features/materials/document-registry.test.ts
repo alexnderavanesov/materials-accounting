@@ -7,6 +7,75 @@ import {
 import { buildQualityPrintData } from './quality-print-data'
 
 describe('material document registry', () => {
+  it('collects distinct receipt names across ciphers and marks only substitutions without changing document links', () => {
+    const workspace = documentRegistryFixture()
+    const projectName =
+      'Труба стальная бесшовная горячедеформированная 57x4 сталь 20 гарантия гидроиспытания, кроме изготовленных из слитков'
+    for (const line of workspace.lines) line.projectMaterialName = projectName
+    for (const request of workspace.materialRequests)
+      request.projectMaterialName = projectName
+    const original = buildDocumentRegistry(workspace)
+    workspace.materialReceipts[0]!.actualName = 'Труба 57х4 09г2с'
+    workspace.materialReceipts[1]!.actualName = projectName
+    const changed = buildDocumentRegistry(workspace)
+    expect(changed.documents).toEqual(original.documents)
+    expect(changed.materials[0]!.id).toBe(original.materials[0]!.id)
+    workspace.materialReceipts.push({
+      ...workspace.materialReceipts[0],
+      id: 'receipt-duplicate-name',
+      actualName: '  ТРУБА   57X4 09Г2С  ',
+    })
+    const before = JSON.stringify(workspace)
+    const registry = buildDocumentRegistry(workspace)
+    expect(registry.materials).toHaveLength(1)
+    expect(registry.materials[0]).toMatchObject({
+      name: projectName,
+      receivedNames: [
+        { name: 'Труба 57х4 09г2с', replacement: true },
+        { name: projectName, replacement: false },
+      ],
+    })
+    expect(registry.documents.filter((doc) => doc.kind === 'app')).toHaveLength(
+      1,
+    )
+    expect(JSON.stringify(workspace)).toBe(before)
+  })
+  it('uses the original request name for replacement status and keeps names separate for distinct project materials', () => {
+    const workspace = documentRegistryFixture()
+    workspace.lines[0]!.projectMaterialName =
+      'Клапан с новым проектным названием'
+    workspace.materialReceipts[0]!.actualName = 'Клапан'
+    workspace.materialReceipts[1]!.actualName = 'Другой клапан'
+    const registry = buildDocumentRegistry(workspace)
+    expect(registry.materials).toHaveLength(2)
+    expect(
+      registry.materials.find((row) => row.lineIds.includes('line'))!
+        .receivedNames,
+    ).toEqual([{ name: 'Клапан', replacement: false }])
+    expect(
+      registry.materials.find((row) =>
+        row.lineIds.includes('line-second-cipher'),
+      )!.receivedNames,
+    ).toEqual([{ name: 'Другой клапан', replacement: true }])
+  })
+  it('does not invent a receipt name before delivery and keeps both names if a project material was deleted', () => {
+    const workspace = documentRegistryFixture()
+    workspace.materialReceipts = []
+    expect(
+      buildDocumentRegistry(workspace).materials[0]!.receivedNames,
+    ).toEqual([])
+    const historical = documentRegistryFixture()
+    historical.lines = []
+    historical.materialReceipts[0]!.actualName = 'Клапан по факту'
+    expect(
+      buildDocumentRegistry(historical).materials.find((row) =>
+        row.lineIds.includes('line'),
+      ),
+    ).toMatchObject({
+      name: 'Клапан',
+      receivedNames: [{ name: 'Клапан по факту', replacement: true }],
+    })
+  })
   it('keeps uploaded originals discoverable after deleting their material and source operation', () => {
     const workspace = documentRegistryFixture()
     workspace.lines = []
