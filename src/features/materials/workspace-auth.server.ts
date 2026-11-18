@@ -1,11 +1,13 @@
-import { randomBytes, scrypt, timingSafeEqual, createHash } from 'node:crypto'
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import { workspaceSql } from '../../db/connection.server'
 import { userInputSchema } from './workspace-auth'
+import {
+  workspaceSessionHash as tokenHash,
+  workspaceSessionMaxAge,
+} from './workspace-session.server'
 import type { WorkspaceUser } from './workspace-auth'
 
 const cookieName = 'materials_session'
-const tokenHash = (token: string) =>
-  createHash('sha256').update(token).digest('hex')
 const passwordKey = (password: string, salt: string) =>
   new Promise<Buffer>((resolve, reject) =>
     scrypt(
@@ -62,7 +64,7 @@ export function checkWorkspaceOrigin(request: Request) {
 }
 export function sessionCookie(token: string, request: Request, clear = false) {
   const secure = applicationOrigin(request).startsWith('https:')
-  return `${cookieName}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${clear ? 0 : 28800}${secure ? '; Secure' : ''}`
+  return `${cookieName}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${clear ? 0 : workspaceSessionMaxAge}${secure ? '; Secure' : ''}`
 }
 export async function currentWorkspaceUser(
   request: Request,
@@ -117,7 +119,7 @@ export async function loginWorkspace(
     if (previous)
       await tx`delete from workspace_sessions where token_hash = ${tokenHash(previous)}`
     await tx`delete from workspace_sessions where expires_at < now()`
-    await tx`insert into workspace_sessions (token_hash, user_id, expires_at) values (${tokenHash(token)}, ${user.id}, now() + interval '8 hours')`
+    await tx`insert into workspace_sessions (token_hash, user_id, expires_at) values (${tokenHash(token)}, ${user.id}, now() + ${workspaceSessionMaxAge} * interval '1 second')`
   })
   return {
     token,
