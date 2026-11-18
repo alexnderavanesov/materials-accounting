@@ -1,14 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { handleRequestPrint } from '#/features/materials/request-print-api.server'
-import { authenticatedWorkspaceResponse } from '#/features/materials/workspace-auth.server'
+import { workspaceResponse } from '#/features/materials/workspace-access.server'
 
 export const Route = createFileRoute('/api/request-print')({
   server: {
     handlers: {
-      GET: ({ request }) =>
-        authenticatedWorkspaceResponse(request, handleRequestPrint),
-      POST: ({ request }) =>
-        authenticatedWorkspaceResponse(request, handleRequestPrint),
+      GET: ({ request }) => workspaceResponse(request, handleRequestPrint),
+      POST: ({ request }) => workspaceResponse(request, handleRequestPrint),
     },
   },
 })

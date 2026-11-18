@@ -1,14 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { handleDocuments } from '#/features/materials/documents-api.server'
-import { authenticatedWorkspaceResponse } from '#/features/materials/workspace-auth.server'
+import { workspaceResponse } from '#/features/materials/workspace-access.server'
 
 export const Route = createFileRoute('/api/documents')({
   server: {
     handlers: {
-      GET: ({ request }) =>
-        authenticatedWorkspaceResponse(request, handleDocuments),
-      POST: ({ request }) =>
-        authenticatedWorkspaceResponse(request, handleDocuments),
+      GET: ({ request }) => workspaceResponse(request, handleDocuments),
+      POST: ({ request }) => workspaceResponse(request, handleDocuments),
     },
   },
 })

@@ -5,7 +5,17 @@ import {
   workspaceSessionHash as tokenHash,
   workspaceSessionMaxAge,
 } from './workspace-session.server'
+import {
+  applicationOrigin,
+  checkWorkspaceOrigin,
+} from './workspace-access.server'
 import type { WorkspaceUser } from './workspace-auth'
+
+// Retained for legacy account tooling; the application no longer uses sessions.
+export {
+  applicationOrigin,
+  checkWorkspaceOrigin,
+} from './workspace-access.server'
 
 const cookieName = 'materials_session'
 const passwordKey = (password: string, salt: string) =>
@@ -35,32 +45,6 @@ function sessionToken(request: Request) {
     ?.split(/;\s*/)
     .find((part) => part.startsWith(`${cookieName}=`))
     ?.slice(cookieName.length + 1)
-}
-export function applicationOrigin(request: Request) {
-  const configured = process.env.APP_ORIGIN
-  if (configured) {
-    const url = new URL(configured)
-    if (
-      url.protocol !== 'https:' &&
-      !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-    )
-      throw new Error(
-        'Для общего сервера APP_ORIGIN должен использовать HTTPS.',
-      )
-    return url.origin
-  }
-  const url = new URL(request.url)
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))
-    throw new Error('Настройте APP_ORIGIN с HTTPS для доступа через интернет.')
-  return url.origin
-}
-export function checkWorkspaceOrigin(request: Request) {
-  const origin = applicationOrigin(request)
-  if (
-    !['GET', 'HEAD'].includes(request.method) &&
-    request.headers.get('origin') !== origin
-  )
-    throw new Error('Запрос с другого сайта отклонён.')
 }
 export function sessionCookie(token: string, request: Request, clear = false) {
   const secure = applicationOrigin(request).startsWith('https:')

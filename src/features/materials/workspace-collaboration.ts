@@ -588,7 +588,21 @@ export function createCollaborativeSaver(options: Options) {
 export function workspaceClientIdentity(userId = 'local') {
   const key = `materials.client.${userId}`
   try {
-    const existing = sessionStorage.getItem(key)
+    let existing = sessionStorage.getItem(key)
+    if (!existing && userId === 'local') {
+      // Preserve this tab's pending edits when moving away from account login.
+      // Never merge journals from different former accounts implicitly.
+      const legacy = new Set<string>()
+      for (let index = 0; index < sessionStorage.length; index++) {
+        const legacyKey = sessionStorage.key(index)
+        if (!legacyKey?.startsWith('materials.client.') || legacyKey === key)
+          continue
+        const clientId = sessionStorage.getItem(legacyKey)
+        if (clientId && localStorage.getItem(editJournalKey(clientId)))
+          legacy.add(clientId)
+      }
+      if (legacy.size === 1) existing = [...legacy][0]!
+    }
     const id = crypto.randomUUID()
     // Duplicate-tab copies sessionStorage. Give the new document its own outbox,
     // retaining the source journal so an active original tab cannot lose its edits.

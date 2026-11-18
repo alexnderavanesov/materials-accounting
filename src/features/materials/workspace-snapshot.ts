@@ -30,7 +30,6 @@ export type LoadedWorkspace = {
   workspace: WorkspaceSnapshot | null
   revision: string | null
   user?: WorkspaceUser | null
-  authenticationRequired?: boolean
 } & Partial<WorkspaceSync>
 export type SaveWorkspaceResult =
   | { status: 'saved'; revision: string }

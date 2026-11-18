@@ -1,7 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { ProjectWorkspace } from '#/features/materials/project-workspace'
 import { loadProjectWorkspaceSnapshot } from '#/features/materials/functions'
-import { WorkspaceLogin } from '#/features/materials/workspace-account'
 import {
   useWorkspaceRouteNavigation,
   validateWorkspaceSearch,
@@ -21,8 +20,6 @@ function Home() {
     Route.useSearch(),
     Route.useNavigate(),
   )
-  if (storedWorkspace.authenticationRequired && !storedWorkspace.user)
-    return <WorkspaceLogin />
   return (
     <ProjectWorkspace
       initialStoredData={storedWorkspace}

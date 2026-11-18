@@ -185,7 +185,6 @@ import {
 } from './workspace-collaboration'
 import type { EditConflict, EditJournal } from './workspace-collaboration'
 import { WorkspaceConflicts } from './workspace-conflicts'
-import { WorkspaceAccount, WorkspaceLogin } from './workspace-account'
 import { RequestPrintButton, RequestPrintSettings } from './request-print-ui'
 import {
   emptyQualityWorkflow,
@@ -845,7 +844,6 @@ function ProjectWorkspaceContent({
   const [saveMessage, setSaveMessage] = useState('')
   const [editConflicts, setEditConflicts] = useState<EditConflict[]>([])
   const [cacheWarning, setCacheWarning] = useState(false)
-  const [reauthenticate, setReauthenticate] = useState(false)
   const [pendingJournal] = useState<EditJournal | null>(() => {
     if (!collaborative) return null
     try {
@@ -1951,34 +1949,6 @@ function ProjectWorkspaceContent({
       <main
         className={`bg-stone-50 text-stone-900 ${fillViewport ? 'flex h-dvh min-h-[32rem] flex-col' : 'min-h-screen'}`}
       >
-        {initialStoredData.user && (
-          <WorkspaceAccount
-            user={initialStoredData.user}
-            prepare={() => workspaceSaver.waitUntilSaved()}
-          />
-        )}
-        {reauthenticate && initialStoredData.user && (
-          <div
-            className="fixed inset-0 z-[300] overflow-auto"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Повторный вход"
-          >
-            <button
-              className="absolute right-6 top-6 underline"
-              onClick={() => setReauthenticate(false)}
-            >
-              Закрыть
-            </button>
-            <WorkspaceLogin
-              userLogin={initialStoredData.user.login}
-              onSignedIn={() => {
-                setReauthenticate(false)
-                void workspaceSaver.retry()
-              }}
-            />
-          </div>
-        )}
         {cacheWarning && (
           <div
             role="alert"
@@ -2049,15 +2019,6 @@ function ProjectWorkspaceContent({
                     >
                       Повторить сохранение
                     </Button>
-                    {initialStoredData.user && (
-                      <Button
-                        variant="outline"
-                        className="ml-3"
-                        onClick={() => setReauthenticate(true)}
-                      >
-                        Войти снова
-                      </Button>
-                    )}
                   </>
                 ) : null}
               </>
