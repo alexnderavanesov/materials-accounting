@@ -294,7 +294,12 @@ describe('receipt Excel dates', () => {
       expect(sheet.getCell('M6').value).toEqual(
         new Date('2026-10-20T00:00:00Z'),
       )
-      expect(sheet.getCell('M6').numFmt).toBe('dd.mm.yyyy')
+      expect(sheet.getCell('M6').numFmt).toBe('dd-mm-yy')
+      expect(sheet.getCell('O7').value).toEqual(
+        new Date('2026-07-12T00:00:00Z'),
+      )
+      expect(sheet.getCell('O7').numFmt).toBe('dd-mm-yy')
+      expect(sheet.getRow(5).values).not.toContain('Номер М-15')
       expect(sheet.getCell('M6').protection.locked).toBe(false)
       expect(
         parseMaterialReceiptWorkbook(buffer).map((row) => row.date),
@@ -302,8 +307,8 @@ describe('receipt Excel dates', () => {
       expect(parseMaterialReceiptWorkbook(buffer)[1]).toMatchObject({
         appNumber: 'АПП-1',
         appDate: '2026-07-12',
-        m15Number: 'М15-1',
-        m15Date: '2026-07-13',
+        m15Number: '',
+        m15Date: '',
       })
       expect(
         parseMaterialReceiptWorkbook(buffer).every(

@@ -325,7 +325,7 @@ describe('request print data', () => {
     const data = buildRequestPrintData(workspace, 'two')
     expect(data.headers).toMatchObject({
       number: 'ЗП-1',
-      date: '16.10.2026',
+      date: '16-10-26',
       requester: 'Иванов',
     })
     expect(data.rows).toHaveLength(2)

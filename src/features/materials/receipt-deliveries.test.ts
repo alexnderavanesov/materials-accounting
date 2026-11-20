@@ -24,7 +24,7 @@ function deliveryFixture() {
 }
 
 describe('receipt delivery cards', () => {
-  it('counts receipts once with both documents, separates repeat dates and different document pairs', () => {
+  it('groups by APP and date regardless of retired M15 references', () => {
     const first = {
       id: 'one',
       date: '2026-10-14',
@@ -41,19 +41,19 @@ describe('receipt delivery cards', () => {
       { id: 'no-doc-two', date: first.date },
     ]
     const groups = groupReceiptDeliveries(receipts)
-    expect(groups).toHaveLength(6)
+    expect(groups).toHaveLength(5)
     expect(groups[0]!.entries[0]!.id).toBe('repeat')
     expect(
       groups
         .find((group) => group.entries.some((entry) => entry.id === 'one'))!
         .entries.map((entry) => entry.id),
-    ).toEqual(['one', 'two'])
+    ).toEqual(['one', 'two', 'other-m15'])
     expect(
       groups.flatMap((group) => group.entries.map((entry) => entry.id)).sort(),
     ).toEqual(receipts.map((entry) => entry.id).sort())
   })
 
-  it('adds one shared M-15 to a delivery without changing quantities, other receipts or signed history', () => {
+  it('ignores retired M15 fields without changing quantities, other receipts or signed history', () => {
     const workspace = deliveryFixture()
     const receipt = workspace.materialReceipts[0]!
     workspace.materialReceipts.push({
@@ -79,7 +79,7 @@ describe('receipt delivery cards', () => {
       workspace.qualityWorkflow.receiptDocuments!,
     )
     expect(workspace).toEqual(previous)
-    expect(update.documents).toHaveLength(2)
+    expect(update.documents).toHaveLength(1)
     expect(
       new Set(update.entries.map((entry) => entry.m15DocumentId)).size,
     ).toBe(1)
@@ -96,7 +96,7 @@ describe('receipt delivery cards', () => {
     expect(next.materialReceipts[2]).toEqual(previous.materialReceipts[2])
     for (const [index, updated] of update.entries.entries()) {
       const { m15DocumentId, ...rest } = updated
-      expect(m15DocumentId).toBeTruthy()
+      expect(m15DocumentId).toBeUndefined()
       expect(rest).toEqual(previous.materialReceipts[index])
     }
   })
@@ -113,7 +113,7 @@ describe('receipt delivery cards', () => {
     expect(() =>
       updateReceiptDeliveryDocuments(
         receipts,
-        { ...fields, m15Number: '15', m15Date: '' },
+        { ...fields, appDate: '' },
         catalog,
       ),
     ).toThrow(/дату/)
@@ -134,35 +134,21 @@ describe('receipt delivery cards', () => {
     expect(workspace).toEqual(previous)
   })
 
-  it('reuses existing documents and clears removed links while protecting a ZNI basis', () => {
-    const workspace = deliveryFixture()
-    const receipt = workspace.materialReceipts[0]!
-    workspace.qualityWorkflow.receiptDocuments!.push({
-      id: 'm15',
-      kind: 'm15',
-      number: '15',
-      date: receipt.date,
-    })
-    const fields = {
-      date: receipt.date,
-      appNumber: '',
-      appDate: '',
-      m15Number: '15',
-      m15Date: receipt.date,
-    }
-    const update = updateReceiptDeliveryDocuments(
-      [receipt],
-      fields,
-      workspace.qualityWorkflow.receiptDocuments!,
-    )
-    expect(update.documents).toHaveLength(2)
-    expect(update.entries[0]!.m15DocumentId).toBe('m15')
-    expect(update.entries[0]!.appDocumentId).toBeUndefined()
+  it('requires APP instead of switching a delivery to M15', () => {
+    const workspace = deliveryFixture(),
+      receipt = workspace.materialReceipts[0]!
     expect(() =>
-      validateQualityWorkspace(
-        { ...workspace, materialReceipts: update.entries },
-        workspace,
+      updateReceiptDeliveryDocuments(
+        [receipt],
+        {
+          date: receipt.date,
+          appNumber: '',
+          appDate: '',
+          m15Number: '15',
+          m15Date: receipt.date,
+        },
+        workspace.qualityWorkflow.receiptDocuments!,
       ),
-    ).toThrow(/основанию ЗНИ/)
+    ).toThrow(/АПП/)
   })
 })

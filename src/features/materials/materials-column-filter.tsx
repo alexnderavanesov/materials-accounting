@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useGridFilterDisplay } from 'ag-grid-react'
 import type { CustomFilterDisplayProps } from 'ag-grid-react'
 import { Search, X } from 'lucide-react'
@@ -8,6 +8,8 @@ import {
   filterValueKey,
 } from './grid-filter-model'
 import type { MaterialsFilterModel } from './grid-filter-model'
+import { FilterResizeHandle } from './filter-resize-handle'
+import type { FilterSize } from './filter-resize-handle'
 import './materials-column-filter.css'
 
 type ValueOption = { key: string | null; label: string; value: unknown }
@@ -33,10 +35,24 @@ function MaterialsColumnFilter({
   const [query, setQuery] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
   const [activeIndex, setActiveIndex] = useState(0)
+  const [size, setSize] = useState<FilterSize>()
+  const [viewportHeight, setViewportHeight] = useState(listHeight)
+  const panel = useRef<HTMLElement>(null)
   const search = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const closePopup = useRef<(() => void) | undefined>(undefined)
   const opened = useRef(false)
+  useLayoutEffect(() => {
+    const element = list.current
+    if (!element || typeof ResizeObserver === 'undefined') return
+    const measure = () => {
+      if (element.clientHeight > 0) setViewportHeight(element.clientHeight)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    measure()
+    return () => observer.disconnect()
+  }, [])
   const matches = useMemo(() => compileMaterialsFilter(draft), [draft])
   const refreshValues = () => {
     // Keep the absence filter available even when the current rows have no
@@ -83,7 +99,7 @@ function MaterialsColumnFilter({
       setActiveIndex(0)
       if (list.current) list.current.scrollTop = 0
       refreshValues()
-      if (!params?.suppressFocus) search.current?.focus()
+      if (!params?.suppressFocus) search.current?.focus({ preventScroll: true })
     },
     afterGuiDetached: () => {
       opened.current = false
@@ -126,7 +142,7 @@ function MaterialsColumnFilter({
   const start = Math.max(0, Math.floor(scrollTop / valueHeight) - 3)
   const end = Math.min(
     visible.length,
-    start + Math.ceil(listHeight / valueHeight) + 6,
+    start + Math.ceil(viewportHeight / valueHeight) + 6,
   )
   const close = () => closePopup.current?.()
   const applyFilter = () => {
@@ -146,11 +162,19 @@ function MaterialsColumnFilter({
   }
   return (
     <section
+      ref={panel}
       className="materials-column-filter"
+      style={size}
       aria-label={`${title}: фильтр`}
     >
       <header className="materials-filter-heading">
-        <div>
+        <div
+          className="materials-filter-drag-handle"
+          role="button"
+          tabIndex={0}
+          aria-label="Переместить фильтр"
+          title="Перетащите за заголовок. Клавиши стрелок — переместить фильтр."
+        >
           <h2>{title}</h2>
           <p>Фильтр</p>
         </div>
@@ -272,7 +296,7 @@ function MaterialsColumnFilter({
                             if (
                               top < list.current.scrollTop ||
                               top + valueHeight >
-                                list.current.scrollTop + listHeight
+                                list.current.scrollTop + viewportHeight
                             ) {
                               list.current.scrollTop = top
                               setScrollTop(top)
@@ -332,6 +356,7 @@ function MaterialsColumnFilter({
           Применить
         </button>
       </footer>
+      <FilterResizeHandle target={panel} onResize={setSize} />
     </section>
   )
 }

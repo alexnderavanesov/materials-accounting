@@ -1,3 +1,7 @@
+import { RowActionButton } from '#/components/ui/row-action'
+import { projectFieldValue } from './project-edit-draft'
+import type { ProjectEditableField } from './project-edit-draft'
+import { useProjectAccounting } from './project-accounting-context'
 import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
@@ -54,9 +58,17 @@ export function ProjectMaterialGrid({
   onRequestDelete,
   onSelectLine,
   onUpdateQuantity,
+  onUpdateField,
+  draftCells,
   onReady,
   onFilterChanged,
 }: {
+  onUpdateField?: (
+    row: MaterialMatrixRow,
+    field: ProjectEditableField,
+    value: unknown,
+  ) => void
+  draftCells?: Map<string, Set<string>>
   ciphers: Array<string>
   hiddenColumns: Array<string>
   onChangeHiddenColumns: (keys: Array<string>) => void
@@ -75,6 +87,7 @@ export function ProjectMaterialGrid({
     value: string,
   ) => void
 }) {
+  const accounting = useProjectAccounting()
   const api = useRef<GridApi<MaterialMatrixRow> | null>(null)
   // Flush before React destroys the child grid, even if its state event is pending.
   useLayoutEffect(
@@ -131,12 +144,41 @@ export function ProjectMaterialGrid({
               : String(value || '—'),
           useValueFormatterForExport: false,
           tooltipField: column.key,
+          editable: !!onUpdateField,
+          cellEditor: 'agTextCellEditor',
+          cellEditorParams: {
+            getValidationErrors: ({ value }: { value: unknown }) => {
+              try {
+                projectFieldValue(column.key, value)
+                return null
+              } catch (cause) {
+                return [
+                  cause instanceof Error
+                    ? cause.message
+                    : 'Проверьте значение.',
+                ]
+              }
+            },
+          },
+          cellClassRules: {
+            'materials-grid-draft': ({ data }) =>
+              !!data?.lineIds.some((id) =>
+                draftCells?.get(id)?.has(column.key),
+              ),
+          },
         }),
       ),
       ...ciphers.map(
         (cipher): ColDef<MaterialMatrixRow> => ({
           colId: `cipher:${cipher}`,
-          headerName: cipher,
+          headerName: (() => {
+            const change = accounting.projectChanges
+              ?.filter(
+                (item) => item.cipher === cipher && item.kind === 'revision',
+              )
+              .at(-1)
+            return change ? `${cipher} · ИЗМ ${change.number}` : cipher
+          })(),
           initialWidth: 132,
           initialHide: hiddenRef.current.includes(`cipher:${cipher}`),
           editable: true,
@@ -146,20 +188,28 @@ export function ProjectMaterialGrid({
               parseProjectQuantity(value) === null ? [quantityError] : null,
           },
           cellClass: 'materials-grid-quantity',
+          cellClassRules: {
+            'materials-grid-draft': ({ data }) =>
+              !!data &&
+              !!draftCells
+                ?.get(data.cipherLineIds[cipher] ?? '')
+                ?.has('plannedQuantity'),
+          },
           headerClass: 'materials-grid-header-center',
           valueGetter: ({ data }) => data?.cipherQuantities[cipher] ?? 0,
           valueFormatter: ({ value }) =>
             value === 0 ? '—' : quantityText(value),
           useValueFormatterForExport: false,
-          tooltipValueGetter: () =>
-            'Двойной щелчок — изменить. Enter или Tab — сохранить, Escape — отменить.',
         }),
       ),
       {
         colId: 'actions',
         headerName: 'Действия',
-        initialWidth: 112,
-        minWidth: 100,
+        initialWidth: 104,
+        minWidth: 104,
+        maxWidth: 104,
+        resizable: false,
+        suppressSizeToFit: true,
         initialPinned: 'right',
         initialHide: hiddenRef.current.includes('actions'),
         sortable: false,
@@ -171,17 +221,16 @@ export function ProjectMaterialGrid({
         cellRenderer: ({ data }: ICellRendererParams<MaterialMatrixRow>) =>
           data && (
             <div className="flex h-full items-center justify-center gap-1">
-              <Button
-                size="icon"
-                variant="ghost"
+              <RowActionButton
+                iconOnly
                 aria-label="Редактировать материал"
                 onClick={() => onEditLine(data.firstLineId)}
               >
                 <Pencil size={16} />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
+              </RowActionButton>
+              <RowActionButton
+                iconOnly
+                danger
                 aria-label="Удалить материал"
                 onClick={() =>
                   onRequestDelete({
@@ -191,14 +240,21 @@ export function ProjectMaterialGrid({
                 }
               >
                 <Trash2 size={16} />
-              </Button>
+              </RowActionButton>
             </div>
           ),
         suppressKeyboardEvent: ({ event }) =>
           event.key === 'Enter' || event.key === ' ',
       },
     ],
-    [ciphers, onEditLine, onRequestDelete],
+    [
+      ciphers,
+      onEditLine,
+      onRequestDelete,
+      accounting.projectChanges,
+      onUpdateField,
+      draftCells,
+    ],
   )
 
   useEffect(() => {
@@ -249,7 +305,7 @@ export function ProjectMaterialGrid({
           defaultColDef={defaultColDef}
           initialState={initialState}
           maintainColumnOrder
-          getRowId={({ data }) => data.key}
+          getRowId={({ data }) => JSON.stringify([...data.lineIds].sort())}
           rowHeight={58}
           headerHeight={58}
           readOnlyEdit
@@ -308,6 +364,23 @@ export function ProjectMaterialGrid({
               onSelectLine(data.cipherLineIds[cipher])
           }}
           onCellEditRequest={({ data, column, newValue }) => {
+            const field = projectMatrixColumns.find(
+              (item) => item.key === column.getColId(),
+            )?.key
+            if (field) {
+              try {
+                const value = projectFieldValue(field, newValue)
+                if (value !== data[field]) onUpdateField?.(data, field, value)
+                setError('')
+              } catch (cause) {
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : 'Проверьте значение.',
+                )
+              }
+              return
+            }
             if (!column.getColId().startsWith('cipher:')) return
             const quantity = parseProjectQuantity(newValue)
             if (quantity === null) {
@@ -334,13 +407,32 @@ export function ProjectMaterialGrid({
               )
               return null
             }
-            for (const row of cells)
+            for (const [rowOffset, row] of cells.entries())
               for (const [index, value] of row.entries()) {
-                if (
-                  displayed[start + index]?.getColId().startsWith('cipher:') &&
-                  parseProjectQuantity(value) === null
-                ) {
-                  setError(`Вставка отменена: ${quantityError}`)
+                const columnId = displayed[start + index]?.getColId()
+                const field = projectMatrixColumns.find(
+                  (item) => item.key === columnId,
+                )?.key
+                try {
+                  if (
+                    columnId?.startsWith('cipher:') &&
+                    parseProjectQuantity(value) === null
+                  )
+                    throw new Error(quantityError)
+                  if (field) {
+                    projectFieldValue(field, value)
+                    if (
+                      (grid.getDisplayedRowAtIndex(focused.rowIndex + rowOffset)
+                        ?.data?.lineIds.length ?? 0) > 1
+                    )
+                      throw new Error(
+                        'Перед вставкой характеристик выберите один шифр в фильтре. Количества можно вставлять сразу по нескольким шифрам.',
+                      )
+                  }
+                } catch (cause) {
+                  setError(
+                    `Вставка отменена: ${cause instanceof Error ? cause.message : 'проверьте значения'}`,
+                  )
                   return null
                 }
               }

@@ -262,10 +262,6 @@ export function InspectionPhotoPicker({
               </ul>
             </div>
           )}
-          <p className="text-sm text-stone-500">
-            Фотографии загрузятся после нажатия «Сохранить документы» и появятся
-            в разделе «Документы» у этого АВК.
-          </p>
         </>
       )}
       {!loading &&

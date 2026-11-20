@@ -1,4 +1,6 @@
-import { useId } from 'react'
+import { DateInput } from '#/components/ui/date-input'
+import type { ReactNode } from 'react'
+import { AppSelect } from '#/components/ui/app-select'
 import { Input } from '#/components/ui/input'
 import { normalizeDocumentNumber } from './document-number'
 import { localDateInputValue } from './calendar-date'
@@ -15,89 +17,109 @@ export function ReceiptDocumentInputs({
   fields,
   documents,
   onChange,
+  renderScan,
+  flat = false,
 }: {
+  flat?: boolean
   fields: ReceiptDocumentFields
   documents: Array<ReceiptDocument>
   onChange: (fields: ReceiptDocumentFields) => void
+  renderScan?: (
+    kind: ReceiptDocument['kind'],
+    fields: ReceiptDocumentFields,
+  ) => ReactNode
 }) {
-  const id = useId()
   return (
-    <div className="col-span-full grid gap-3 sm:grid-cols-2">
-      {(['app', 'm15'] as const).map((kind) => {
+    <div className={flat ? 'min-w-0' : 'col-span-full min-w-0'}>
+      {(['app'] as const).map((kind) => {
         const title = receiptDocumentKindLabel(kind)
         const options = documents.filter((doc) => doc.kind === kind)
+        const selectDocument = (value: string) => {
+          const document = options.find((doc) => doc.id === value)
+          onChange({
+            ...fields,
+            [`${kind}Number`]:
+              document?.number ?? normalizeDocumentNumber(value),
+            [`${kind}Date`]:
+              document?.date ??
+              (value ? fields[`${kind}Date`] || localDateInputValue() : ''),
+          })
+        }
         return (
           <fieldset
             key={kind}
-            className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-3"
+            className={`grid min-w-0 gap-3 sm:grid-cols-2 ${flat ? '' : 'rounded-lg border border-slate-200 bg-white p-3'}`}
           >
-            <legend className="px-1 text-sm font-medium">{title}</legend>
-            <label className="grid min-w-0 gap-1 text-sm">
-              Номер {title}
-              <span className="relative block min-w-0">
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-y-0 left-3 flex items-center whitespace-nowrap text-stone-400"
-                >
-                  {title} №
-                </span>
-                <Input
-                  aria-label={`Номер ${title}`}
-                  className="pl-20"
-                  placeholder="Номер"
-                  list={`${id}-${kind}`}
-                  value={normalizeDocumentNumber(fields[`${kind}Number`])}
-                  onChange={(event) => {
-                    const number = normalizeDocumentNumber(event.target.value)
-                    const matching = options.filter(
-                      (doc) => normalizeDocumentNumber(doc.number) === number,
-                    )
-                    onChange({
-                      ...fields,
-                      [`${kind}Number`]: number,
-                      [`${kind}Date`]: number
-                        ? matching.length === 1
-                          ? matching[0]!.date
-                          : fields[`${kind}Date`] || localDateInputValue()
-                        : '',
-                    })
-                  }}
+            <legend className={flat ? 'sr-only' : 'px-1 text-sm font-medium'}>
+              {title}
+            </legend>
+            <div className="grid min-w-0 gap-1 text-sm">
+              <span>Номер {title}</span>
+              <div className="flex min-w-0 gap-1">
+                <>
+                  <Input
+                    aria-label="Номер АПП"
+                    placeholder="Введите номер"
+                    className="min-w-0 flex-1"
+                    value={fields.appNumber}
+                    onChange={(event) => {
+                      const number = normalizeDocumentNumber(event.target.value)
+                      onChange({
+                        ...fields,
+                        appNumber: number,
+                        appDate: number.trim()
+                          ? fields.appDate || localDateInputValue()
+                          : '',
+                      })
+                    }}
+                  />
+                </>
+                <AppSelect
+                  label="Выбрать существующий АПП"
+                  iconOnly
+                  value={
+                    options.find(
+                      (doc) =>
+                        normalizeDocumentNumber(doc.number) ===
+                          normalizeDocumentNumber(fields[`${kind}Number`]) &&
+                        doc.date === fields[`${kind}Date`],
+                    )?.id ?? fields[`${kind}Number`]
+                  }
+                  options={[
+                    {
+                      value: '',
+                      label: 'Введите или выберите АПП',
+                    },
+                    ...options.map((doc) => ({
+                      value: doc.id,
+                      label: receiptDocumentLabel(doc),
+                    })),
+                  ]}
+                  onChange={selectDocument}
                 />
-              </span>
-              <datalist id={`${id}-${kind}`}>
-                {options.map((doc) => (
-                  <option
-                    key={doc.id}
-                    value={normalizeDocumentNumber(doc.number)}
-                  >
-                    {receiptDocumentLabel(doc)}
-                  </option>
-                ))}
-              </datalist>
-            </label>
-            <label className="grid gap-1 text-sm">
-              Дата {title}
-              <Input
-                aria-label={`Дата ${title}`}
-                type="date"
-                // An unused document shows today's default without requiring
-                // its number or adding it to the receipt until the user types one.
-                value={
-                  fields[`${kind}Date`] ||
-                  (!fields[`${kind}Number`] ? localDateInputValue() : '')
-                }
-                onChange={(event) =>
-                  onChange({ ...fields, [`${kind}Date`]: event.target.value })
-                }
-              />
-            </label>
+              </div>
+            </div>
+            <div className="flex min-w-0 items-end gap-1">
+              <label className="grid min-w-0 flex-1 gap-1 text-sm">
+                Дата {title}
+                <DateInput
+                  aria-label={`Дата ${title}`}
+                  // An unused document shows today's default without requiring
+                  // its number or adding it to the receipt until the user types one.
+                  value={
+                    fields[`${kind}Date`] ||
+                    (!fields[`${kind}Number`] ? localDateInputValue() : '')
+                  }
+                  onValueChange={(value) =>
+                    onChange({ ...fields, [`${kind}Date`]: value })
+                  }
+                />
+              </label>
+              {renderScan?.(kind, fields)}
+            </div>
           </fieldset>
         )
       })}
-      <p className="col-span-full text-xs text-slate-500">
-        Укажите номер и дату хотя бы одного документа. М-15 можно добавить к
-        этому поступлению позднее.
-      </p>
     </div>
   )
 }

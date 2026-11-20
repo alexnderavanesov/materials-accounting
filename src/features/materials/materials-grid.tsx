@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { createElement, useEffect, useRef } from 'react'
 import {
   AllCommunityModule,
   ModuleRegistry,
@@ -17,6 +17,7 @@ import {
 import { AgGridReact } from 'ag-grid-react'
 import type { AgGridReactProps } from 'ag-grid-react'
 import { materialsSelectionStatusBar } from './grid-selection-status-panel'
+import { trackGridFilterPosition } from './grid-filter-position'
 
 ModuleRegistry.registerModules([
   AllCommunityModule,
@@ -48,6 +49,8 @@ export const materialsGridTheme = themeQuartz.withParams({
 export function MaterialsGridView<T>(
   props: AgGridReactProps<T> & { 'data-tsd-source'?: string },
 ) {
+  const stopFilterPosition = useRef<(() => void) | undefined>(undefined)
+  useEffect(() => () => stopFilterPosition.current?.(), [])
   // The source inspector adds an HTML attribute that is not a valid grid option.
   const gridProps = { ...props }
   delete gridProps['data-tsd-source']
@@ -59,19 +62,17 @@ export function MaterialsGridView<T>(
       gridProps.popupParent ??
       (typeof document === 'undefined' ? undefined : document.body),
     suppressCsvExport: true,
+    onColumnMenuVisibleChanged: (event) => {
+      if (!event.visible && event.key === 'columnFilter') {
+        stopFilterPosition.current?.()
+        stopFilterPosition.current = undefined
+      }
+      gridProps.onColumnMenuVisibleChanged?.(event)
+    },
     postProcessPopup: (params) => {
       if (params.type === 'columnFilter') {
-        const popup = params.ePopup
-        const left =
-          params.eventSource?.getBoundingClientRect().left ??
-          popup.getBoundingClientRect().left
-        popup.classList.add('materials-filter-popup')
-        Object.assign(popup.style, {
-          position: 'fixed',
-          top: '16px',
-          left: `max(12px, min(${left}px, calc(100vw - 452px)))`,
-          maxHeight: 'calc(100dvh - 32px)',
-        })
+        stopFilterPosition.current?.()
+        stopFilterPosition.current = trackGridFilterPosition(params)
       }
       if (params.type === 'columnChooser') {
         const count = (params.api.getColumns() ?? []).filter(

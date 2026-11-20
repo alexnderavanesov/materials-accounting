@@ -38,6 +38,7 @@ function Probe() {
       <button onClick={() => navigate({ section: 'database' })}>
         Database
       </button>
+      <button onClick={() => navigate({ section: 'm15' })}>M15</button>
       <button onClick={() => navigate({ section: 'settings' })}>
         Settings
       </button>
@@ -194,4 +195,13 @@ it('ignores malformed navigation values and works when session storage is unavai
     history.back()
   })
   await waitFor(() => expect(location().tab).toBe('overview'))
+})
+
+it('opens the separate M-15 section by URL and restores it through history without reloading data', async () => {
+  const { history, loader } = await mount('/?section=m15')
+  expect(location().section).toBe('m15')
+  await click('Database')
+  await act(async () => history.back())
+  await waitFor(() => expect(location().section).toBe('m15'))
+  expect(loader).toHaveBeenCalledTimes(1)
 })

@@ -1,6 +1,8 @@
+import { changeField, reviewWorkflow } from './workflow-test-support'
 import { useState } from 'react'
 // @vitest-environment jsdom
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,7 +12,8 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { operationGridApi } from './project-grid-test-support'
-import { InspectionWorkspace } from './quality-workflow-ui'
+import { OperationDisplayProvider } from './operation-display'
+import { InspectionWorkspace as InspectionWorkspaceView } from './quality-workflow-ui'
 import { QualityPrintButton } from './quality-print-ui'
 import { DocumentNumberingContext } from './document-numbering-context'
 import { emptyNumberHistory, initialNumbering } from './document-numbering'
@@ -29,6 +32,34 @@ import {
   validateQualityWorkspace,
 } from './quality-workflow'
 import type { SubobjectMaterialMetric } from './types'
+
+// Controlled section mirrors the two independent sidebar destinations.
+function InspectionWorkspace(
+  props: Parameters<typeof InspectionWorkspaceView>[0],
+) {
+  const [kind, setKind] = useState<'zni' | 'avk'>(() =>
+    sessionStorage.getItem('qa-quality-section') === 'avk' ? 'avk' : 'zni',
+  )
+  return (
+    <>
+      <nav aria-label="Разделы операций">
+        {(['zni', 'avk'] as const).map((section) => (
+          <button
+            key={section}
+            aria-current={kind === section ? 'page' : undefined}
+            onClick={() => {
+              setKind(section)
+              sessionStorage.setItem('qa-quality-section', section)
+            }}
+          >
+            {section === 'zni' ? 'ЗНИ' : 'АВК'}
+          </button>
+        ))}
+      </nav>
+      <InspectionWorkspaceView {...props} kind={kind} onKindChange={setKind} />
+    </>
+  )
+}
 
 vi.setConfig({ testTimeout: 15000 })
 
@@ -76,7 +107,7 @@ it('separates ZNI and AVK lists and creation, remembers the selected section wit
   const view = render(<InspectionWorkspace {...props} />)
   expect(screen.getByRole('button', { name: 'Создать ЗНИ' })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Создать АВК' })).toBeNull()
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   expect(screen.getByRole('heading', { name: 'АВК №АВК-1' })).toBeTruthy()
   expect(
     screen.getByRole('heading', { name: 'АВК №Архивный акт' }),
@@ -86,9 +117,114 @@ it('separates ZNI and AVK lists and creation, remembers the selected section wit
   view.unmount()
   render(<InspectionWorkspace {...props} />)
   expect(
-    screen.getByRole('tab', { name: /^АВК/ }).getAttribute('aria-selected'),
-  ).toBe('true')
+    screen.getByRole('button', { name: /^АВК/ }).getAttribute('aria-current'),
+  ).toBe('page')
   expect(onChange).not.toHaveBeenCalled()
+})
+
+it.each(['list', 'table'] as const)(
+  'keeps independent same-day creation order in the %s view after switching and reopening sections',
+  async (mode) => {
+    const fixture = acceptFixture()
+    const first = fixture.qualityWorkflow.cases[0]!
+    first.id = 'first'
+    const second = structuredClone(first)
+    second.id = 'second'
+    currentInspection(first).zni.number = 'ЗНИ-1'
+    currentInspection(second).zni.number = 'ЗНИ-2'
+    currentInspection(first).zni.createdAt = '2026-11-20T10:00:00.000Z'
+    currentInspection(second).zni.createdAt = '2026-11-20T10:01:00.000Z'
+    currentInspection(first).avk!.createdAt = '2026-11-20T10:03:00.000Z'
+    currentInspection(second).avk!.createdAt = '2026-11-20T10:02:00.000Z'
+    fixture.qualityWorkflow.cases.push(second)
+    const onChange = vi.fn()
+    sessionStorage.setItem(
+      'materials.workspaceView.v1:operations.displays',
+      JSON.stringify({ qa: mode }),
+    )
+    const content = (
+      <OperationDisplayProvider id="qa">
+        <InspectionWorkspace
+          value={fixture.qualityWorkflow}
+          receipts={receiptsOf(fixture)}
+          lines={linesOf(fixture)}
+          prepare={async () => 'revision'}
+          onChange={onChange}
+        />
+      </OperationDisplayProvider>
+    )
+    let view = render(content)
+    const order = async (kind: 'zni' | 'avk') => {
+      if (mode === 'list')
+        return Array.from(document.querySelectorAll('article'), (card) =>
+          card.id.replace('inspection-case-', ''),
+        )
+      const api = await operationGridApi(`quality-${kind}-flat:table`)
+      return Array.from(
+        { length: api.getDisplayedRowCount() },
+        (_, index) => api.getDisplayedRowAtIndex(index)?.id?.split(':')[0],
+      )
+    }
+    expect(await order('zni')).toEqual(['second', 'first'])
+    if (mode === 'table') {
+      const api = await operationGridApi('quality-zni-flat:table')
+      act(() => {
+        api.applyColumnState({ state: [{ colId: 'document', sort: 'asc' }] })
+      })
+      expect(await order('zni')).toEqual(['first', 'second'])
+    }
+    fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
+    expect(await order('avk')).toEqual(['first', 'second'])
+    if (mode === 'table') {
+      const api = await operationGridApi('quality-avk-flat:table')
+      expect(api.getColumnState().some((column) => column.sort)).toBe(false)
+    }
+    fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
+    if (mode === 'table') {
+      expect(await order('zni')).toEqual(['first', 'second'])
+      const api = await operationGridApi('quality-zni-flat:table')
+      act(() => {
+        api.applyColumnState({ defaultState: { sort: null } })
+      })
+    }
+    expect(await order('zni')).toEqual(['second', 'first'])
+    view.unmount()
+    view = render(content)
+    expect(await order('zni')).toEqual(['second', 'first'])
+    expect(onChange).not.toHaveBeenCalled()
+  },
+)
+
+it('remembers indicator sorting independently for ZNI and AVK', () => {
+  const fixture = acceptFixture()
+  const props = {
+    value: fixture.qualityWorkflow,
+    receipts: receiptsOf(fixture),
+    lines: linesOf(fixture),
+    prepare: async () => 'revision',
+    onChange: vi.fn(),
+  }
+  const view = render(<InspectionWorkspace {...props} />)
+  fireEvent.click(documentBadge('Подписано ЗНИ'))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
+  expect(documentBadge('Подписано ЗНИ').getAttribute('aria-pressed')).toBe(
+    'false',
+  )
+  fireEvent.click(documentBadge('Подписано АВК'))
+  fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
+  expect(documentBadge('Подписано ЗНИ').getAttribute('aria-pressed')).toBe(
+    'true',
+  )
+  expect(documentBadge('Подписано АВК').getAttribute('aria-pressed')).toBe(
+    'false',
+  )
+  view.unmount()
+  render(<InspectionWorkspace {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
+  expect(documentBadge('Подписано АВК').getAttribute('aria-pressed')).toBe(
+    'true',
+  )
+  expect(props.onChange).not.toHaveBeenCalled()
 })
 
 function RejectionHarness({ save }: { save: (workspace: unknown) => void }) {
@@ -139,7 +275,7 @@ function ActionsHarness({
   )
 }
 function chooseAction(kind: 'ЗНИ' | 'АВК', label: string) {
-  fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${kind}`) }))
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${kind}`) }))
   fireEvent.click(
     screen.getByRole('button', { name: new RegExp(`^Действия ${kind}`) }),
   )
@@ -154,10 +290,11 @@ it('edits and previews the ZNI name addition, saves it separately and restores i
   const field = screen.getByLabelText<HTMLTextAreaElement>(
     'Дополнение к наименованию',
   )
-  fireEvent.change(field, { target: { value: 'с покрытием' } })
+  changeField(field, { target: { value: 'с покрытием' } })
   expect(
     screen.getByText('Наименование в документе:').parentElement!.textContent,
   ).toContain('Клапан, с покрытием')
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить ЗНИ' }))
   const saved = save.mock.calls[0]![0]
   expect(
@@ -169,7 +306,7 @@ it('edits and previews the ZNI name addition, saves it separately and restores i
     screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
       .value,
   ).toBe('с покрытием')
-  fireEvent.change(screen.getByLabelText('Дополнение к наименованию'), {
+  changeField(screen.getByLabelText('Дополнение к наименованию'), {
     target: { value: '' },
   })
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
@@ -194,25 +331,27 @@ it('inherits, overrides and clears the AVK addition without editing the signed Z
     'Дополнение к наименованию',
   )
   expect(field.value).toBe('из ЗНИ')
-  fireEvent.change(field, { target: { value: 'для АВК' } })
+  changeField(field, { target: { value: 'для АВК' } })
   expect(
     screen.getByText('Наименование в документе:').parentElement!.textContent,
   ).toContain('Клапан, для АВК')
-  fireEvent.change(field, { target: { value: 'из ЗНИ' } })
+  changeField(field, { target: { value: 'из ЗНИ' } })
   expect(screen.queryByRole('button', { name: 'Сохранить АВК' })).toBeNull()
-  fireEvent.change(field, { target: { value: 'для АВК' } })
+  changeField(field, { target: { value: 'для АВК' } })
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить АВК' }))
   chooseAction('АВК', 'Редактировать АВК')
   expect(
     screen.getByLabelText<HTMLTextAreaElement>('Дополнение к наименованию')
       .value,
   ).toBe('для АВК')
-  fireEvent.change(screen.getByLabelText('Дополнение к наименованию'), {
+  changeField(screen.getByLabelText('Дополнение к наименованию'), {
     target: { value: '' },
   })
   expect(
     screen.getByText('Наименование в документе:').parentElement!.textContent,
   ).toBe('Наименование в документе: Клапан')
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить АВК' }))
   const saved = save.mock.calls[1]![0]
   const revision = currentInspection(saved.qualityWorkflow.cases[0])
@@ -237,7 +376,7 @@ it('protects unsaved fields on Escape and X, preserves edits when continuing and
   chooseAction('АВК', 'Редактировать АВК')
   const original = screen.getByLabelText<HTMLInputElement>('Покупатель').value
   expect(screen.queryByRole('button', { name: 'Сохранить АВК' })).toBeNull()
-  fireEvent.change(screen.getByLabelText('Покупатель'), {
+  changeField(screen.getByLabelText('Покупатель'), {
     target: { value: 'Новый покупатель' },
   })
   const unload = new Event('beforeunload', { cancelable: true })
@@ -261,9 +400,10 @@ it('protects unsaved fields on Escape and X, preserves edits when continuing and
   expect(screen.getByLabelText<HTMLInputElement>('Покупатель').value).toBe(
     original,
   )
-  fireEvent.change(screen.getByLabelText('Покупатель'), {
+  changeField(screen.getByLabelText('Покупатель'), {
     target: { value: 'Сохранённый покупатель' },
   })
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить АВК' }))
   expect(save).toHaveBeenCalledTimes(1)
   expect(screen.queryByRole('dialog')).toBeNull()
@@ -271,10 +411,10 @@ it('protects unsaved fields on Escape and X, preserves edits when continuing and
   expect(screen.getByLabelText<HTMLInputElement>('Покупатель').value).toBe(
     'Сохранённый покупатель',
   )
-  fireEvent.change(screen.getByLabelText('Покупатель'), {
+  changeField(screen.getByLabelText('Покупатель'), {
     target: { value: 'Временное значение' },
   })
-  fireEvent.change(screen.getByLabelText('Покупатель'), {
+  changeField(screen.getByLabelText('Покупатель'), {
     target: { value: 'Сохранённый покупатель' },
   })
   expect(screen.queryByRole('button', { name: 'Сохранить АВК' })).toBeNull()
@@ -310,6 +450,7 @@ it('keeps reinspection in a draft until save and never writes from signed ZNI vi
   fireEvent.click(screen.getByRole('button', { name: 'Выйти без сохранения' }))
   expect(save).not.toHaveBeenCalled()
   chooseAction('ЗНИ', 'Повторная проверка')
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить ЗНИ' }))
   expect(save).toHaveBeenCalledTimes(1)
   const saved = save.mock.calls[0]![0].qualityWorkflow.cases[0]
@@ -334,6 +475,7 @@ it('explains why signing is unavailable and enables it after the required result
   fireEvent.click(screen.getByRole('menuitem', { name: 'Редактировать ЗНИ' }))
   fireEvent.click(screen.getByRole('combobox', { name: 'Результат' }))
   fireEvent.click(screen.getByRole('option', { name: 'Принято' }))
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить ЗНИ' }))
   chooseAction('ЗНИ', 'Подписать ЗНИ')
   expect(screen.getByRole('dialog', { name: 'Подписание ЗНИ' })).toBeTruthy()
@@ -392,7 +534,7 @@ it('scopes actions and editions to the document and links a corrected AVK to its
 it('rejects an AVK document with a required reason, corrects it in a new edition and signs that edition', () => {
   const save = vi.fn()
   render(<RejectionHarness save={save} />)
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   openActMenu()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Отклонить АВК' }))
   fireEvent.click(
@@ -402,7 +544,7 @@ it('rejects an AVK document with a required reason, corrects it in a new edition
   expect(
     within(screen.getByRole('dialog')).getByRole('alert').textContent,
   ).toContain('причину')
-  fireEvent.change(screen.getByLabelText('Причина отклонения'), {
+  changeField(screen.getByLabelText('Причина отклонения'), {
     target: { value: 'Исправить реквизиты' },
   })
   fireEvent.click(
@@ -414,9 +556,10 @@ it('rejects an AVK document with a required reason, corrects it in a new edition
   expect(screen.queryByRole('menuitem', { name: 'Подписать АВК' })).toBeNull()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Исправить АВК' }))
   expect(save).toHaveBeenCalledTimes(1)
-  fireEvent.change(screen.getByLabelText('Покупатель'), {
+  changeField(screen.getByLabelText('Покупатель'), {
     target: { value: 'Исправленный покупатель' },
   })
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   const corrected = save.mock.calls[1]![0].qualityWorkflow.cases[0]
   expect(corrected.revisions).toHaveLength(2)
@@ -433,16 +576,16 @@ it('rejects an AVK document with a required reason, corrects it in a new edition
   expect(documentBadge('Отклонено АВК').textContent).toContain('0 док.')
 })
 
-it('rejects the material and lets the user record the actual return separately', () => {
+it('rejects the material and lets the user record the actual return separately', async () => {
   const save = vi.fn()
   render(<RejectionHarness save={save} />)
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   openActMenu()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Отклонить АВК' }))
-  fireEvent.change(screen.getByLabelText('Вид отклонения'), {
+  changeField(screen.getByLabelText('Вид отклонения'), {
     target: { value: 'materials' },
   })
-  fireEvent.change(screen.getByLabelText('Причина отклонения'), {
+  changeField(screen.getByLabelText('Причина отклонения'), {
     target: { value: 'Несоответствие материала' },
   })
   fireEvent.click(
@@ -456,9 +599,11 @@ it('rejects the material and lets the user record the actual return separately',
   fireEvent.click(
     screen.getByRole('menuitem', { name: 'Оформить возврат заказчику' }),
   )
-  fireEvent.change(screen.getByLabelText('Возвратить: Клапан'), {
+  fireEvent.click(screen.getByRole('button', { name: 'Далее' }))
+  changeField(await screen.findByLabelText('Возвратить: Клапан'), {
     target: { value: '10' },
   })
+  reviewWorkflow()
   fireEvent.click(
     screen.getByRole('button', { name: 'Сохранить фактический возврат' }),
   )
@@ -470,19 +615,19 @@ it('rejects the material and lets the user record the actual return separately',
   ).toBe(10)
 })
 
-it('keeps a partially accepted AVK editable and signable while returning only the rejected quantities', () => {
+it('keeps a partially accepted AVK editable and signable while returning only the rejected quantities', async () => {
   const save = vi.fn()
   render(<RejectionHarness save={save} />)
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   openActMenu()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Отклонить АВК' }))
-  fireEvent.change(screen.getByLabelText('Вид отклонения'), {
+  changeField(screen.getByLabelText('Вид отклонения'), {
     target: { value: 'materials' },
   })
-  fireEvent.change(screen.getByLabelText('Не принято по АВК: Клапан, шт'), {
+  changeField(screen.getByLabelText('Не принято по АВК: Клапан, шт'), {
     target: { value: '4' },
   })
-  fireEvent.change(screen.getByLabelText('Причина отклонения'), {
+  changeField(screen.getByLabelText('Причина отклонения'), {
     target: { value: 'Повреждены 4 шт.' },
   })
   fireEvent.click(
@@ -495,17 +640,20 @@ it('keeps a partially accepted AVK editable and signable while returning only th
   openActMenu()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Редактировать АВК' }))
   expect(screen.getByText(/Клапан: 4 шт/)).toBeTruthy()
-  fireEvent.change(screen.getByLabelText('Заключение комиссии'), {
+  changeField(screen.getByLabelText('Заключение комиссии'), {
     target: { value: 'Принято 4 шт., отклонено 4 шт.' },
   })
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   openActMenu()
   fireEvent.click(
     screen.getByRole('menuitem', { name: 'Оформить возврат заказчику' }),
   )
-  fireEvent.change(screen.getByLabelText('Возвратить: Клапан'), {
+  fireEvent.click(screen.getByRole('button', { name: 'Далее' }))
+  changeField(await screen.findByLabelText('Возвратить: Клапан'), {
     target: { value: '6' },
   })
+  reviewWorkflow()
   fireEvent.click(
     screen.getByRole('button', { name: 'Сохранить фактический возврат' }),
   )
@@ -580,7 +728,9 @@ it('deletes AVK then ZNI from the menu with confirmation, preserving receipts', 
   expect(documentBadge('Создано ЗНИ').textContent).toContain('1 док.')
   expect(documentBadge('Подписано АВК').textContent).toContain('1 док.')
   const openMenu = (kind = 'АВК') => {
-    fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${kind}`) }))
+    fireEvent.click(
+      screen.getByRole('button', { name: new RegExp(`^${kind}`) }),
+    )
     fireEvent.click(
       screen.getByRole('button', { name: new RegExp(`^Действия ${kind}`) }),
     )
@@ -688,7 +838,7 @@ it('hides AVK deletion when an issue already depends on it', () => {
       onChange={onChange}
     />,
   )
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   openActMenu()
   expect(screen.queryByRole('menuitem', { name: 'Удалить АВК' })).toBeNull()
   expect(confirm).not.toHaveBeenCalled()
@@ -714,8 +864,7 @@ it('paginates 1001 inspection candidates while preserving selection across pages
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.click(screen.getByRole('radio', { name: 'АПП' }))
-  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+  changeField(screen.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
   const dialog = screen.getByRole('dialog')
@@ -726,7 +875,7 @@ it('paginates 1001 inspection candidates while preserving selection across pages
   )
   expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1)
   fireEvent.click(within(dialog).getByRole('checkbox'))
-  fireEvent.change(within(dialog).getByLabelText('Поиск материалов для ЗНИ'), {
+  changeField(within(dialog).getByLabelText('Поиск материалов для ЗНИ'), {
     target: { value: 'Материал 500' },
   })
   expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1)
@@ -737,8 +886,12 @@ it('paginates 1001 inspection candidates while preserving selection across pages
     }),
   )
   expect(onChange).not.toHaveBeenCalled()
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   const workflow = onChange.mock.calls[0]![0]
+  expect(currentInspection(workflow.cases[0]).zni.createdAt).toEqual(
+    expect.any(String),
+  )
   expect(
     currentInspection(workflow.cases[0]).zni.rows.map((item) => item.receiptId),
   ).toEqual(['receipt-0', 'receipt-1000'])
@@ -816,13 +969,12 @@ it('does not start PDF generation when saving fails', async () => {
   expect(fetch).not.toHaveBeenCalled()
 })
 
-it('creates a partial material ZNI from M-15, validates quantity and writes only after saving documents', () => {
+it('creates a partial material ZNI from APP, validates quantity and writes only after saving documents', () => {
   const fixture = materialInspectionFixture()
   fixture.qualityWorkflow.cases = []
   fixture.qualityWorkflow.receiptDocuments = [
-    { id: 'm15', kind: 'm15', number: '15', date: '2026-10-22' },
+    { id: 'app', kind: 'app', number: '15', date: '2026-10-22' },
   ]
-  fixture.materialReceipts[0]!.m15DocumentId = 'm15'
   fixture.materialReceipts[0]!.certificate = '221'
   const onChange = vi.fn((qualityWorkflow) =>
     validateQualityWorkspace({ ...fixture, qualityWorkflow }),
@@ -838,19 +990,18 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
   )
 
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.click(screen.getByRole('radio', { name: 'М-15' }))
-  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
-    target: { value: 'm15' },
+  changeField(screen.getByLabelText('Документ получения для ЗНИ'), {
+    target: { value: 'app' },
   })
   fireEvent.click(screen.getByRole('checkbox', { name: /Клапан/ }))
-  fireEvent.change(screen.getByLabelText(/Количество для ЗНИ/), {
+  changeField(screen.getByLabelText(/Количество для ЗНИ/), {
     target: { value: '11' },
   })
   fireEvent.click(
     screen.getByRole('button', { name: 'Продолжить с выбранными материалами' }),
   )
   expect(screen.getByRole('alert').textContent).toContain('доступный остаток')
-  fireEvent.change(screen.getByLabelText(/Количество для ЗНИ/), {
+  changeField(screen.getByLabelText(/Количество для ЗНИ/), {
     target: { value: '2,5' },
   })
   fireEvent.click(
@@ -865,6 +1016,7 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
   expect(
     screen.queryByRole('button', { name: 'Создать АВК на принятые позиции' }),
   ).toBeNull()
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   expect(onChange).toHaveBeenCalledTimes(1)
   const entry = onChange.mock.calls[0]![0].cases[0]
@@ -874,7 +1026,7 @@ it('creates a partial material ZNI from M-15, validates quantity and writes only
   ])
   expect(currentInspection(entry).avk).toBeNull()
   expect(entry.processVersion).toBe(2)
-  expect(entry.basis?.kind).toBe('m15')
+  expect(entry.basis?.kind).toBe('app')
   expect(currentInspection(entry).zni.documents).toMatchObject([
     { name: 'Паспорт / сертификат', number: '221' },
   ])
@@ -902,8 +1054,7 @@ it('selects a whole APP, keeps separate batches and selection during search, and
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.click(screen.getByRole('radio', { name: 'АПП' }))
-  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+  changeField(screen.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
   fireEvent.click(
@@ -915,7 +1066,7 @@ it('selects a whole APP, keeps separate batches and selection during search, and
       .every((item) => item.checked),
   ).toBe(true)
   expect(screen.getAllByLabelText(/Количество для ЗНИ/)).toHaveLength(2)
-  fireEvent.change(screen.getByLabelText('Поиск материалов для ЗНИ'), {
+  changeField(screen.getByLabelText('Поиск материалов для ЗНИ'), {
     target: { value: '456' },
   })
   expect(screen.getAllByRole('checkbox')).toHaveLength(1)
@@ -927,8 +1078,7 @@ it('selects a whole APP, keeps separate batches and selection during search, and
   expect(onChange).not.toHaveBeenCalled()
 
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.click(screen.getByRole('radio', { name: 'АПП' }))
-  fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+  changeField(screen.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
   fireEvent.click(
@@ -937,6 +1087,7 @@ it('selects a whole APP, keeps separate batches and selection during search, and
   fireEvent.click(
     screen.getByRole('button', { name: 'Продолжить с выбранными материалами' }),
   )
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   const revision = currentInspection(onChange.mock.calls[0]![0].cases[0])
   expect(
@@ -971,12 +1122,13 @@ it('offers only the unallocated quantity within the selected document', () => {
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-  fireEvent.click(screen.getByRole('radio', { name: 'АПП' }))
   const dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByLabelText('Документ получения для ЗНИ'))
   expect(
-    dialog.getByRole<HTMLOptionElement>('option', { name: /АПП №/ }).disabled,
+    screen.getByRole<HTMLButtonElement>('option', { name: /АПП №/ }).disabled,
   ).toBe(false)
-  fireEvent.change(dialog.getByLabelText('Документ получения для ЗНИ'), {
+  fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
+  changeField(dialog.getByLabelText('Документ получения для ЗНИ'), {
     target: { value: 'app' },
   })
   expect(dialog.getAllByRole('checkbox')).toHaveLength(1)
@@ -987,7 +1139,7 @@ it('offers only the unallocated quantity within the selected document', () => {
   ).toBe('6')
 })
 
-it('records only an actual return, supports fractions and keeps the form open on a rejected save', () => {
+it('records only an actual return, supports fractions and keeps the form open on a rejected save', async () => {
   const workspace = documentInspectionFixture()
   const changes = vi.fn()
   let rejectSave = true
@@ -1016,20 +1168,21 @@ it('records only an actual return, supports fractions and keeps the form open on
   fireEvent.click(
     screen.getByRole('menuitem', { name: 'Оформить возврат заказчику' }),
   )
+  fireEvent.click(screen.getByRole('button', { name: 'Далее' }))
   let dialog = screen.getByRole('dialog', { name: 'Возврат заказчику' })
-  fireEvent.change(within(dialog).getByLabelText('Возвратить: Клапан'), {
+  changeField(await within(dialog).findByLabelText('Возвратить: Клапан'), {
     target: { value: '2' },
   })
-  fireEvent.click(
-    within(dialog).getByRole('button', {
-      name: 'Сохранить фактический возврат',
-    }),
+  reviewWorkflow()
+  expect(within(dialog).getByRole('alert').textContent).toContain(
+    'Проверьте количество',
   )
   expect(changes).not.toHaveBeenCalled()
-  fireEvent.change(within(dialog).getByLabelText('Возвратить: Клапан'), {
+  changeField(await within(dialog).findByLabelText('Возвратить: Клапан'), {
     target: { value: '0,4' },
   })
   expect(within(dialog).getByText('1 кг')).toBeTruthy()
+  reviewWorkflow()
   fireEvent.click(
     within(dialog).getByRole('button', {
       name: 'Сохранить фактический возврат',
@@ -1053,9 +1206,13 @@ it('records only an actual return, supports fractions and keeps the form open on
   fireEvent.click(
     screen.getByRole('menuitem', { name: 'Оформить возврат заказчику' }),
   )
+  fireEvent.click(screen.getByRole('button', { name: 'Далее' }))
   dialog = screen.getByRole('dialog', { name: 'Возврат заказчику' })
-  expect(within(dialog).getByText(/к возврату 0.6 шт/)).toBeTruthy()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+  expect(
+    await within(dialog).findByRole('gridcell', { name: '0,6' }),
+  ).toBeTruthy()
+  expect(within(dialog).getByRole('gridcell', { name: 'шт' })).toBeTruthy()
+  fireEvent.click(within(dialog).getByRole('button', { name: /^Закрыть:/ }))
   expect(changes).toHaveBeenCalledTimes(1)
 })
 
@@ -1111,12 +1268,12 @@ it('keeps a new AVK unsaved until confirmation, updates automatic date tokens an
       />
     </DocumentNumberingContext>,
   )
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
   fireEvent.click(
     within(screen.getByRole('dialog')).getByRole('button', { name: /^ЗНИ №/ }),
   )
-  fireEvent.change(screen.getByLabelText('Дата АВК'), {
+  changeField(screen.getByLabelText('Дата АВК'), {
     target: { value: '2025-12-01' },
   })
   expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toBe(
@@ -1126,7 +1283,7 @@ it('keeps a new AVK unsaved until confirmation, updates automatic date tokens an
   fireEvent.click(screen.getByRole('button', { name: 'Выйти без сохранения' }))
   expect(onChange).not.toHaveBeenCalled()
   expect(fixture).toEqual(before)
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
   fireEvent.click(
     within(screen.getByRole('dialog')).getByRole('button', { name: /^ЗНИ №/ }),
@@ -1134,23 +1291,27 @@ it('keeps a new AVK unsaved until confirmation, updates automatic date tokens an
   expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toMatch(
     /^АКТ\/\d{4}\/07$/,
   )
-  fireEvent.change(screen.getByLabelText('Номер АВК'), {
+  changeField(screen.getByLabelText('Номер АВК'), {
     target: { value: 'Мой номер' },
   })
-  fireEvent.change(screen.getByLabelText('Дата АВК'), {
+  changeField(screen.getByLabelText('Дата АВК'), {
     target: { value: '2025-12-01' },
   })
   expect(screen.getByLabelText<HTMLInputElement>('Номер АВК').value).toBe(
     'Мой номер',
   )
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   expect(onChange).toHaveBeenCalledTimes(1)
   expect(
     currentInspection(onChange.mock.calls[0]![0].cases[0]).avk?.number,
   ).toBe('Мой номер')
+  expect(
+    currentInspection(onChange.mock.calls[0]![0].cases[0]).avk?.createdAt,
+  ).toEqual(expect.any(String))
 })
 
-it('chooses a document type first and shares the receipt reservation between APP and M-15', () => {
+it('offers APP only and respects previously presented quantities', () => {
   const fixture = materialInspectionFixture(4)
   fixture.qualityWorkflow.receiptDocuments!.push({
     id: 'm15',
@@ -1158,7 +1319,6 @@ it('chooses a document type first and shares the receipt reservation between APP
     number: '15',
     date: '2026-10-22',
   })
-  fixture.materialReceipts[0]!.m15DocumentId = 'm15'
   const onChange = vi.fn()
   render(
     <InspectionWorkspace
@@ -1174,27 +1334,19 @@ it('chooses a document type first and shares the receipt reservation between APP
   const document = dialog.getByLabelText<HTMLSelectElement>(
     'Документ получения для ЗНИ',
   )
-  expect(document.disabled).toBe(true)
+  expect(document.disabled).toBe(false)
   expect(dialog.queryByRole('checkbox')).toBeNull()
-  fireEvent.click(dialog.getByRole('radio', { name: 'АПП' }))
-  expect(dialog.getAllByRole('option')).toHaveLength(2)
-  expect(dialog.queryByRole('option', { name: /М-15 №/ })).toBeNull()
-  fireEvent.change(document, { target: { value: 'app' } })
+  fireEvent.click(document)
+  expect(screen.getAllByRole('option')).toHaveLength(2)
+  expect(screen.queryByRole('option', { name: /М-15 №/ })).toBeNull()
+  fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
+  changeField(document, { target: { value: 'app' } })
   fireEvent.click(dialog.getByRole('checkbox'))
   expect(
     dialog.getByLabelText<HTMLInputElement>(/Количество для ЗНИ/).value,
   ).toBe('6')
-  fireEvent.click(dialog.getByRole('radio', { name: 'М-15' }))
-  expect(document.value).toBe('')
-  expect(dialog.queryByRole('checkbox')).toBeNull()
-  expect(dialog.queryByRole('option', { name: /АПП №/ })).toBeNull()
-  fireEvent.change(document, { target: { value: 'm15' } })
-  expect(dialog.getByRole<HTMLInputElement>('checkbox').checked).toBe(false)
-  fireEvent.click(dialog.getByRole('checkbox'))
-  expect(
-    dialog.getByLabelText<HTMLInputElement>(/Количество для ЗНИ/).value,
-  ).toBe('6')
-  fireEvent.change(dialog.getByLabelText(/Количество для ЗНИ/), {
+  expect(dialog.queryByRole('radio')).toBeNull()
+  changeField(dialog.getByLabelText(/Количество для ЗНИ/), {
     target: { value: '7' },
   })
   fireEvent.click(
@@ -1229,15 +1381,15 @@ it('offers only signed accepted ZNI without an AVK, searches all cases and opens
       search="nothing matches"
     />,
   )
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
   const picker = within(screen.getByRole('dialog', { name: 'Создать АВК' }))
   expect(picker.getAllByRole('button', { name: /^ЗНИ №/ })).toHaveLength(1)
-  fireEvent.change(picker.getByLabelText('Поиск ЗНИ для АВК'), {
+  changeField(picker.getByLabelText('Поиск ЗНИ для АВК'), {
     target: { value: 'отсутствует' },
   })
   expect(picker.getByText('ЗНИ по запросу не найдены.')).toBeTruthy()
-  fireEvent.change(picker.getByLabelText('Поиск ЗНИ для АВК'), {
+  changeField(picker.getByLabelText('Поиск ЗНИ для АВК'), {
     target: { value: 'Готовая-42' },
   })
   fireEvent.click(picker.getByRole('button', { name: /^ЗНИ №Готовая-42/ }))
@@ -1245,10 +1397,7 @@ it('offers only signed accepted ZNI without an AVK, searches all cases and opens
   expect(editor.getByLabelText('Номер АВК')).toBeTruthy()
   expect(editor.getByText('Клапан: 8 шт')).toBeTruthy()
   expect(editor.queryByLabelText('Номер ЗНИ')).toBeNull()
-  fireEvent.click(editor.getByRole('button', { name: 'ЗНИ' }))
-  expect(editor.getByLabelText<HTMLInputElement>('Номер ЗНИ').disabled).toBe(
-    true,
-  )
+  expect(editor.queryByRole('button', { name: 'ЗНИ' })).toBeNull()
   fireEvent.click(editor.getByRole('button', { name: 'Закрыть документ' }))
   expect(onChange).not.toHaveBeenCalled()
   expect(fixture).toEqual(before)
@@ -1265,7 +1414,7 @@ it('shows why an AVK cannot be created when no signed accepted ZNI exists', () =
       prepare={async () => 'revision'}
     />,
   )
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
   expect(
     within(screen.getByRole('dialog')).getByText(
@@ -1336,7 +1485,7 @@ it('keeps actions in a keyboard-accessible menu and opens print preview after th
   fireEvent.click(trigger)
   menu = screen.getByRole('menu')
   fireEvent.keyDown(menu, { key: 'Escape' })
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК/ }))
   openActMenu()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Печать АВК' }))
   expect(screen.queryByRole('menu')).toBeNull()

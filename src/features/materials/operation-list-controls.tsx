@@ -1,9 +1,9 @@
-import { useState } from 'react'
-import { ArrowUpWideNarrow, Search, X } from 'lucide-react'
+import { AppSelect } from '#/components/ui/app-select'
+import { OperationDisplayToggle } from './operation-display'
+import { ArrowUpWideNarrow, Search } from 'lucide-react'
 import { Input } from '#/components/ui/input'
 import { HoverTooltip } from '#/components/ui/hover-tooltip'
 import type { OperationListView } from './operation-list-view'
-import { normalizeOperationSearch } from './operation-list-view'
 
 export function OperationIndicatorBadge({
   label,
@@ -66,19 +66,21 @@ export function OperationSearchControls({
   onView: (value: OperationListView) => void
 }) {
   return (
-    <div className="grid min-w-0 gap-2 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_200px_240px]">
-      <div className="relative min-w-0 md:col-span-2 xl:col-span-1">
-        <Search
-          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-          size={18}
-        />
-        <Input
-          className="h-11 bg-white pl-10 text-sm"
-          aria-label={label}
-          placeholder="Поиск по материалу, документу, нормативному документу или составу"
-          value={search}
-          onChange={(event) => onSearch(event.target.value)}
-        />
+    <div className="operation-search-controls grid min-w-0 grid-cols-2 items-center gap-2 xl:grid-cols-[minmax(180px,1fr)_140px_180px_auto]">
+      <div className="col-span-2 flex min-w-0 items-center gap-2 xl:col-span-1">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            size={18}
+          />
+          <Input
+            className="h-10 bg-white pl-10 text-sm"
+            aria-label={label}
+            placeholder="Поиск по материалу, документу, нормативному документу или составу"
+            value={search}
+            onChange={(event) => onSearch(event.target.value)}
+          />
+        </div>
       </div>
       <FilterAutocompleteInput
         options={ciphers}
@@ -92,6 +94,9 @@ export function OperationSearchControls({
         value={view.materialType}
         onChange={(materialType) => onView({ ...view, materialType })}
       />
+      <div className="col-span-2 justify-self-end xl:col-span-1">
+        <OperationDisplayToggle />
+      </div>
     </div>
   )
 }
@@ -107,77 +112,18 @@ export function FilterAutocompleteInput({
   value: string
   onChange: (value: string) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const values = Array.from(new Set(options.filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b, 'ru'),
-  )
-  const query = normalizeOperationSearch(value)
-  const matches = (
-    query
-      ? values.filter((option) =>
-          normalizeOperationSearch(option).includes(query),
-        )
-      : values
-  ).slice(0, 12)
-
   return (
-    <div className="relative min-w-0">
-      <Search
-        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-        size={16}
-      />
-      <Input
-        className="h-11 bg-white pl-9 pr-8 text-sm"
-        aria-label={placeholder}
-        placeholder={placeholder}
-        value={value}
-        onBlur={() => {
-          window.setTimeout(() => setOpen(false), 120)
-        }}
-        onChange={(event) => {
-          onChange(event.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-      />
-      {value ? (
-        <button
-          className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-          type="button"
-          aria-label={`Очистить фильтр ${placeholder.toLocaleLowerCase('ru')}`}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            onChange('')
-            setOpen(false)
-          }}
-        >
-          <X size={14} />
-        </button>
-      ) : null}
-      {open ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg shadow-slate-200/80">
-          {matches.length > 0 ? (
-            matches.map((option) => (
-              <button
-                key={option}
-                className="block w-full rounded px-3 py-2 text-left text-sm leading-5 text-slate-700 hover:bg-blue-50 hover:text-slate-950"
-                type="button"
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  onChange(option)
-                  setOpen(false)
-                }}
-              >
-                {option}
-              </button>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-sm text-slate-400">
-              Значений не найдено
-            </div>
-          )}
-        </div>
-      ) : null}
-    </div>
+    <AppSelect
+      label={placeholder}
+      allowCustom
+      value={value}
+      options={[
+        { value: '', label: placeholder },
+        ...Array.from(new Set(options.filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b, 'ru'))
+          .map((option) => ({ value: option, label: option })),
+      ]}
+      onChange={onChange}
+    />
   )
 }

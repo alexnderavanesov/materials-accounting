@@ -92,10 +92,6 @@ export function PrintTemplateEditor({
     <div className="min-w-0 space-y-3">
       <div>
         <h4 className="font-semibold">2. Что и куда вставлять</h4>
-        <p className="mt-1 text-sm text-slate-500">
-          Выберите поле слева, затем нажмите нужную ячейку бланка. Синим
-          отмечены места автоматического заполнения.
-        </p>
       </div>
       <div className="flex flex-wrap gap-2" aria-label="Разделы заполнения">
         {groups.map((item) => (
@@ -154,10 +150,6 @@ export function PrintTemplateEditor({
                       {selectingRow ? 'Отмена' : 'Изменить строку'}
                     </Button>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    Одна позиция — одна строка. Остальные строки добавятся
-                    автоматически, подписи сдвинутся вниз.
-                  </p>
                 </>
               )}
             </div>

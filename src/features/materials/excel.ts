@@ -8,6 +8,10 @@ type WorkbookMaterialType = {
   description?: string
   name: string
 }
+function workbookCalendarDate(value: string | undefined) {
+  const normalized = normalizeCalendarDate(value ?? '')
+  return normalized ? new Date(`${normalized}T00:00:00.000Z`) : (value ?? '')
+}
 export type MaterialRequestTemplateLine = {
   materialType?: string
   alternativeUnit?: string | null
@@ -622,8 +626,6 @@ export async function createMaterialReceiptTemplateWorkbook({
     { header: 'Дата поступления', key: 'date', width: 18, locked: false },
     { header: 'Номер АПП', key: 'appNumber', width: 24, locked: false },
     { header: 'Дата АПП', key: 'appDate', width: 18, locked: false },
-    { header: 'Номер М-15', key: 'm15Number', width: 24, locked: false },
-    { header: 'Дата М-15', key: 'm15Date', width: 18, locked: false },
     {
       header: 'Заводской номер',
       key: 'factoryNumber',
@@ -693,9 +695,9 @@ export async function createMaterialReceiptTemplateWorkbook({
       factoryNumber: '',
       heatBatch: '',
       appNumber: line.appNumber ?? '',
-      appDate: line.appDate ?? '',
+      appDate: workbookCalendarDate(line.appDate),
       m15Number: line.m15Number ?? '',
-      m15Date: line.m15Date ?? '',
+      m15Date: workbookCalendarDate(line.m15Date),
       manufacturer: '',
       materialId: line.materialId ?? '',
       note: '',
@@ -720,7 +722,11 @@ export async function createMaterialReceiptTemplateWorkbook({
       cell.protection = { locked: Boolean(locked) }
 
       cell.alignment = { vertical: 'middle', wrapText: true }
-      if (!isHeader && column?.key === 'date') cell.numFmt = 'dd.mm.yyyy'
+      if (
+        !isHeader &&
+        ['date', 'appDate', 'm15Date'].includes(column?.key ?? '')
+      )
+        cell.numFmt = 'dd-mm-yy'
       cell.border = {
         bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
         left: { style: 'thin', color: { argb: 'FFE2E8F0' } },

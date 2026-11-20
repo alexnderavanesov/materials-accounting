@@ -1,3 +1,4 @@
+import { SelectField } from '#/components/ui/select-field'
 import { useEffect, useRef } from 'react'
 import {
   ChevronFirst,
@@ -106,7 +107,7 @@ export function OperationPagination({
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2">
           На странице
-          <select
+          <SelectField
             aria-label={`На странице: ${label}`}
             className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-900"
             value={p.pageSize}
@@ -117,7 +118,7 @@ export function OperationPagination({
                 {size}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <span aria-live="polite">
           {p.start}–{p.end} из {p.total}

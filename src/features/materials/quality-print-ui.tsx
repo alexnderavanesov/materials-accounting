@@ -274,10 +274,6 @@ export function QualityPrintSettings({ kind }: { kind: QualityPrintKind }) {
         <h3 className="text-lg font-semibold">
           1. Бланк {kind === 'zni' ? 'ЗНИ' : 'АВК'}
         </h3>
-        <p className="mt-2 text-sm text-slate-500">
-          Готовый образец уже настроен. Чтобы изменить оформление, скачайте
-          Excel, отредактируйте его и загрузите обратно.
-        </p>
       </div>
       <div className="flex flex-wrap gap-2">
         <Button

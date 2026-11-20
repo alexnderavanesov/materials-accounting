@@ -32,3 +32,8 @@
 .materials-project-grid .ag-cell-inline-editing {
   padding: 0;
 }
+
+.materials-project-grid .ag-cell.materials-grid-draft {
+  background-color: #fff2c6;
+  box-shadow: inset 0 -2px #d69e36;
+}

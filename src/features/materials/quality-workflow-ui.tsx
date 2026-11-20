@@ -1,38 +1,17 @@
-import { materialNumberContext } from './document-numbering'
-import { documentNumberLabel } from './document-number'
-import { useDocumentNumber } from './document-numbering-context'
-import { CustomerReturnModal } from './customer-return-modal'
-import { customerReturnAlternative } from './receipt-balances'
-import type { OperationIndicatorIndex } from './operation-overview-indicators'
-import { receiptDocuments, receiptDocumentLabel } from './receipt-documents'
-import { OperationsGrid } from './operations-grid'
+import { formatCalendarDate } from './calendar-date'
+import { RowActionButton } from '#/components/ui/row-action'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { WorkflowSteps } from './workflow-dialog'
+import { SelectField } from '#/components/ui/select-field'
+import { useOperationDisplay } from './operation-display'
 import {
-  emptyOperationListView,
-  matchesOperationMaterial,
-  operationMaterial,
-  sortOperationsNewestFirst,
-} from './operation-list-view'
-import type { OperationListView } from './operation-list-view'
-import { OperationIndicatorBadge } from './operation-list-controls'
+  documentsForReceipt,
+  receiptDocuments,
+  receiptDocumentLabel,
+  indexReceiptDocuments,
+} from './receipt-documents'
 import {
-  canCreateAct,
-  inspectionDocumentIndicators,
-  isInspectionDocumentSort,
-  prioritizeInspectionDocuments,
-  summarizeInspectionDocuments,
-} from './quality-workflow-indicators'
-import { useWorkspaceViewState } from './workspace-view'
-import {
-  OperationPagination,
-  useOperationPagination,
-} from './operation-pagination'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
-import { ChevronDown, X } from 'lucide-react'
-import { Button } from '#/components/ui/button'
-import { Input } from '#/components/ui/input'
-import { AppSelect } from '#/components/ui/app-select'
-import {
+  inspectionDocumentAvailability,
   activeInspection,
   latestInspectionAct,
   inspectionSourceRevision,
@@ -66,6 +45,42 @@ import {
   resultLabels,
   signInspection,
 } from './quality-workflow'
+import { materialNumberContext } from './document-numbering'
+import { documentNumberLabel } from './document-number'
+import { useDocumentNumber } from './document-numbering-context'
+import { CustomerReturnModal } from './customer-return-modal'
+import { customerReturnAlternative } from './receipt-balances'
+import type { OperationIndicatorIndex } from './operation-overview-indicators'
+import { OperationsGrid } from './operations-grid'
+import {
+  emptyOperationListView,
+  matchesOperationMaterial,
+  operationMaterial,
+} from './operation-list-view'
+import {
+  newestInspectionDocuments,
+  saveInspectionCase,
+} from './inspection-document-order'
+import type { OperationListView } from './operation-list-view'
+import { OperationIndicatorBadge } from './operation-list-controls'
+import {
+  canCreateAct,
+  inspectionDocumentIndicators,
+  isInspectionDocumentSort,
+  prioritizeInspectionDocuments,
+  summarizeInspectionDocuments,
+} from './quality-workflow-indicators'
+import { useWorkspaceViewState } from './workspace-view'
+import {
+  OperationPagination,
+  useOperationPagination,
+} from './operation-pagination'
+import { flushSync } from 'react-dom'
+import { ChevronDown, FileInput, FolderOpen, X } from 'lucide-react'
+import { Button } from '#/components/ui/button'
+import { Input } from '#/components/ui/input'
+import { DateInput } from '#/components/ui/date-input'
+import { AppSelect } from '#/components/ui/app-select'
 import type {
   InspectionCase,
   InspectionAct,
@@ -125,8 +140,7 @@ type Props = {
 }
 const message = (error: unknown) =>
   error instanceof Error ? error.message : 'Не удалось сохранить документ.'
-const displayDate = (value: string | null) =>
-  value ? value.split('-').reverse().join('.') : '—'
+const displayDate = (value: string | null) => formatCalendarDate(value)
 const fmt = (value: number) =>
   new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(value)
 const actStatus = (revision: InspectionRevision) => {
@@ -161,11 +175,15 @@ export function QualityModal({
   children,
   onClose,
   busy = false,
+  steps,
+  footer,
 }: {
   title: string
   children: React.ReactNode
   onClose: () => void
   busy?: boolean
+  steps?: React.ReactNode
+  footer?: React.ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -181,7 +199,7 @@ export function QualityModal({
       ref={ref}
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4"
       onKeyDown={(event) => {
-        if (event.key === 'Escape') {
+        if (event.key === 'Escape' && !event.defaultPrevented) {
           event.stopPropagation()
           if (!busy) onClose()
         }
@@ -215,7 +233,13 @@ export function QualityModal({
             <X size={20} />
           </Button>
         </div>
-        <div className="overflow-auto p-5">{children}</div>
+        {steps}
+        <div className="min-h-0 flex-1 overflow-auto p-5">{children}</div>
+        {footer && (
+          <footer className="flex shrink-0 items-center justify-end gap-3 border-t px-5 py-4">
+            {footer}
+          </footer>
+        )}
       </div>
     </div>
   )
@@ -238,13 +262,22 @@ function Field({
   return (
     <label className={fieldLabelClassName}>
       {label}
-      <Input
-        type={type}
-        value={value}
-        disabled={disabled}
-        className="disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-500 [&[type=number]]:[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {type === 'date' ? (
+        <DateInput
+          value={value}
+          disabled={disabled}
+          onValueChange={onChange}
+          aria-label={label}
+        />
+      ) : (
+        <Input
+          type={type}
+          value={value}
+          disabled={disabled}
+          className="disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-500 [&[type=number]]:[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
     </label>
   )
 }
@@ -392,6 +425,7 @@ function DocumentsEditor({
   )
 }
 function InspectionMaterialPicker({
+  initialReceiptId,
   workflow,
   requests,
   receipts,
@@ -399,6 +433,7 @@ function InspectionMaterialPicker({
   onCreate,
   onClose,
 }: {
+  initialReceiptId?: string
   requests: Array<{ id: string; number: string }>
   workflow: QualityWorkflow
   receipts: Array<Receipt>
@@ -406,15 +441,37 @@ function InspectionMaterialPicker({
   onCreate: (selection: Array<InspectionSelection>, basisId: string) => void
   onClose: () => void
 }) {
-  const [selected, setSelected] = useState<Record<string, string>>({})
-  const [search, setSearch] = useState('')
-  const [basisId, setBasisId] = useState('')
-  const [documentKind, setDocumentKind] = useState<'app' | 'm15' | null>(null)
-  const [error, setError] = useState('')
-  const available = useMemo(
-    () => inspectionAvailableQuantities(workflow, receipts),
-    [workflow, receipts],
+  const initialReceipt = receipts.find((row) => row.id === initialReceiptId)
+  const initialAvailability = useMemo(
+    () => inspectionDocumentAvailability(workflow),
+    [workflow],
   )
+  const initialBasis = initialReceipt
+    ? documentsForReceipt(initialReceipt, workflow).find(
+        (doc) => initialAvailability(initialReceipt, doc.id) > 0,
+      )
+    : undefined
+  const [selected, setSelected] = useState<Record<string, string>>(() =>
+    initialReceipt && initialBasis
+      ? {
+          [initialReceipt.id]: String(
+            initialAvailability(initialReceipt, initialBasis.id),
+          ),
+        }
+      : {},
+  )
+  const [search, setSearch] = useState(() => initialReceipt?.actualName ?? '')
+  const [basisId, setBasisId] = useState(initialBasis?.id ?? '')
+  const [error, setError] = useState('')
+  const documentAvailable = useMemo(
+    () => inspectionDocumentAvailability(workflow),
+    [workflow],
+  )
+  const documentIndex = useMemo(
+    () => indexReceiptDocuments(workflow),
+    [workflow],
+  )
+  const available = inspectionAvailableQuantities(workflow, receipts)
   const materialById = useMemo(() => indexInspectionMaterials(lines), [lines])
   const requestById = new Map(requests.map((request) => [request.id, request]))
   const basis = receiptDocuments(workflow).find(
@@ -425,16 +482,28 @@ function InspectionMaterialPicker({
   )
   const eligible = allEligible.filter(
     (receipt) =>
-      receipt.appDocumentId === basisId || receipt.m15DocumentId === basisId,
+      documentsForReceipt(receipt, workflow, documentIndex).some(
+        (doc) => doc.id === basisId,
+      ) && documentAvailable(receipt, basisId) > 0,
   )
+  if (basisId)
+    for (const receipt of eligible)
+      available.set(
+        receipt.id,
+        Math.min(
+          available.get(receipt.id) ?? 0,
+          documentAvailable(receipt, basisId),
+        ),
+      )
   const eligibleDocumentIds = new Set(
-    allEligible.flatMap((receipt) => [
-      receipt.appDocumentId,
-      receipt.m15DocumentId,
-    ]),
+    allEligible.flatMap((receipt) =>
+      documentsForReceipt(receipt, workflow, documentIndex)
+        .filter((doc) => documentAvailable(receipt, doc.id) > 0)
+        .map((doc) => doc.id),
+    ),
   )
   const availableDocuments = receiptDocuments(workflow).filter(
-    (doc) => doc.kind === documentKind && eligibleDocumentIds.has(doc.id),
+    (doc) => doc.kind === 'app' && eligibleDocumentIds.has(doc.id),
   )
   const query = search.trim().toLocaleLowerCase('ru')
   const visible = eligible.filter((receipt) => {
@@ -457,42 +526,11 @@ function InspectionMaterialPicker({
   return (
     <QualityModal title="Материалы для ЗНИ" onClose={onClose}>
       <div className="grid gap-4">
-        <fieldset className="grid gap-2">
-          <legend className="mb-2 text-sm text-slate-600">Тип документа</legend>
-          <div className="flex gap-2">
-            {(['app', 'm15'] as const).map((kind) => (
-              <label
-                key={kind}
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-5 py-3 text-sm ${documentKind === kind ? 'border-slate-500 bg-slate-100' : 'border-slate-200'}`}
-              >
-                <input
-                  type="radio"
-                  name="inspection-document-kind"
-                  value={kind}
-                  checked={documentKind === kind}
-                  onChange={() => {
-                    setDocumentKind(kind)
-                    setBasisId('')
-                    setSelected({})
-                    setSearch('')
-                    setError('')
-                  }}
-                />
-                {kind === 'app' ? 'АПП' : 'М-15'}
-              </label>
-            ))}
-          </div>
-        </fieldset>
         <label className="grid gap-1 text-sm">
-          {documentKind === 'app'
-            ? 'АПП'
-            : documentKind === 'm15'
-              ? 'М-15'
-              : 'Документ получения'}
-          <select
+          АПП
+          <SelectField
             aria-label="Документ получения для ЗНИ"
             className="rounded-lg border p-2"
-            disabled={!documentKind}
             value={basisId}
             onChange={(event) => {
               setBasisId(event.target.value)
@@ -501,19 +539,15 @@ function InspectionMaterialPicker({
               setError('')
             }}
           >
-            <option value="">
-              {documentKind
-                ? `Выберите ${documentKind === 'app' ? 'АПП' : 'М-15'}`
-                : 'Сначала выберите тип документа'}
-            </option>
+            <option value="">Выберите АПП</option>
             {availableDocuments.map((doc) => (
               <option key={doc.id} value={doc.id}>
                 {receiptDocumentLabel(doc)}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
-        {documentKind && !availableDocuments.length && (
+        {!availableDocuments.length && (
           <p className="text-sm text-slate-500">
             Нет документов этого типа с материалами, доступными для ЗНИ.
           </p>
@@ -673,9 +707,7 @@ function InspectionActPicker({
   return (
     <QualityModal title="Создать АВК" onClose={onClose}>
       <div className="grid gap-4">
-        <p className="text-sm text-slate-600">
-          Выберите подписанную ЗНИ. В акт войдут только принятые материалы.
-        </p>
+        <p className="text-sm text-slate-600">Подписанные ЗНИ</p>
         {!!eligible.length && (
           <Input
             aria-label="Поиск ЗНИ для АВК"
@@ -725,6 +757,8 @@ function InspectionActPicker({
 }
 
 export function InspectionWorkspace({
+  kind: selectedKind,
+  onKindChange,
   indicatorIndex,
   value,
   requests = [],
@@ -737,6 +771,8 @@ export function InspectionWorkspace({
   listView = emptyOperationListView,
   issues = [],
 }: Props & {
+  kind?: 'zni' | 'avk'
+  onKindChange?: (kind: 'zni' | 'avk') => void
   indicatorIndex?: OperationIndicatorIndex
   issues?: ReadonlyArray<{ receiptId?: unknown }>
   prepare: () => Promise<string>
@@ -748,7 +784,7 @@ export function InspectionWorkspace({
   const printing = useQualityPrint(prepare)
   const [choosingAct, setChoosingAct] = useState(false)
   const [editorKind, setEditorKind] = useState<'zni' | 'avk'>('zni')
-  const [documentSection, setDocumentSection] = useWorkspaceViewState<
+  const [savedDocumentSection, setSavedDocumentSection] = useWorkspaceViewState<
     'zni' | 'avk'
   >(
     'quality.section',
@@ -756,6 +792,16 @@ export function InspectionWorkspace({
     (candidate): candidate is 'zni' | 'avk' =>
       candidate === 'zni' || candidate === 'avk',
   )
+  const documentSection = selectedKind ?? savedDocumentSection
+  const setDocumentSection = useCallback(
+    (kind: 'zni' | 'avk') => {
+      setSavedDocumentSection(kind)
+      onKindChange?.(kind)
+    },
+    [onKindChange, setSavedDocumentSection],
+  )
+  const { mode: displayMode } = useOperationDisplay()
+  const [editorStep, setEditorStep] = useState(0)
   const [draftReadOnly, setDraftReadOnly] = useState(false)
   const [rejecting, setRejecting] = useState<{
     entry: InspectionCase
@@ -770,11 +816,18 @@ export function InspectionWorkspace({
     () => rejectedReturnAllocations(workflow),
     [workflow],
   )
-  const [documentSort, setDocumentSort] = useWorkspaceViewState(
+  const [zniSort, setZniSort] = useWorkspaceViewState(
     'quality.documentSort',
     '',
     isInspectionDocumentSort,
   )
+  const [avkSort, setAvkSort] = useWorkspaceViewState(
+    'quality.avk.documentSort',
+    '',
+    isInspectionDocumentSort,
+  )
+  const documentSort = documentSection === 'zni' ? zniSort : avkSort
+  const setDocumentSort = documentSection === 'zni' ? setZniSort : setAvkSort
   const documentCounts = useMemo(
     () => summarizeInspectionDocuments(workflow.cases),
     [workflow.cases],
@@ -871,6 +924,7 @@ export function InspectionWorkspace({
   ) {
     setError('')
     setEditorKind(kind)
+    setEditorStep(0)
     setDraftReadOnly(readOnly)
     draftBaseline.current = baseline ? JSON.stringify(baseline) : null
     setPhotoDraft(null)
@@ -898,10 +952,7 @@ export function InspectionWorkspace({
     return () => window.removeEventListener('beforeunload', warn)
   }, [hasDraftChanges])
   const save = (entry: InspectionCase) => {
-    onChange({
-      ...workflow,
-      cases: [...workflow.cases.filter((item) => item.id !== entry.id), entry],
-    })
+    onChange(saveInspectionCase(workflow, entry))
   }
   const run = (action: () => void) => {
     setError('')
@@ -1020,6 +1071,12 @@ export function InspectionWorkspace({
   }
   const focused = useRef<string | undefined>(undefined)
   useEffect(() => {
+    if (focusId?.startsWith('create:') && focused.current !== focusId) {
+      focused.current = focusId
+      setChoosingMaterials(true)
+    }
+  }, [focusId])
+  useEffect(() => {
     const entry = value?.cases.find((item) =>
       focusId?.startsWith(`inspection:${item.id}:`),
     )
@@ -1036,18 +1093,10 @@ export function InspectionWorkspace({
       })
     }
   }, [focusId, value, setDocumentSection])
-  const casesByDate = useMemo(() => {
-    const casesByZniDate = sortOperationsNewestFirst(
-      workflow.cases,
-      (entry) => currentInspection(entry).zni.date,
-    )
-    if (documentSection === 'zni') return casesByZniDate
-    // Stable sorting keeps the ZNI order when AVK dates coincide.
-    return sortOperationsNewestFirst(
-      casesByZniDate.filter((entry) => latestInspectionAct(entry)),
-      (entry) => latestInspectionAct(entry)!.avk!.date,
-    )
-  }, [workflow.cases, documentSection])
+  const casesByDate = useMemo(
+    () => newestInspectionDocuments(workflow.cases, documentSection),
+    [workflow.cases, documentSection],
+  )
   const visible = prioritizeInspectionDocuments(
     casesByDate.filter((entry) => {
       const displayedRevision =
@@ -1114,99 +1163,281 @@ export function InspectionWorkspace({
   )
   const pagination = documentSection === 'zni' ? zniPagination : avkPagination
 
+  function documentView(entry: InspectionCase) {
+    const rev =
+        documentSection === 'zni'
+          ? currentInspection(entry)
+          : latestInspectionAct(entry)!,
+      active = activeInspection(entry)
+    const isCurrent = rev === currentInspection(entry)
+    const documentRevision =
+      documentSection === 'zni'
+        ? inspectionSourceRevision(entry, rev).revision
+        : rev.revision
+    const returns = pendingCustomerReturns(workflow, entry)
+    const revisions = inspectionDocumentRevisions(entry, documentSection)
+    const currentKindLabel = documentSection === 'zni' ? 'ЗНИ' : 'АВК'
+    const editable =
+      isCurrent && inspectionDocumentEditable(rev, documentSection)
+    const relatedRevision =
+      documentSection === 'avk'
+        ? inspectionSourceRevision(entry, rev)
+        : entry.revisions
+            .filter(
+              (candidate) =>
+                candidate.avk &&
+                inspectionSourceRevision(entry, candidate).revision ===
+                  documentRevision,
+            )
+            .at(-1)
+    const relatedKind: 'avk' | 'zni' = documentSection === 'zni' ? 'avk' : 'zni'
+    const actions: Array<InspectionAction> = [
+      {
+        label: `${editable ? 'Редактировать' : 'Просмотр'} ${currentKindLabel}`,
+        onSelect: () => openDocument(entry, documentSection, rev),
+      },
+      {
+        label: `Печать ${currentKindLabel}`,
+        onSelect: () =>
+          void printing.print({
+            kind: documentSection,
+            caseId: entry.id,
+            revision: documentRevision,
+          }),
+      },
+    ]
+    if (documentSection === 'zni' && isCurrent && !rev.zni.signedOn)
+      actions.push({
+        label: 'Подписать ЗНИ',
+        disabledReason: inspectionSigningError(rev, 'zni'),
+        onSelect: () => {
+          setError('')
+          setSigning({ entry, kind: 'zni', date: localToday() })
+        },
+      })
+    if (documentSection === 'zni' && canCreateAct(entry))
+      actions.push({
+        label: 'Создать АВК',
+        onSelect: () => openAct(entry),
+      })
+    if (
+      documentSection === 'avk' &&
+      isCurrent &&
+      rev.avk &&
+      !rev.avk.signedOn &&
+      !isBlockedInspectionAct(rev) &&
+      rev.zni.signedOn
+    ) {
+      actions.push({
+        label: 'Подписать АВК',
+        disabledReason: inspectionSigningError(rev, 'avk'),
+        onSelect: () => {
+          setError('')
+          setSigning({ entry, kind: 'avk', date: localToday() })
+        },
+      })
+      if (!rev.avk.rejection)
+        actions.push({
+          label: 'Отклонить АВК',
+          onSelect: () => {
+            setError('')
+            setRejecting({
+              entry,
+              kind: 'document',
+              date: localToday(),
+              reason: '',
+              quantities: Object.fromEntries(
+                rev.zni.rows.map((row) => [
+                  row.receiptId,
+                  String(row.accepted ?? 0),
+                ]),
+              ),
+            })
+          },
+        })
+    }
+    if (
+      documentSection === 'avk' &&
+      isCurrent &&
+      !rev.avk?.signedOn &&
+      rev.avk?.rejection?.kind === 'materials'
+    )
+      actions.push({
+        label: 'Уточнить результат АВК',
+        onSelect: () => {
+          setError('')
+          setRejecting({
+            entry,
+            kind: 'materials',
+            date: rev.avk!.rejection!.date,
+            reason: rev.avk!.rejection!.reason,
+            correction: true,
+            quantities: Object.fromEntries(
+              rev.zni.rows.map((row) => [
+                row.receiptId,
+                String(rejectedByAct(rev, row)),
+              ]),
+            ),
+          })
+        },
+      })
+    if (
+      documentSection === 'avk' &&
+      isCurrent &&
+      rev.avk?.rejection?.kind === 'document'
+    )
+      actions.push({
+        label: 'Исправить АВК',
+        onSelect: () =>
+          run(() => {
+            const next = correctInspectionAct(entry)
+            setDocumentSection('avk')
+            beginDraft(next, 'avk', entry)
+          }),
+      })
+    if (returns.length)
+      actions.push({
+        label: 'Оформить возврат заказчику',
+        onSelect: () => setReturnCase(entry),
+      })
+    if (revisions.length > 1)
+      actions.push({
+        label: `Редакции · ${revisions.length}`,
+        onSelect: () => setHistory({ entry, kind: documentSection }),
+      })
+    if (
+      documentSection === 'zni' &&
+      canReopenInspection(entry) &&
+      !(workflow.customerReturns ?? []).some((item) => item.caseId === entry.id)
+    )
+      actions.push({
+        label: 'Повторная проверка',
+        onSelect: () =>
+          run(() => {
+            const next = reopenInspection(entry)
+            beginDraft(next, 'zni', entry)
+          }),
+      })
+    if (
+      isCurrent &&
+      !inspectionDeletionError(entry, documentSection, workflow, issues)
+    ) {
+      const kind = documentSection
+      actions.push({
+        label: `Удалить ${currentKindLabel}`,
+        destructive: true,
+        onSelect: () =>
+          run(() => {
+            const blocked = inspectionDeletionError(
+              entry,
+              kind,
+              workflow,
+              issues,
+            )
+            if (blocked) throw new Error(blocked)
+            const description =
+              kind === 'avk'
+                ? `Удалить ${documentNumberLabel('АВК', rev.avk!.number)}? ЗНИ останется подписанной. Материал будет ожидать нового АВК.`
+                : `Удалить ${documentNumberLabel('ЗНИ', rev.zni.number)}? Получение сохранится, материал снова будет доступен для инспекции.`
+            if (window.confirm(description))
+              onChange(
+                deleteInspectionDocument(workflow, entry.id, kind, issues),
+              )
+          }),
+      })
+    }
+    return {
+      entry,
+      rev,
+      active,
+      documentRevision,
+      returns,
+      revisions,
+      currentKindLabel,
+      editable,
+      relatedRevision,
+      relatedKind,
+      actions,
+    }
+  }
+  const tableDocuments = visible.map(documentView)
+  const tableLineIndex = useMemo(() => indexInspectionMaterials(lines), [lines])
+  const tableReceiptIndex = useMemo(
+    () => new Map(receipts.map((receipt) => [receipt.id, receipt])),
+    [receipts],
+  )
+  const tableAlternative = (
+    row: InspectionRevision['zni']['rows'][number],
+    rev: InspectionRevision,
+  ) => {
+    const receipt = tableReceiptIndex.get(row.receiptId)
+    return getOperationAlternative(
+      documentSection === 'avk'
+        ? acceptedAfterInspection(rev, row)
+        : row.accepted,
+      getOperationConversion(
+        tableLineIndex.get(row.projectLineId),
+        row.unit,
+        receipt,
+        {
+          ...row,
+          quantity: row.presented,
+          altQuantity: null,
+          projectUnit: row.unit,
+        },
+      ),
+      row.accepted === null ? null : receipt,
+    )
+  }
   return (
-    <section className="grid gap-4 p-4">
-      <div className="-mx-4 -mt-4 border-b bg-white p-4">
-        <div
-          role="group"
-          aria-label="Сортировка: Входной контроль"
-          className="grid grid-cols-2 gap-2 lg:grid-cols-4 2xl:grid-cols-8"
-        >
-          {inspectionDocumentIndicators.map(({ key, label, details }) => (
-            <OperationIndicatorBadge
-              key={key}
-              label={label}
-              value={`${fmt(documentCounts[key])} док.`}
-              details={details}
-              subject="документы"
-              active={documentSort === key}
-              onClick={() => setDocumentSort(documentSort === key ? '' : key)}
-            />
-          ))}
+    <section
+      className={`gap-2 p-2 ${displayMode === 'table' ? 'operation-table-fill' : 'grid'}`}
+    >
+      {displayMode === 'list' && (
+        <div className="-mx-4 -mt-4 border-b bg-white p-4">
+          <div
+            role="group"
+            aria-label="Сортировка: Входной контроль"
+            className="grid grid-cols-2 gap-2 lg:grid-cols-4 2xl:grid-cols-8"
+          >
+            {inspectionDocumentIndicators.map(({ key, label, details }) => (
+              <OperationIndicatorBadge
+                key={key}
+                label={label}
+                value={`${fmt(documentCounts[key])} док.`}
+                details={details}
+                subject="документы"
+                active={documentSort === key}
+                onClick={() => setDocumentSort(documentSort === key ? '' : key)}
+              />
+            ))}
+          </div>
         </div>
-        <p className="mt-2 text-xs text-slate-500">
-          По всем документам, только последние редакции. Нажмите на показатель,
-          чтобы поднять соответствующие документы вверх списка.
-        </p>
-      </div>
+      )}
       <div
         ref={pagination.containerRef}
         className="flex scroll-mt-[32rem] flex-wrap gap-3 md:scroll-mt-48 xl:scroll-mt-32"
       >
-        <div
-          role="tablist"
-          aria-label="Документы входного контроля"
-          className="flex gap-1 rounded-lg bg-slate-100 p-1"
-        >
-          {(['zni', 'avk'] as const).map((kind) => (
-            <Button
-              key={kind}
-              id={`quality-tab-${kind}`}
-              role="tab"
-              aria-selected={documentSection === kind}
-              aria-controls="quality-document-list"
-              tabIndex={documentSection === kind ? 0 : -1}
-              variant={documentSection === kind ? 'default' : 'ghost'}
-              onClick={() => {
-                setDocumentSection(kind)
-                setError('')
-              }}
-              onKeyDown={(event) => {
-                if (
-                  !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(
-                    event.key,
-                  )
-                )
-                  return
-                event.preventDefault()
-                const target =
-                  event.key === 'Home'
-                    ? 'zni'
-                    : event.key === 'End'
-                      ? 'avk'
-                      : kind === 'zni'
-                        ? 'avk'
-                        : 'zni'
-                setDocumentSection(target)
-                document.getElementById(`quality-tab-${target}`)?.focus()
-              }}
-            >
-              {kind === 'zni' ? 'ЗНИ' : 'АВК'}{' '}
-              <span className="ml-1 text-xs opacity-70">
-                {kind === 'zni'
-                  ? documentCounts.zniCreated
-                  : documentCounts.avkCreated}
-              </span>
-            </Button>
-          ))}
+        <div className="ml-auto self-center">
+          <Button
+            onClick={() => {
+              setError('')
+              setDraftReadOnly(false)
+              if (documentSection === 'zni') setChoosingMaterials(true)
+              else setChoosingAct(true)
+            }}
+          >
+            <FileInput size={18} aria-hidden="true" />
+            {documentSection === 'zni' ? 'Создать ЗНИ' : 'Создать АВК'}
+          </Button>
         </div>
-        <Button
-          className="ml-auto self-center"
-          onClick={() => {
-            setError('')
-            setDraftReadOnly(false)
-            if (documentSection === 'zni') setChoosingMaterials(true)
-            else setChoosingAct(true)
-          }}
-        >
-          {documentSection === 'zni' ? 'Создать ЗНИ' : 'Создать АВК'}
-        </Button>
       </div>
       <div
         id="quality-document-list"
-        role="tabpanel"
-        aria-labelledby={`quality-tab-${documentSection}`}
-        className="grid gap-4"
+        aria-label={documentSection === 'zni' ? 'Список ЗНИ' : 'Список АВК'}
+        className={
+          displayMode === 'table' ? 'operation-table-fill gap-2' : 'grid gap-4'
+        }
       >
         {printing.busy && (
           <p role="status" className="text-sm text-slate-500">
@@ -1232,379 +1463,347 @@ export function InspectionWorkspace({
                 : 'АВК ещё нет. Создайте акт по подписанной ЗНИ с принятыми материалами.'}
           </p>
         )}
-        {pagination.items.map((entry) => {
-          const rev =
-              documentSection === 'zni'
-                ? currentInspection(entry)
-                : latestInspectionAct(entry)!,
-            active = activeInspection(entry)
-          const isCurrent = rev === currentInspection(entry)
-          const documentRevision =
-            documentSection === 'zni'
-              ? inspectionSourceRevision(entry, rev).revision
-              : rev.revision
-          const returns = pendingCustomerReturns(workflow, entry)
-          const revisions = inspectionDocumentRevisions(entry, documentSection)
-          const currentKindLabel = documentSection === 'zni' ? 'ЗНИ' : 'АВК'
-          const editable =
-            isCurrent && inspectionDocumentEditable(rev, documentSection)
-          const relatedRevision =
-            documentSection === 'avk'
-              ? inspectionSourceRevision(entry, rev)
-              : entry.revisions
-                  .filter(
-                    (candidate) =>
-                      candidate.avk &&
-                      inspectionSourceRevision(entry, candidate).revision ===
-                        documentRevision,
-                  )
-                  .at(-1)
-          const relatedKind = documentSection === 'zni' ? 'avk' : 'zni'
-          const actions: Array<InspectionAction> = [
-            {
-              label: `${editable ? 'Редактировать' : 'Просмотр'} ${currentKindLabel}`,
-              onSelect: () => openDocument(entry, documentSection, rev),
-            },
-            {
-              label: `Печать ${currentKindLabel}`,
-              onSelect: () =>
-                void printing.print({
-                  kind: documentSection,
-                  caseId: entry.id,
-                  revision: documentRevision,
-                }),
-            },
-          ]
-          if (documentSection === 'zni' && isCurrent && !rev.zni.signedOn)
-            actions.push({
-              label: 'Подписать ЗНИ',
-              disabledReason: inspectionSigningError(rev, 'zni'),
-              onSelect: () => {
-                setError('')
-                setSigning({ entry, kind: 'zni', date: localToday() })
+        {displayMode === 'table' && (
+          <OperationsGrid
+            key={documentSection}
+            id={`quality-${documentSection}-flat`}
+            fillHeight
+            label={documentSection === 'zni' ? 'ЗНИ' : 'АВК'}
+            pagination
+            rows={tableDocuments.flatMap((item) =>
+              item.rev.zni.rows
+                .filter(
+                  (row) => documentSection === 'zni' || (row.accepted ?? 0) > 0,
+                )
+                .map((row) => ({ ...item, row })),
+            )}
+            rowId={({ entry, row }) => `${entry.id}:${row.receiptId}`}
+            columns={[
+              {
+                id: 'document',
+                title: 'Документ',
+                value: ({ rev }) =>
+                  documentSection === 'zni' ? rev.zni.number : rev.avk!.number,
               },
-            })
-          if (documentSection === 'zni' && canCreateAct(entry))
-            actions.push({
-              label: 'Создать АВК',
-              onSelect: () => openAct(entry),
-            })
-          if (
-            documentSection === 'avk' &&
-            isCurrent &&
-            rev.avk &&
-            !rev.avk.signedOn &&
-            !isBlockedInspectionAct(rev) &&
-            rev.zni.signedOn
-          ) {
-            actions.push({
-              label: 'Подписать АВК',
-              disabledReason: inspectionSigningError(rev, 'avk'),
-              onSelect: () => {
-                setError('')
-                setSigning({ entry, kind: 'avk', date: localToday() })
+              {
+                id: 'date',
+                date: true,
+                title: 'Дата',
+                value: ({ rev }) =>
+                  documentSection === 'zni' ? rev.zni.date : rev.avk!.date,
               },
-            })
-            if (!rev.avk.rejection)
-              actions.push({
-                label: 'Отклонить АВК',
-                onSelect: () => {
-                  setError('')
-                  setRejecting({
-                    entry,
-                    kind: 'document',
-                    date: localToday(),
-                    reason: '',
-                    quantities: Object.fromEntries(
-                      rev.zni.rows.map((row) => [
-                        row.receiptId,
-                        String(row.accepted ?? 0),
-                      ]),
-                    ),
-                  })
-                },
-              })
-          }
-          if (
-            documentSection === 'avk' &&
-            isCurrent &&
-            !rev.avk?.signedOn &&
-            rev.avk?.rejection?.kind === 'materials'
-          )
-            actions.push({
-              label: 'Уточнить результат АВК',
-              onSelect: () => {
-                setError('')
-                setRejecting({
-                  entry,
-                  kind: 'materials',
-                  date: rev.avk!.rejection!.date,
-                  reason: rev.avk!.rejection!.reason,
-                  correction: true,
-                  quantities: Object.fromEntries(
-                    rev.zni.rows.map((row) => [
-                      row.receiptId,
-                      String(rejectedByAct(rev, row)),
-                    ]),
+              {
+                id: 'material',
+                title: 'Материал',
+                value: ({ row, rev }) =>
+                  inspectionMaterialName(
+                    row,
+                    documentSection === 'avk' ? rev.avk : null,
                   ),
-                })
+                width: 340,
               },
-            })
-          if (
-            documentSection === 'avk' &&
-            isCurrent &&
-            rev.avk?.rejection?.kind === 'document'
-          )
-            actions.push({
-              label: 'Исправить АВК',
-              onSelect: () =>
-                run(() => {
-                  const next = correctInspectionAct(entry)
-                  setDocumentSection('avk')
-                  beginDraft(next, 'avk', entry)
-                }),
-            })
-          if (returns.length)
-            actions.push({
-              label: 'Оформить возврат заказчику',
-              onSelect: () => setReturnCase(entry),
-            })
-          if (revisions.length > 1)
-            actions.push({
-              label: `Редакции · ${revisions.length}`,
-              onSelect: () => setHistory({ entry, kind: documentSection }),
-            })
-          if (
-            documentSection === 'zni' &&
-            canReopenInspection(entry) &&
-            !(workflow.customerReturns ?? []).some(
-              (item) => item.caseId === entry.id,
-            )
-          )
-            actions.push({
-              label: 'Повторная проверка',
-              onSelect: () =>
-                run(() => {
-                  const next = reopenInspection(entry)
-                  beginDraft(next, 'zni', entry)
-                }),
-            })
-          if (
-            isCurrent &&
-            !inspectionDeletionError(entry, documentSection, workflow, issues)
-          ) {
-            const kind = documentSection
-            actions.push({
-              label: `Удалить ${currentKindLabel}`,
-              destructive: true,
-              onSelect: () =>
-                run(() => {
-                  const blocked = inspectionDeletionError(
-                    entry,
-                    kind,
-                    workflow,
-                    issues,
-                  )
-                  if (blocked) throw new Error(blocked)
-                  const description =
-                    kind === 'avk'
-                      ? `Удалить ${documentNumberLabel('АВК', rev.avk!.number)}? ЗНИ останется подписанной. Материал будет ожидать нового АВК.`
-                      : `Удалить ${documentNumberLabel('ЗНИ', rev.zni.number)}? Получение сохранится, материал снова будет доступен для инспекции.`
-                  if (window.confirm(description))
-                    onChange(
-                      deleteInspectionDocument(
-                        workflow,
-                        entry.id,
-                        kind,
-                        issues,
-                      ),
-                    )
-                }),
-            })
-          }
-          return (
-            <article
-              key={entry.id}
-              id={`inspection-case-${entry.id}`}
-              className={`rounded-xl border p-4 ${rev.avk?.signedOn ? 'border-emerald-200 bg-emerald-50/40' : 'bg-white'}`}
-            >
-              <div className="flex items-start gap-3">
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="shrink-0"
-                  aria-label={
-                    documentSection === 'zni'
-                      ? `Материалы ЗНИ ${rev.zni.number}`
-                      : `Материалы АВК ${rev.avk!.number}`
-                  }
-                  aria-expanded={!!expanded[entry.id]}
-                  onClick={() =>
-                    setExpanded({
-                      ...expanded,
-                      [entry.id]: !expanded[entry.id],
-                    })
-                  }
-                >
-                  <ChevronDown
-                    size={16}
-                    className={expanded[entry.id] ? 'rotate-180' : ''}
+              { id: 'cipher', title: 'Шифр', value: ({ row }) => row.cipher },
+              {
+                id: 'basis',
+                title: 'Основание',
+                value: ({ entry }) => receiptDocumentLabel(entry.basis),
+                width: 220,
+              },
+              { id: 'zni', title: 'ЗНИ', value: ({ rev }) => rev.zni.number },
+              {
+                id: 'status',
+                title: 'Состояние',
+                value: ({ rev }) =>
+                  documentSection === 'avk'
+                    ? actStatus(rev)
+                    : rev.zni.signedOn
+                      ? 'Подписана'
+                      : 'В работе',
+              },
+              {
+                id: 'signedOn',
+                date: true,
+                title: 'Дата подписания',
+                value: ({ rev }) =>
+                  documentSection === 'avk'
+                    ? rev.avk?.signedOn
+                    : rev.zni.signedOn,
+              },
+              {
+                id: 'factoryNumber',
+                title: 'Заводской номер',
+                value: ({ row }) => row.factoryNumber,
+              },
+              {
+                id: 'heatBatch',
+                title: 'Партия плавки',
+                value: ({ row }) => row.heatBatch,
+              },
+              {
+                id: 'presented',
+                title: 'Предъявлено',
+                value: ({ row }) =>
+                  documentSection === 'avk' ? row.accepted : row.presented,
+                numeric: true,
+              },
+              {
+                id: 'accepted',
+                title: 'Принято',
+                value: ({ row, rev }) =>
+                  documentSection === 'avk'
+                    ? acceptedAfterInspection(rev, row)
+                    : row.accepted,
+                numeric: true,
+              },
+              { id: 'unit', title: 'Единица', value: ({ row }) => row.unit },
+              {
+                id: 'altQuantity',
+                title: 'Принято, доп. ед.',
+                numeric: true,
+                value: ({ row, rev }) => tableAlternative(row, rev).altQuantity,
+              },
+              {
+                id: 'altUnit',
+                title: 'Доп. единица',
+                value: ({ row, rev }) => tableAlternative(row, rev).altUnit,
+              },
+              {
+                id: 'result',
+                title: 'Результат',
+                value: ({ row, rev }) =>
+                  documentSection === 'avk' && rejectedByAct(rev, row) > 0
+                    ? 'Не принято / замечания'
+                    : resultLabels[row.result],
+              },
+              {
+                id: 'remarks',
+                title: 'Замечания',
+                value: ({ row, rev }) =>
+                  documentSection === 'avk' && rejectedByAct(rev, row) > 0
+                    ? rev.avk?.rejection?.reason
+                    : row.remarks,
+                width: 320,
+              },
+              {
+                id: 'actions',
+                title: 'Действия',
+                actions: true,
+                width: 96,
+                value: () => '',
+                render: ({ rev, actions }) => (
+                  <InspectionActionsMenu
+                    kind={documentSection === 'zni' ? 'ЗНИ' : 'АВК'}
+                    number={
+                      documentSection === 'zni'
+                        ? rev.zni.number
+                        : rev.avk!.number
+                    }
+                    actions={actions}
                   />
-                </Button>
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold">
-                    {documentSection === 'zni'
-                      ? documentNumberLabel('ЗНИ', rev.zni.number)
-                      : documentNumberLabel('АВК', rev.avk!.number || '…')}
-                  </h3>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {displayDate(
-                      documentSection === 'zni' ? rev.zni.date : rev.avk!.date,
-                    )}{' '}
-                    ·{' '}
-                    {
-                      rev.zni.rows.filter(
-                        (row) =>
-                          documentSection === 'zni' || (row.accepted ?? 0) > 0,
-                      ).length
-                    }{' '}
-                    поз. ·{' '}
-                    {documentSection === 'avk' &&
-                      `${documentNumberLabel('ЗНИ', rev.zni.number)} · `}
-                    {receiptDocumentLabel(entry.basis)}
-                    {documentRevision > 1
-                      ? ` · Ревизия ${documentRevision}`
-                      : ''}
-                  </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    <span
-                      className={`rounded-md px-2 py-1 ${rev.zni.signedOn ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}
-                    >
-                      {rev.zni.signedOn
-                        ? `ЗНИ подписана ${displayDate(rev.zni.signedOn)}`
-                        : 'ЗНИ в работе'}
-                    </span>
-                    <span
-                      className={`rounded-md px-2 py-1 ${rev.avk?.rejection ? 'bg-red-50 text-red-800' : rev.avk?.signedOn ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}
-                    >
-                      {rev.avk
-                        ? `${documentNumberLabel('АВК', rev.avk.number || '…')} · ${actStatus(rev)}`
-                        : rev.zni.signedOn
-                          ? canCreateAct(entry)
-                            ? 'Ожидает АВК'
-                            : 'Нет принятых материалов'
-                          : 'АВК после подписания ЗНИ'}
-                    </span>
-                    {returns.length > 0 && (
-                      <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-800">
-                        К возврату: {returns.length} поз.
+                ),
+              },
+            ]}
+          />
+        )}
+        {displayMode === 'list' &&
+          pagination.items.map((entry) => {
+            const {
+              rev,
+              active,
+              documentRevision,
+              returns,
+              relatedRevision,
+              relatedKind,
+              actions,
+            } = documentView(entry)
+            return (
+              <article
+                key={entry.id}
+                id={`inspection-case-${entry.id}`}
+                className={`rounded-xl border p-4 ${rev.avk?.signedOn ? 'border-emerald-200 bg-emerald-50/40' : 'bg-white'}`}
+              >
+                <div className="flex items-start gap-3">
+                  <RowActionButton
+                    iconOnly
+                    className="shrink-0"
+                    aria-label={
+                      documentSection === 'zni'
+                        ? `Материалы ЗНИ ${rev.zni.number}`
+                        : `Материалы АВК ${rev.avk!.number}`
+                    }
+                    aria-expanded={!!expanded[entry.id]}
+                    onClick={() =>
+                      setExpanded({
+                        ...expanded,
+                        [entry.id]: !expanded[entry.id],
+                      })
+                    }
+                  >
+                    <ChevronDown
+                      size={16}
+                      className={expanded[entry.id] ? 'rotate-180' : ''}
+                    />
+                  </RowActionButton>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold">
+                      {documentSection === 'zni'
+                        ? documentNumberLabel('ЗНИ', rev.zni.number)
+                        : documentNumberLabel('АВК', rev.avk!.number || '…')}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {displayDate(
+                        documentSection === 'zni'
+                          ? rev.zni.date
+                          : rev.avk!.date,
+                      )}{' '}
+                      ·{' '}
+                      {
+                        rev.zni.rows.filter(
+                          (row) =>
+                            documentSection === 'zni' ||
+                            (row.accepted ?? 0) > 0,
+                        ).length
+                      }{' '}
+                      поз. ·{' '}
+                      {documentSection === 'avk' &&
+                        `${documentNumberLabel('ЗНИ', rev.zni.number)} · `}
+                      {receiptDocumentLabel(entry.basis)}
+                      {documentRevision > 1
+                        ? ` · Ревизия ${documentRevision}`
+                        : ''}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      <span
+                        className={`rounded-md px-2 py-1 ${rev.zni.signedOn ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}
+                      >
+                        {rev.zni.signedOn
+                          ? `ЗНИ подписана ${displayDate(rev.zni.signedOn)}`
+                          : 'ЗНИ в работе'}
                       </span>
+                      <span
+                        className={`rounded-md px-2 py-1 ${rev.avk?.rejection ? 'bg-red-50 text-red-800' : rev.avk?.signedOn ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}
+                      >
+                        {rev.avk
+                          ? `${documentNumberLabel('АВК', rev.avk.number || '…')} · ${actStatus(rev)}`
+                          : rev.zni.signedOn
+                            ? canCreateAct(entry)
+                              ? 'Ожидает АВК'
+                              : 'Нет принятых материалов'
+                            : 'АВК после подписания ЗНИ'}
+                      </span>
+                      {returns.length > 0 && (
+                        <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-800">
+                          К возврату: {returns.length} поз.
+                        </span>
+                      )}
+                    </div>
+                    {relatedRevision && (
+                      <RowActionButton
+                        iconOnly
+                        type="button"
+                        className="mt-2"
+                        aria-label={`Открыть ${documentNumberLabel(
+                          relatedKind === 'zni' ? 'ЗНИ' : 'АВК',
+                          relatedRevision[relatedKind]!.number,
+                        )}`}
+                        onClick={() => {
+                          setDocumentSection(relatedKind)
+                          openDocument(entry, relatedKind, relatedRevision)
+                        }}
+                      >
+                        <FolderOpen size={16} aria-hidden="true" />
+                      </RowActionButton>
+                    )}
+                    {rev.avk?.rejection && (
+                      <p className="mt-2 text-sm text-red-800">
+                        {rev.avk.rejection.kind === 'materials'
+                          ? 'Материал не принят'
+                          : 'Документ на исправление'}
+                        : {rev.avk.rejection.reason}
+                      </p>
+                    )}
+                    {active && active.revision !== rev.revision && (
+                      <p className="mt-1 text-sm text-slate-500">
+                        Действует АВК ревизии {active.revision}
+                      </p>
                     )}
                   </div>
-                  {relatedRevision && (
-                    <button
-                      type="button"
-                      className="mt-2 text-sm text-slate-600 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
-                      onClick={() => {
-                        setDocumentSection(relatedKind)
-                        openDocument(entry, relatedKind, relatedRevision)
-                      }}
-                    >
-                      Открыть{' '}
-                      {documentNumberLabel(
-                        relatedKind === 'zni' ? 'ЗНИ' : 'АВК',
-                        relatedRevision[relatedKind]!.number,
-                      )}
-                    </button>
-                  )}
-                  {rev.avk?.rejection && (
-                    <p className="mt-2 text-sm text-red-800">
-                      {rev.avk.rejection.kind === 'materials'
-                        ? 'Материал не принят'
-                        : 'Документ на исправление'}
-                      : {rev.avk.rejection.reason}
-                    </p>
-                  )}
-                  {active && active.revision !== rev.revision && (
-                    <p className="mt-1 text-sm text-slate-500">
-                      Действует АВК ревизии {active.revision}
-                    </p>
-                  )}
-                </div>
-                <InspectionActionsMenu
-                  kind={documentSection === 'zni' ? 'ЗНИ' : 'АВК'}
-                  number={
-                    documentSection === 'zni' ? rev.zni.number : rev.avk!.number
-                  }
-                  actions={actions}
-                />
-              </div>
-              {expanded[entry.id] && (
-                <>
-                  <InspectionRows
-                    gridId={`inspection:${entry.id}:${rev.revision}`}
-                    indicatorIndex={indicatorIndex}
-                    pageScroll
-                    revision={rev}
-                    acceptedOnly={documentSection === 'avk'}
-                    lines={lines}
-                    receipts={receipts}
+                  <InspectionActionsMenu
+                    kind={documentSection === 'zni' ? 'ЗНИ' : 'АВК'}
+                    number={
+                      documentSection === 'zni'
+                        ? rev.zni.number
+                        : rev.avk!.number
+                    }
+                    actions={actions}
                   />
-                  {returns.length > 0 && (
-                    <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-                      К возврату:{' '}
-                      {returns
-                        .map(
-                          (item) =>
-                            `${item.row.name}: ${fmt(item.quantity)} ${item.row.unit}`,
+                </div>
+                {expanded[entry.id] && (
+                  <>
+                    <InspectionRows
+                      gridId={`inspection:${entry.id}:${rev.revision}`}
+                      indicatorIndex={indicatorIndex}
+                      pageScroll
+                      revision={rev}
+                      acceptedOnly={documentSection === 'avk'}
+                      lines={lines}
+                      receipts={receipts}
+                    />
+                    {returns.length > 0 && (
+                      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                        К возврату:{' '}
+                        {returns
+                          .map(
+                            (item) =>
+                              `${item.row.name}: ${fmt(item.quantity)} ${item.row.unit}`,
+                          )
+                          .join('; ')}
+                      </p>
+                    )}
+                    {(workflow.customerReturns ?? [])
+                      .filter((item) => item.caseId === entry.id)
+                      .map((item) => {
+                        const row = rev.zni.rows.find(
+                          (candidate) => candidate.receiptId === item.receiptId,
+                        )!
+                        const alternative = customerReturnAlternative(
+                          item.quantity,
+                          row,
+                          receipts.find(
+                            (receipt) => receipt.id === item.receiptId,
+                          ),
+                          findInspectionMaterial(lines, row.projectLineId),
                         )
-                        .join('; ')}
-                    </p>
-                  )}
-                  {(workflow.customerReturns ?? [])
-                    .filter((item) => item.caseId === entry.id)
-                    .map((item) => {
-                      const row = rev.zni.rows.find(
-                        (candidate) => candidate.receiptId === item.receiptId,
-                      )!
-                      const alternative = customerReturnAlternative(
-                        item.quantity,
-                        row,
-                        receipts.find(
-                          (receipt) => receipt.id === item.receiptId,
-                        ),
-                        findInspectionMaterial(lines, row.projectLineId),
-                      )
-                      return (
-                        <p
-                          key={item.id}
-                          className="mt-2 text-sm text-slate-600"
-                        >
-                          Возвращено {displayDate(item.date)} (
-                          {customerReturnReason(
-                            item,
-                            entry,
-                            returnAllocations.get(item.id),
-                          ).toLocaleLowerCase('ru')}
-                          ): {row.name} — {fmt(item.quantity)} {row.unit}
-                          {!alternative.error &&
-                            alternative.altQuantity !== null && (
-                              <>
-                                {' '}
-                                ({fmt(alternative.altQuantity)}{' '}
-                                {alternative.altUnit})
-                              </>
-                            )}
-                          . {item.documentNumber} {item.note}
-                        </p>
-                      )
-                    })}
-                </>
-              )}
-            </article>
-          )
-        })}
-        {pagination.total > 0 && (
+                        return (
+                          <p
+                            key={item.id}
+                            className="mt-2 text-sm text-slate-600"
+                          >
+                            Возвращено {displayDate(item.date)} (
+                            {customerReturnReason(
+                              item,
+                              entry,
+                              returnAllocations.get(item.id),
+                            ).toLocaleLowerCase('ru')}
+                            ): {row.name} — {fmt(item.quantity)} {row.unit}
+                            {!alternative.error &&
+                              alternative.altQuantity !== null && (
+                                <>
+                                  {' '}
+                                  ({fmt(alternative.altQuantity)}{' '}
+                                  {alternative.altUnit})
+                                </>
+                              )}
+                            . {item.documentNumber} {item.note}
+                          </p>
+                        )
+                      })}
+                  </>
+                )}
+              </article>
+            )
+          })}
+        {displayMode === 'list' && pagination.total > 0 && (
           <OperationPagination
             pagination={pagination}
             label="Входной контроль"
@@ -1633,6 +1832,9 @@ export function InspectionWorkspace({
       )}
       {choosingMaterials && (
         <InspectionMaterialPicker
+          initialReceiptId={
+            focusId?.startsWith('create:') ? focusId.slice(7) : undefined
+          }
           workflow={workflow}
           requests={requests}
           receipts={receipts}
@@ -1666,148 +1868,185 @@ export function InspectionWorkspace({
           }
           onClose={closeDraft}
           busy={savingPhotos}
+          steps={
+            !draftReadOnly && (
+              <WorkflowSteps
+                step={editorStep}
+                onStep={(next) => {
+                  setError('')
+                  if (
+                    next > editorStep &&
+                    !(revision[editorKind]?.number && revision[editorKind].date)
+                  ) {
+                    setError('Укажите номер и дату документа.')
+                    return
+                  }
+                  setEditorStep(next)
+                }}
+              />
+            )
+          }
+          footer={
+            !draftReadOnly && (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={savingPhotos}
+                  onClick={() =>
+                    editorStep ? setEditorStep(editorStep - 1) : closeDraft()
+                  }
+                >
+                  {editorStep ? 'Назад' : 'Отмена'}
+                </Button>
+                {editorStep < 2 ? (
+                  <Button
+                    onClick={() => {
+                      if (
+                        !(
+                          revision[editorKind]?.number &&
+                          revision[editorKind].date
+                        )
+                      ) {
+                        setError('Укажите номер и дату документа.')
+                        return
+                      }
+                      setEditorStep(editorStep + 1)
+                    }}
+                  >
+                    Далее
+                  </Button>
+                ) : editableKind && hasDraftChanges ? (
+                  <Button
+                    disabled={savingPhotos}
+                    onClick={() => void saveDraft()}
+                  >
+                    {savingPhotos
+                      ? 'Сохранение…'
+                      : `Сохранить ${editableKind === 'zni' ? 'ЗНИ' : 'АВК'}`}
+                  </Button>
+                ) : (
+                  <Button onClick={closeDraft}>Закрыть</Button>
+                )}
+              </>
+            )
+          }
         >
           <fieldset disabled={savingPhotos} className="grid min-w-0 gap-5">
-            {revision.avk && (
-              <div
-                className="flex gap-2"
-                role="group"
-                aria-label="Документ контроля"
-              >
-                {(['zni', 'avk'] as const).map((kind) => (
-                  <Button
-                    key={kind}
-                    variant={editorKind === kind ? 'secondary' : 'ghost'}
-                    aria-pressed={editorKind === kind}
-                    onClick={() => setEditorKind(kind)}
-                  >
-                    {kind === 'zni' ? 'ЗНИ' : 'АВК'}
-                  </Button>
-                ))}
-              </div>
-            )}
-            {editorKind === 'zni' && (
+            {!draftReadOnly && editorStep === 2 && (
               <>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <Field
-                    label="Номер ЗНИ"
-                    value={revision.zni.number}
-                    disabled={draftReadOnly || !!revision.zni.signedOn}
-                    onChange={(number) =>
-                      updateRevision({
-                        ...revision,
-                        zni: { ...revision.zni, number },
-                      })
-                    }
-                  />
-                  <Field
-                    label="Дата ЗНИ"
-                    type="date"
-                    value={revision.zni.date}
-                    disabled={draftReadOnly || !!revision.zni.signedOn}
-                    onChange={(date) =>
-                      updateRevision({
-                        ...revision,
-                        zni: { ...revision.zni, date },
-                      })
-                    }
-                  />
-                  <Field
-                    label="Дата инспекции"
-                    type="date"
-                    value={revision.zni.inspectionDate}
-                    disabled={draftReadOnly || !!revision.zni.signedOn}
-                    onChange={(inspectionDate) =>
-                      updateRevision({
-                        ...revision,
-                        zni: { ...revision.zni, inspectionDate },
-                      })
-                    }
-                  />
-                  <Field
-                    label="Время инспекции"
-                    type="time"
-                    value={revision.zni.inspectionTime}
-                    disabled={draftReadOnly || !!revision.zni.signedOn}
-                    onChange={(inspectionTime) =>
-                      updateRevision({
-                        ...revision,
-                        zni: { ...revision.zni, inspectionTime },
-                      })
-                    }
-                  />
-                </div>
-                <DetailsFields
-                  value={revision.zni.details}
-                  disabled={draftReadOnly || !!revision.zni.signedOn}
-                  onChange={(details) =>
-                    updateRevision({
-                      ...revision,
-                      zni: { ...revision.zni, details },
-                    })
-                  }
+                <p className="text-sm text-slate-600">
+                  {editorKind === 'zni'
+                    ? `ЗНИ №${revision.zni.number} от ${displayDate(revision.zni.date)}`
+                    : `АВК №${revision.avk?.number} от ${displayDate(revision.avk?.date ?? null)}`}{' '}
+                  · {receiptDocumentLabel(draft.basis)}
+                </p>
+                <InspectionRows
+                  gridId={`quality-review:${draft.id}:${editorKind}`}
+                  revision={revision}
+                  lines={lines}
+                  receipts={receipts}
+                  acceptedOnly={editorKind === 'avk'}
                 />
-                <DocumentsEditor
-                  value={revision.zni.documents}
-                  disabled={draftReadOnly || !!revision.zni.signedOn}
-                  onChange={(documents) =>
-                    updateRevision({
-                      ...revision,
-                      zni: { ...revision.zni, documents },
-                    })
-                  }
-                />
-                <h3 className="font-semibold">
-                  Результаты проверки материалов
-                </h3>
-                {revision.zni.rows.map((row, index) => (
-                  <div
-                    key={row.receiptId}
-                    className="grid gap-3 rounded-lg border p-3"
-                  >
-                    <p className="font-medium">
-                      {row.name} · {row.cipher} · Предъявлено:{' '}
-                      {fmt(row.presented)} {row.unit}
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      Зав. № {row.factoryNumber || '—'} · Партия:{' '}
-                      {row.heatBatch || '—'}
-                    </p>
-                    <MaterialNameAddition
-                      row={row}
+              </>
+            )}
+            <div
+              className={`quality-wizard-step-${draftReadOnly ? 'all' : editorStep} grid gap-4`}
+              hidden={!draftReadOnly && editorStep === 2}
+            >
+              {editorKind === 'zni' && (
+                <>
+                  <div className="quality-wizard-details grid gap-4">
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <Field
+                        label="Номер ЗНИ"
+                        value={revision.zni.number}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
+                        onChange={(number) =>
+                          updateRevision({
+                            ...revision,
+                            zni: { ...revision.zni, number },
+                          })
+                        }
+                      />
+                      <Field
+                        label="Дата ЗНИ"
+                        type="date"
+                        value={revision.zni.date}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
+                        onChange={(date) =>
+                          updateRevision({
+                            ...revision,
+                            zni: { ...revision.zni, date },
+                          })
+                        }
+                      />
+                      <Field
+                        label="Дата инспекции"
+                        type="date"
+                        value={revision.zni.inspectionDate}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
+                        onChange={(inspectionDate) =>
+                          updateRevision({
+                            ...revision,
+                            zni: { ...revision.zni, inspectionDate },
+                          })
+                        }
+                      />
+                      <Field
+                        label="Время инспекции"
+                        type="time"
+                        value={revision.zni.inspectionTime}
+                        disabled={draftReadOnly || !!revision.zni.signedOn}
+                        onChange={(inspectionTime) =>
+                          updateRevision({
+                            ...revision,
+                            zni: { ...revision.zni, inspectionTime },
+                          })
+                        }
+                      />
+                    </div>
+                    <DetailsFields
+                      value={revision.zni.details}
                       disabled={draftReadOnly || !!revision.zni.signedOn}
-                      onChange={(nameAddition) =>
+                      onChange={(details) =>
                         updateRevision({
                           ...revision,
-                          zni: {
-                            ...revision.zni,
-                            rows: revision.zni.rows.map((item, n) =>
-                              n === index
-                                ? {
-                                    ...item,
-                                    nameAddition: nameAddition || undefined,
-                                  }
-                                : item,
-                            ),
-                          },
+                          zni: { ...revision.zni, details },
                         })
                       }
                     />
-                    <div className="grid items-start gap-3 md:grid-cols-3">
-                      <label className={fieldLabelClassName}>
-                        Результат
-                        <AppSelect
-                          label="Результат"
-                          options={Object.entries(resultLabels).map(
-                            ([resultValue, label]) => ({
-                              value: resultValue,
-                              label,
-                            }),
-                          )}
+                    <DocumentsEditor
+                      value={revision.zni.documents}
+                      disabled={draftReadOnly || !!revision.zni.signedOn}
+                      onChange={(documents) =>
+                        updateRevision({
+                          ...revision,
+                          zni: { ...revision.zni, documents },
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="quality-wizard-materials grid gap-4">
+                    <h3 className="font-semibold">
+                      Результаты проверки материалов
+                    </h3>
+                    {revision.zni.rows.map((row, index) => (
+                      <div
+                        key={row.receiptId}
+                        className="grid gap-3 rounded-lg border p-3"
+                      >
+                        <p className="font-medium">
+                          {row.name} · {row.cipher} · Предъявлено:{' '}
+                          {fmt(row.presented)} {row.unit}
+                        </p>
+                        <p className="text-sm text-slate-500">
+                          Зав. № {row.factoryNumber || '—'} · Партия:{' '}
+                          {row.heatBatch || '—'}
+                        </p>
+                        <MaterialNameAddition
+                          row={row}
                           disabled={draftReadOnly || !!revision.zni.signedOn}
-                          value={row.result}
-                          onChange={(nextResult) => {
-                            const result = nextResult as typeof row.result
+                          onChange={(nameAddition) =>
                             updateRevision({
                               ...revision,
                               zni: {
@@ -1816,128 +2055,156 @@ export function InspectionWorkspace({
                                   n === index
                                     ? {
                                         ...item,
-                                        result,
-                                        accepted:
-                                          result === 'accepted'
-                                            ? item.presented
-                                            : result === 'rejected'
-                                              ? 0
-                                              : item.accepted,
+                                        nameAddition: nameAddition || undefined,
                                       }
                                     : item,
                                 ),
                               },
                             })
-                          }}
+                          }
                         />
-                      </label>
-                      <Field
-                        label={`Принято, ${row.unit}`}
-                        type="number"
-                        value={
-                          row.accepted === null ? '' : String(row.accepted)
-                        }
-                        disabled={draftReadOnly || !!revision.zni.signedOn}
-                        onChange={(accepted) =>
-                          updateRevision({
-                            ...revision,
-                            zni: {
-                              ...revision.zni,
-                              rows: revision.zni.rows.map((item, n) =>
-                                n === index
-                                  ? {
-                                      ...item,
-                                      accepted:
-                                        accepted === ''
-                                          ? null
-                                          : Number(accepted),
-                                    }
-                                  : item,
-                              ),
-                            },
-                          })
-                        }
-                      />
-                      <TextField
-                        label="Замечания по позиции"
-                        rows={1}
-                        value={row.remarks}
-                        disabled={draftReadOnly || !!revision.zni.signedOn}
-                        onChange={(remarks) =>
-                          updateRevision({
-                            ...revision,
-                            zni: {
-                              ...revision.zni,
-                              rows: revision.zni.rows.map((item, n) =>
-                                n === index ? { ...item, remarks } : item,
-                              ),
-                            },
-                          })
-                        }
-                      />
-                    </div>
+                        <div className="grid items-start gap-3 md:grid-cols-3">
+                          <label className={fieldLabelClassName}>
+                            Результат
+                            <AppSelect
+                              label="Результат"
+                              options={Object.entries(resultLabels).map(
+                                ([resultValue, label]) => ({
+                                  value: resultValue,
+                                  label,
+                                }),
+                              )}
+                              disabled={
+                                draftReadOnly || !!revision.zni.signedOn
+                              }
+                              value={row.result}
+                              onChange={(nextResult) => {
+                                const result = nextResult as typeof row.result
+                                updateRevision({
+                                  ...revision,
+                                  zni: {
+                                    ...revision.zni,
+                                    rows: revision.zni.rows.map((item, n) =>
+                                      n === index
+                                        ? {
+                                            ...item,
+                                            result,
+                                            accepted:
+                                              result === 'accepted'
+                                                ? item.presented
+                                                : result === 'rejected'
+                                                  ? 0
+                                                  : item.accepted,
+                                          }
+                                        : item,
+                                    ),
+                                  },
+                                })
+                              }}
+                            />
+                          </label>
+                          <Field
+                            label={`Принято, ${row.unit}`}
+                            type="number"
+                            value={
+                              row.accepted === null ? '' : String(row.accepted)
+                            }
+                            disabled={draftReadOnly || !!revision.zni.signedOn}
+                            onChange={(accepted) =>
+                              updateRevision({
+                                ...revision,
+                                zni: {
+                                  ...revision.zni,
+                                  rows: revision.zni.rows.map((item, n) =>
+                                    n === index
+                                      ? {
+                                          ...item,
+                                          accepted:
+                                            accepted === ''
+                                              ? null
+                                              : Number(accepted),
+                                        }
+                                      : item,
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                          <TextField
+                            label="Замечания по позиции"
+                            rows={1}
+                            value={row.remarks}
+                            disabled={draftReadOnly || !!revision.zni.signedOn}
+                            onChange={(remarks) =>
+                              updateRevision({
+                                ...revision,
+                                zni: {
+                                  ...revision.zni,
+                                  rows: revision.zni.rows.map((item, n) =>
+                                    n === index ? { ...item, remarks } : item,
+                                  ),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <TextField
+                      label="Общие замечания ЗНИ"
+                      value={revision.zni.remarks}
+                      disabled={draftReadOnly || !!revision.zni.signedOn}
+                      onChange={(remarks) =>
+                        updateRevision({
+                          ...revision,
+                          zni: { ...revision.zni, remarks },
+                        })
+                      }
+                    />
                   </div>
-                ))}
-                <TextField
-                  label="Общие замечания ЗНИ"
-                  value={revision.zni.remarks}
-                  disabled={draftReadOnly || !!revision.zni.signedOn}
-                  onChange={(remarks) =>
-                    updateRevision({
-                      ...revision,
-                      zni: { ...revision.zni, remarks },
-                    })
+                </>
+              )}
+              {editorKind === 'avk' && revision.avk && (
+                <ActEditor
+                  revision={revision}
+                  onChange={updateRevision}
+                  acceptedOnly
+                  readOnly={draftReadOnly}
+                  onPhotosChange={(photos) => {
+                    if (photos === 'yes') setPhotoPickerOpen(true)
+                    else {
+                      setPhotoDraft(null)
+                      updateRevision({
+                        ...revision,
+                        avk: { ...revision.avk!, photos },
+                      })
+                    }
+                  }}
+                  photoAttachments={
+                    revision.avk.photos === 'yes' && (
+                      <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
+                        <Button
+                          variant="outline"
+                          onClick={() => setPhotoPickerOpen(true)}
+                        >
+                          Фотографии АВК
+                        </Button>
+                        {pendingPhotos.length > 0 && (
+                          <span>
+                            Выбрано: {pendingPhotos.length}. Загрузятся при
+                            сохранении АВК.
+                          </span>
+                        )}
+                      </div>
+                    )
                   }
                 />
-              </>
-            )}
-            {editorKind === 'avk' && revision.avk && (
-              <ActEditor
-                revision={revision}
-                onChange={updateRevision}
-                acceptedOnly
-                readOnly={draftReadOnly}
-                onPhotosChange={(photos) => {
-                  if (photos === 'yes') setPhotoPickerOpen(true)
-                  else {
-                    setPhotoDraft(null)
-                    updateRevision({
-                      ...revision,
-                      avk: { ...revision.avk!, photos },
-                    })
-                  }
-                }}
-                photoAttachments={
-                  revision.avk.photos === 'yes' && (
-                    <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
-                      <Button
-                        variant="outline"
-                        onClick={() => setPhotoPickerOpen(true)}
-                      >
-                        Фотографии АВК
-                      </Button>
-                      {pendingPhotos.length > 0 && (
-                        <span>
-                          Выбрано: {pendingPhotos.length}. Загрузятся при
-                          сохранении АВК.
-                        </span>
-                      )}
-                    </div>
-                  )
-                }
-              />
-            )}
+              )}
+            </div>
             {error && (
               <p role="alert" className="text-red-700">
                 {error}
               </p>
-            )}
-            {!draftReadOnly && editableKind && hasDraftChanges && (
-              <Button disabled={savingPhotos} onClick={() => void saveDraft()}>
-                {savingPhotos
-                  ? 'Сохранение АВК и фотографий…'
-                  : `Сохранить ${editableKind === 'zni' ? 'ЗНИ' : 'АВК'}`}
-              </Button>
             )}
           </fieldset>
         </QualityModal>
@@ -2018,7 +2285,7 @@ export function InspectionWorkspace({
           <div className="grid gap-4">
             <label className="grid gap-1 text-sm">
               Вид отклонения
-              <select
+              <SelectField
                 className="rounded-lg border p-2"
                 value={rejecting.kind}
                 disabled={rejecting.correction}
@@ -2031,7 +2298,7 @@ export function InspectionWorkspace({
               >
                 <option value="document">Документ требует исправления</option>
                 <option value="materials">Материал не принят</option>
-              </select>
+              </SelectField>
             </label>
             <Field
               label="Дата отклонения"
@@ -2375,7 +2642,7 @@ function ActEditor({
   const set = (patch: Partial<typeof act>) =>
     onChange({ ...revision, avk: { ...act, ...patch } })
   return (
-    <section className="grid gap-4 border-t pt-4">
+    <section className="quality-act-editor grid gap-4">
       <h3 className="text-lg font-semibold">Акт входного контроля</h3>
       {act.rejection && (
         <p className="rounded-lg bg-red-50 p-3 text-sm text-red-800">
@@ -2386,13 +2653,9 @@ function ActEditor({
           : {act.rejection.reason}
         </p>
       )}
-      <p className="text-sm text-slate-500">
-        Состав берётся из подписанной ЗНИ; непринятое по АВК количество
-        учитывается отдельно. Проверки заполняются по факту; для неприменимых
-        укажите «Не применимо».
-      </p>
+
       {acceptedOnly && (
-        <div className="grid gap-3 rounded-lg border bg-stone-50 p-3 text-sm">
+        <div className="quality-wizard-materials grid gap-3 rounded-lg border bg-stone-50 p-3 text-sm">
           <strong>Материалы в АВК</strong>
           {revision.zni.rows
             .filter((row) => (row.accepted ?? 0) > 0)

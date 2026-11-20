@@ -1,3 +1,8 @@
+import {
+  effectiveRequestQuantity,
+  stockAssignmentKey,
+} from './project-change-types'
+import type { RequestCancellation } from './project-change-types'
 import { requestReceiptProgress } from './receipt-balances'
 import type { receiptBalances } from './receipt-balances'
 
@@ -51,14 +56,20 @@ export function emptyOverviewIndicators(): OverviewIndicators {
 
 /** Compute each request position separately: surplus cannot cover another request. */
 export function requestRemainingQuantities(
-  requests: ReadonlyArray<{ id: string; quantity: number }>,
+  requests: ReadonlyArray<{
+    id: string
+    quantity: number
+    projectCancellations?: RequestCancellation[]
+  }>,
   received: ReadonlyMap<string, number>,
 ) {
   return new Map(
     requests.map((request) => [
       request.id,
-      requestReceiptProgress(request.quantity, received.get(request.id) ?? 0)
-        .remaining,
+      requestReceiptProgress(
+        effectiveRequestQuantity(request),
+        received.get(request.id) ?? 0,
+      ).remaining,
     ]),
   )
 }
@@ -129,7 +140,19 @@ export function receiptIndicatorsByLine(
 
 export type OperationIndicatorIndex = ReturnType<
   typeof indexOperationIndicators
->
+> & { byAssignment?: Map<string, OverviewIndicators> }
+
+export function assignedOperationIndicators(
+  index: OperationIndicatorIndex,
+  receiptId: string,
+  projectLineId?: string,
+) {
+  return (
+    (projectLineId
+      ? index.byAssignment?.get(stockAssignmentKey(receiptId, projectLineId))
+      : undefined) ?? index.byReceipt.get(receiptId)
+  )
+}
 
 /** Aggregate once for all tables. A receipt's remaining quantity belongs to its request. */
 export function indexOperationIndicators(

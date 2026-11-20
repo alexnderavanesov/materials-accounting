@@ -48,3 +48,101 @@ select {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
+
+/* Shared document workflow surfaces. Steps keep mounted inputs and their draft values. */
+.receipt-wizard-step-0 > div > div > section > :not(fieldset) {
+  display: none;
+}
+.receipt-wizard-step-1 > div > div {
+  grid-template-columns: minmax(0, 1fr);
+}
+.receipt-wizard-step-1 > div > div > aside,
+.receipt-wizard-step-1 > div > div > section > fieldset {
+  display: none;
+}
+.request-wizard-step-0 .request-wizard-fields {
+  display: block;
+  overflow: auto;
+}
+.request-wizard-step-0 .request-wizard-fields > aside {
+  max-height: none;
+  overflow: visible;
+}
+.request-wizard-step-0 .request-wizard-fields > section,
+.request-wizard-step-1 .request-wizard-fields > aside,
+.request-wizard-step-2 .request-wizard-fields {
+  display: none;
+}
+.request-wizard-step-1 .request-wizard-fields {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.issue-wizard-step-0 > :not(.issue-wizard-details):not([role='alert']) {
+  display: none;
+}
+.issue-wizard-step-1 > .issue-wizard-details,
+.issue-wizard-step-2 > .issue-wizard-details {
+  display: none;
+}
+[role='dialog'] {
+  color: #334155;
+}
+[role='dialog'] input,
+[role='dialog'] textarea {
+  background-color: white;
+}
+[role='dialog'] .shadow-sm {
+  box-shadow: none;
+}
+.quality-wizard-step-0 .quality-wizard-materials,
+.quality-wizard-step-1 .quality-wizard-details {
+  display: none;
+}
+.quality-wizard-step-1 .quality-act-editor > :not(.quality-wizard-materials) {
+  display: none;
+}
+
+/* A section table owns the remaining viewport; its rows scroll inside AG Grid. */
+.materials-workspace:has(
+  .workspace-main-content > .operation-section[data-display='table']
+) {
+  display: flex;
+  height: 100dvh;
+  min-height: 32rem;
+  flex-direction: column;
+}
+.materials-workspace:has(
+    .workspace-main-content > .operation-section[data-display='table']
+  )
+  > .workspace-with-dock,
+.workspace-main-content:has(> .operation-section[data-display='table']),
+.operation-table-fill {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.materials-workspace:has(
+    .workspace-main-content > .operation-section[data-display='table']
+  )
+  > .workspace-with-dock {
+  flex-direction: row;
+}
+.operation-section-toolbar input,
+.operation-section-toolbar button[aria-haspopup='listbox'] {
+  height: 36px;
+}
+.operation-section-toolbar > button {
+  height: 36px;
+}
+
+@media (min-width: 1280px) {
+  .operation-section-toolbar:has(> .operation-search-controls) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .operation-search-controls {
+    flex: 1;
+  }
+}

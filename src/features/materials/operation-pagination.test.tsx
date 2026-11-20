@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { changeField } from './workflow-test-support'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
@@ -46,7 +47,7 @@ it('limits mounted items, changes size, preserves each list and restores after r
   expect(screen.getByText('1–25 из 2566')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
   expect(screen.getByText('26–50 из 2566')).toBeTruthy()
-  fireEvent.change(screen.getByLabelText('На странице: overview'), {
+  changeField(screen.getByLabelText('На странице: overview'), {
     target: { value: '10' },
   })
   expect(screen.getByText('21–30 из 2566')).toBeTruthy()

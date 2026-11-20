@@ -1,6 +1,14 @@
+import {
+  projectChangeSchema,
+  stockTransferSchema,
+} from './project-change-types'
 import { z } from 'zod'
 import { documentNumberingSchema } from './document-numbering'
-import { qualityWorkflowSchema } from './quality-workflow'
+import {
+  qualityWorkflowSchema,
+  storedQualityWorkflow,
+} from './quality-workflow'
+import { m15ReconciliationSchema } from './m15-reconciliation'
 import type { WorkspaceSync } from './workspace-protocol'
 import type { WorkspaceUser } from './workspace-auth'
 
@@ -14,10 +22,13 @@ export const workspaceSnapshotSchema = z
     configuredDocuments: z.array(z.string()),
     configuredUnits: z.array(z.string()),
     lines: records,
+    projectChanges: z.array(projectChangeSchema).optional(),
+    stockTransfers: z.array(stockTransferSchema).optional(),
     materialTypeSettings: records,
     materialIssues: records,
     materialReceipts: records,
     materialRequests: records,
+    m15Reconciliations: z.array(m15ReconciliationSchema).optional(),
     // Old empty envelopes may still have this key; legacy controls are not accepted.
     qualityControls: z.array(z.never()).max(0).optional(),
     qualityWorkflow: qualityWorkflowSchema.optional(),
@@ -140,5 +151,13 @@ export function writeWorkspaceCache(
 }
 
 export function toWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
-  return workspaceSnapshotSchema.parse(JSON.parse(JSON.stringify(value)))
+  const snapshot = value as WorkspaceSnapshot
+  return workspaceSnapshotSchema.parse(
+    JSON.parse(
+      JSON.stringify({
+        ...snapshot,
+        qualityWorkflow: storedQualityWorkflow(snapshot.qualityWorkflow),
+      }),
+    ),
+  )
 }

@@ -50,7 +50,10 @@ beforeEach(() => {
   sessionStorage.clear()
   Element.prototype.scrollIntoView = vi.fn()
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 async function open(title = 'Материал') {
   await operationGridApi('filter-test')
   fireEvent.click(
@@ -66,6 +69,36 @@ async function open(title = 'Материал') {
 }
 const apply = () =>
   fireEvent.click(screen.getByRole('button', { name: 'Применить' }))
+
+it('resizes with the keyboard without losing search, checked values or applying a draft', async () => {
+  render(<Harness />)
+  const api = await operationGridApi('filter-test')
+  const popup = await open()
+  const panel = screen.getByRole('region', { name: 'Материал: фильтр' })
+  vi.spyOn(panel, 'getBoundingClientRect').mockImplementation(() =>
+    DOMRect.fromRect({
+      x: 20,
+      y: 100,
+      width: Number.parseFloat(panel.style.width) || 440,
+      height: Number.parseFloat(panel.style.height) || 440,
+    }),
+  )
+  fireEvent.change(popup.getByRole('textbox'), { target: { value: 'Труба' } })
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Труба 2' }))
+  const handle = popup.getByRole('button', { name: 'Изменить размер фильтра' })
+  fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true })
+  fireEvent.keyDown(handle, { key: 'ArrowDown' })
+  expect(panel.style.width).toBe('520px')
+  expect(panel.style.height).toBe('460px')
+  expect(popup.getByRole<HTMLInputElement>('textbox').value).toBe('Труба')
+  expect(
+    popup.getByRole<HTMLInputElement>('checkbox', { name: 'Труба 2' }).checked,
+  ).toBe(false)
+  expect(api.getFilterModel()).toEqual({})
+  apply()
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+  expect(api.getDisplayedRowAtIndex(0)?.id).toBe('a')
+})
 
 it('discards drafts on Cancel, Escape and close, then restores only applied filters after remount', async () => {
   const view = render(<Harness />)

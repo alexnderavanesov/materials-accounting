@@ -220,7 +220,7 @@ describe('workspace file safety', () => {
   })
   it('persists document references and partial returns atomically and rejects a stale tab and duplicate return', async () => {
     const { dir, store } = await setup()
-    const initial = documentInspectionFixture('m15')
+    const initial = documentInspectionFixture('app')
     await store.save(initial, null)
     const base = await store.load()
     const next = structuredClone(initial)

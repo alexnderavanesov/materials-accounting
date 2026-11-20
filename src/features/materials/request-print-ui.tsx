@@ -4,6 +4,7 @@ import type { PrintBundle } from './print-output'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Download, LoaderCircle, Printer, Upload, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
+import { HoverTooltip } from '#/components/ui/hover-tooltip'
 import { Input } from '#/components/ui/input'
 import { PrintTemplateEditor } from './print-template-editor'
 import {
@@ -217,11 +218,13 @@ export function RequestPrintButton({
   number,
   prepare,
   iconOnly = false,
+  className,
 }: {
   entryId: string
   number: string
   prepare: () => Promise<string>
   iconOnly?: boolean
+  className?: string
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
@@ -246,26 +249,40 @@ export function RequestPrintButton({
       setBusy(false)
     }
   }
+  const printButton = (
+    <Button
+      variant="outline"
+      size={iconOnly ? 'icon' : 'default'}
+      className={className}
+      aria-label={busy ? 'Формирование…' : 'Печать'}
+      aria-description={
+        iconOnly ? (busy ? 'Формирование…' : 'Печать заявки') : undefined
+      }
+      aria-busy={busy}
+      disabled={busy}
+      onClick={() => void print()}
+    >
+      {busy && iconOnly ? (
+        <LoaderCircle size={15} className="animate-spin" />
+      ) : (
+        <Printer size={15} />
+      )}
+      {!iconOnly && (busy ? 'Формирование…' : 'Печать')}
+    </Button>
+  )
   return (
     <div className="grid gap-2">
-      <Button
-        variant="outline"
-        size={iconOnly ? 'icon' : 'default'}
-        aria-label={busy ? 'Формирование…' : 'Печать'}
-        title={
-          iconOnly ? (busy ? 'Формирование…' : 'Печать заявки') : undefined
-        }
-        aria-busy={busy}
-        disabled={busy}
-        onClick={() => void print()}
-      >
-        {busy && iconOnly ? (
-          <LoaderCircle size={15} className="animate-spin" />
-        ) : (
-          <Printer size={15} />
-        )}
-        {!iconOnly && (busy ? 'Формирование…' : 'Печать')}
-      </Button>
+      {iconOnly ? (
+        <HoverTooltip
+          text={busy ? 'Формирование…' : 'Печать заявки'}
+          className="inline-flex shrink-0"
+          focusable={false}
+        >
+          {printButton}
+        </HoverTooltip>
+      ) : (
+        printButton
+      )}
       {error ? (
         <p role="alert" className="max-w-xs text-sm text-red-700">
           {error}
@@ -367,10 +384,7 @@ export function RequestPrintSettings() {
   return (
     <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-4">
       <h3 className="text-lg font-semibold">1. Бланк заявки</h3>
-      <p className="mt-2 text-sm text-slate-500">
-        Готовый образец уже настроен. Можно сразу посмотреть PDF. Чтобы изменить
-        оформление, скачайте Excel, отредактируйте его и загрузите обратно.
-      </p>
+
       {error ? (
         <p
           role="alert"
@@ -461,7 +475,7 @@ export function RequestPrintSettings() {
                       label,
                       example:
                         key === 'numberAndDate'
-                          ? 'Заявка № ЗП-2026-0001 от 16.10.2026'
+                          ? 'Заявка № ЗП-2026-0001 от 16-10-26'
                           : samplePrintData.headers[
                               key as Exclude<PrintHeaderField, 'numberAndDate'>
                             ],

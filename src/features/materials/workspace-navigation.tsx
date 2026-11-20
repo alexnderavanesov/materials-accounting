@@ -1,7 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
-const sections = ['operations', 'database', 'documents', 'settings'] as const
+const sections = [
+  'operations',
+  'database',
+  'documents',
+  'm15',
+  'settings',
+] as const
 const operationTabs = [
   'overview',
   'requests',
@@ -27,10 +33,11 @@ export type WorkspaceLocation = {
   tab: (typeof operationTabs)[number]
   settings: (typeof settingsTabs)[number]
   template: (typeof templates)[number]
+  inspection?: 'zni' | 'avk'
   focus?: string
 }
 export type OperationDocumentTab = WorkspaceLocation['tab']
-type WorkspaceSearch = Partial<WorkspaceLocation>
+export type WorkspaceSearch = Partial<WorkspaceLocation>
 export type WorkspaceNavigation = {
   view: WorkspaceLocation
   onNavigate: (next: WorkspaceLocation) => void
@@ -48,6 +55,7 @@ export function validateWorkspaceSearch(
 ): WorkspaceSearch {
   return {
     section: member(sections, search.section),
+    inspection: member(['zni', 'avk'] as const, search.inspection),
     tab: member(operationTabs, search.tab),
     settings: member(settingsTabs, search.settings),
     template: member(templates, search.template),
@@ -62,6 +70,7 @@ function completeLocation(search: WorkspaceSearch): WorkspaceLocation {
   return {
     section: search.section ?? 'operations',
     tab: search.tab ?? 'overview',
+    inspection: search.inspection,
     settings: search.settings ?? 'numbering',
     template: search.template ?? 'request',
     focus: search.focus,
@@ -102,7 +111,7 @@ function sameLocation(left: WorkspaceSearch, right: WorkspaceLocation) {
     left.tab === right.tab &&
     left.settings === right.settings &&
     left.template === right.template &&
-    left.focus === right.focus
+    left.focus === right.focus && left.inspection === right.inspection
   )
 }
 
@@ -124,7 +133,7 @@ export function useWorkspaceRouteNavigation(
       search.tab !== undefined ||
       search.settings !== undefined ||
       search.template !== undefined ||
-      search.focus !== undefined
+      search.focus !== undefined || search.inspection !== undefined
         ? completeLocation(search)
         : initialView,
     [search, initialView],

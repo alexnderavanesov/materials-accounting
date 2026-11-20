@@ -80,6 +80,8 @@ const bodySchema = z.discriminatedUnion('action', [
       documentId: id.optional(),
       document: uploadDocumentSchema.optional(),
       files: z.array(uploadFileSchema).min(1).max(maxDocumentUploadFiles),
+      expectedFileIds: z.array(z.uuid()).max(10000).optional(),
+      replaceFileIds: z.array(z.uuid()).max(10000).optional(),
     })
     .strict(),
 ])
@@ -263,6 +265,20 @@ export function createDocumentsHandler(
           }
         }
         const uploads = body.action === 'upload' ? [body] : body.files
+        if (body.action === 'upload-files' && body.expectedFileIds) {
+          const expected = new Set(body.expectedFileIds)
+          const currentFiles = manifest.files.filter(
+            (file) => file.documentId === doc.id,
+          )
+          if (
+            expected.size !== currentFiles.length ||
+            currentFiles.some((file) => !expected.has(file.id))
+          )
+            throw new PrintError(
+              'Файлы документа изменились. Откройте скрепку и подтвердите загрузку заново.',
+              409,
+            )
+        }
         const files = uploads.map((file) => {
           if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64))
             throw new PrintError(`Файл повреждён: ${file.name}`)
@@ -277,6 +293,8 @@ export function createDocumentsHandler(
             document: doc,
             files,
             expectedRevision: manifest.revision,
+            replaceFileIds:
+              body.action === 'upload-files' ? body.replaceFileIds : undefined,
           }),
         )
       }

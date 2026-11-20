@@ -85,7 +85,17 @@ export function selectRegistryDocuments(
 ) {
   const selected = new Set(materialIds),
     requested = new Set(documentIds)
-  const available = new Set(registry.materials.map((row) => row.id))
+  // A composed M-15 can have scans before any receipt links it to a project material.
+  // Such rows are selected by the source document ID, never by a fabricated material.
+  const unlinkedM15 = new Set(
+    registry.documents
+      .filter((doc) => doc.kind === 'm15' && !doc.materialIds.length)
+      .map((doc) => doc.id),
+  )
+  const available = new Set([
+    ...registry.materials.map((row) => row.id),
+    ...unlinkedM15,
+  ])
   if (
     !selected.size ||
     !requested.size ||
@@ -96,7 +106,9 @@ export function selectRegistryDocuments(
     )
   const docs = registry.documents.filter(
     (doc) =>
-      requested.has(doc.id) && doc.materialIds.some((id) => selected.has(id)),
+      requested.has(doc.id) &&
+      (doc.materialIds.some((id) => selected.has(id)) ||
+        (unlinkedM15.has(doc.id) && selected.has(doc.id))),
   )
   if (docs.length !== requested.size)
     throw new PrintError(

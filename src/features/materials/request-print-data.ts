@@ -1,3 +1,4 @@
+import { formatCalendarDate } from './calendar-date'
 import { z } from 'zod'
 import { recalculateRequestAlternatives } from './domain'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
@@ -81,9 +82,7 @@ export function buildRequestPrintData(
   return {
     headers: {
       number: first.number,
-      date: /^\d{4}-\d{2}-\d{2}$/.test(first.date)
-        ? first.date.split('-').reverse().join('.')
-        : first.date,
+      date: formatCalendarDate(first.date, ''),
       requester: requests.find((entry) => entry.requester)?.requester ?? '',
       requestNote: requests[0]?.requestNote ?? '',
       cipher: unique(requests.map((entry) => entry.cipher)),

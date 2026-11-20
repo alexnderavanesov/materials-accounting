@@ -1,3 +1,4 @@
+import { formatCalendarDate } from './calendar-date'
 import { useEffect, useState } from 'react'
 import type { CustomStatusPanelProps } from 'ag-grid-react'
 import type { StatusBar } from 'ag-grid-community'
@@ -9,7 +10,7 @@ const numberFormat = new Intl.NumberFormat('ru-RU', {
 })
 const formatNumber = (value: number) =>
   Number.isFinite(value) ? numberFormat.format(value) : '—'
-const formatDate = (value: string) => value.split('-').reverse().join('.')
+const formatDate = (value: string) => formatCalendarDate(value)
 
 function GridSelectionStatusPanel({ api }: CustomStatusPanelProps) {
   const [summary, setSummary] = useState(() => getGridSelectionSummary(api))
@@ -49,11 +50,7 @@ function GridSelectionStatusPanel({ api }: CustomStatusPanelProps) {
       aria-label="Сводка выделения"
       aria-atomic="true"
     >
-      {summary.selectedCount === 0 ? (
-        <span className="materials-selection-hint">
-          Выделите ячейки для сводки
-        </span>
-      ) : (
+      {summary.selectedCount > 0 && (
         <>
           {summary.selectedCount !== summary.count && (
             <span title="Все выделенные ячейки, включая пустые">

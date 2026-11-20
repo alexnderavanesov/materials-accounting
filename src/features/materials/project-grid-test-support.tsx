@@ -33,7 +33,8 @@ for (const property of ['clientHeight', 'offsetHeight']) {
   })
 }
 
-// jsdom has no layout: keep the real grid/editors, but render all test cells.
+// jsdom has no layout: render test cells unless a viewport table explicitly
+// enables virtual rows (including isolated large-data tests).
 vi.mock('ag-grid-react', async (importOriginal) => {
   const actual = await importOriginal<typeof AgGridReactModule>()
   const styles = document.createElement('div')
@@ -46,7 +47,7 @@ vi.mock('ag-grid-react', async (importOriginal) => {
         // Browser visual checks cover the real theme; grid behaviour stays real here.
         themeStyleContainer={styles}
         suppressColumnVirtualisation
-        suppressRowVirtualisation
+        suppressRowVirtualisation={props.suppressRowVirtualisation ?? true}
         suppressAnimationFrame
       />
     ),
@@ -120,6 +121,33 @@ export async function editGridQuantity(
     api.startEditingCell({
       rowIndex: Number(cell.closest('[row-index]')!.getAttribute('row-index')),
       colKey: `cipher:${cipher}`,
+    }),
+  )
+  let input: HTMLInputElement | null = null
+  await waitFor(() => {
+    input = cell.querySelector('input')
+    if (!input) throw new Error('Editor did not open')
+  })
+  fireEvent.input(input!, { target: { value } })
+  fireEvent.keyDown(input!, {
+    key: cancel ? 'Escape' : 'Enter',
+    code: cancel ? 'Escape' : 'Enter',
+    keyCode: cancel ? 27 : 13,
+  })
+}
+
+export async function editGridField(
+  materialName: string,
+  columnId: string,
+  value: string,
+  cancel = false,
+) {
+  const cell = await gridCell(materialName, columnId)
+  const api = await projectGridApi()
+  act(() =>
+    api.startEditingCell({
+      rowIndex: Number(cell.closest('[row-index]')!.getAttribute('row-index')),
+      colKey: columnId,
     }),
   )
   let input: HTMLInputElement | null = null

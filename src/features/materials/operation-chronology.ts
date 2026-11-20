@@ -1,5 +1,6 @@
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
+import type { StockTransfer } from './project-change-types'
 import type { SiteReturn } from './material-issues'
-import { normalizeCalendarDate } from './calendar-date'
 import { receiptDocumentNumberLabel } from './receipt-documents'
 import { documentNumberLabel } from './document-number'
 import type { InspectionRevision, QualityWorkflow } from './quality-workflow'
@@ -7,13 +8,14 @@ import { acceptedAfterInspection } from './quality-workflow'
 
 type Operation = Record<string, unknown>
 export type ChronologyWorkspace = {
+  stockTransfers?: StockTransfer[]
   materialRequests?: Array<Operation>
   materialReceipts: Array<Operation>
   materialIssues: Array<Operation>
   qualityWorkflow?: QualityWorkflow
 }
 type Violation = { key: string; values: Array<unknown>; message: string }
-const displayDate = (value: string) => value.split('-').reverse().join('.')
+const displayDate = (value: string) => formatCalendarDate(value)
 const validDate = (value: unknown): value is string =>
   typeof value === 'string' && !!value && normalizeCalendarDate(value) === value
 const precise = (value: number) => Number(value.toPrecision(15))

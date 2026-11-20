@@ -103,7 +103,97 @@ describe('document-based receipt and acceptance workflow', () => {
       /превышают количество по заявке/,
     )
   })
-  it.each(['app', 'm15'] as const)(
+  it('saves approved excess without changing the request and does not authorize another receipt', () => {
+    const workspace = fixture()
+    Object.assign(workspace.materialReceipts[0]!, {
+      quantity: 5,
+      overageApproval: {
+        requestId: 'request',
+        quantity: 5,
+        excessQuantity: 1,
+        approvedAt: new Date().toISOString(),
+      },
+    })
+    expect(() => validateQualityWorkspace(workspace)).not.toThrow()
+    expect(workspace.materialRequests[0]!.quantity).toBe(4)
+
+    const next = structuredClone(workspace)
+    next.materialReceipts.push({
+      ...next.materialReceipts[0]!,
+      id: 'unapproved',
+      quantity: 1,
+    })
+    delete next.materialReceipts[1]!.overageApproval
+    expect(() => validateQualityWorkspace(next, workspace)).toThrow(
+      /превышают количество по заявке/,
+    )
+    next.materialReceipts.pop()
+    next.materialRequests[0]!.quantity = 3
+    expect(() => validateQualityWorkspace(next, workspace)).toThrow(
+      /превышают количество по заявке/,
+    )
+    next.materialRequests[0]!.quantity = 4
+    next.materialReceipts[0]!.quantity = 6
+    expect(() => validateQualityWorkspace(next, workspace)).toThrow(
+      /Согласуйте получение сверх заявки/,
+    )
+  })
+
+  it.each([
+    { requestId: 'another-request' },
+    { quantity: 6 },
+    { excessQuantity: 6 },
+    { excessQuantity: -1 },
+    { approvedAt: 'invalid' },
+  ])('rejects invalid or stale receipt approval %j', (override) => {
+    const workspace = fixture()
+    Object.assign(workspace.materialReceipts[0]!, {
+      quantity: 5,
+      overageApproval: {
+        requestId: 'request',
+        quantity: 5,
+        excessQuantity: 1,
+        approvedAt: new Date().toISOString(),
+        ...override,
+      },
+    })
+    expect(() => validateQualityWorkspace(workspace)).toThrow(
+      /Согласуйте получение сверх заявки/,
+    )
+  })
+
+  it('does not reuse approved excess after its rejected return', () => {
+    const workspace = fixture()
+    Object.assign(workspace.materialReceipts[0]!, {
+      quantity: 5,
+      overageApproval: {
+        requestId: 'request',
+        quantity: 5,
+        excessQuantity: 1,
+        approvedAt: new Date().toISOString(),
+      },
+    })
+    const entry = inspect(workspace, 4, 5)
+    workspace.qualityWorkflow = recordCustomerReturn(
+      workspace.qualityWorkflow,
+      entry.id,
+      [{ receiptId: 'receipt', quantity: 1 }],
+      '2026-10-22',
+    )
+    expect(() => validateQualityWorkspace(workspace)).not.toThrow()
+    const next = structuredClone(workspace)
+    next.materialReceipts.push({
+      ...next.materialReceipts[0]!,
+      id: 'unapproved',
+      quantity: 1,
+    })
+    delete next.materialReceipts[1]!.overageApproval
+    expect(() => validateQualityWorkspace(next, workspace)).toThrow(
+      /превышают количество по заявке/,
+    )
+  })
+
+  it.each(['app'] as const)(
     'normalizes pasted %s numbers and reuses historical prefixed documents without rewriting them',
     (kind) => {
       const fields = {
@@ -117,9 +207,7 @@ describe('document-based receipt and acceptance workflow', () => {
       const catalog: ReturnType<typeof receiptDocuments> = []
       const refs = bindReceiptDocuments(fields, catalog)
       expect(catalog[0]!.number).toBe('221 / A')
-      expect(receiptDocumentLabel(catalog[0]!)).toBe(
-        `${kind === 'app' ? 'АПП' : 'М-15'} №221 / A от 22.10.2026`,
-      )
+      expect(receiptDocumentLabel(catalog[0]!)).toBe('АПП №221 / A от 22-10-26')
       expect(
         bindReceiptDocuments(
           { ...fields, [`${kind}Number`]: '221 / A' },
@@ -152,7 +240,7 @@ describe('document-based receipt and acceptance workflow', () => {
     expect(catalog).toHaveLength(2)
   })
 
-  it('deduplicates document identities, preserves legacy invoices and allows M-15-only receipts', () => {
+  it('deduplicates APP identities and rejects M15-only receipts', () => {
     const workspace = fixture(),
       receipt = receiptsOf(workspace)[0]!
     const catalog = workspace.qualityWorkflow.receiptDocuments!
@@ -166,7 +254,7 @@ describe('document-based receipt and acceptance workflow', () => {
       catalog,
     )
     expect(refs.appDocumentId).toBe(receipt.appDocumentId)
-    expect(catalog).toHaveLength(2)
+    expect(catalog).toHaveLength(1)
     const next = structuredClone(workspace)
     Object.assign(next.materialReceipts[0]!, refs)
     validateQualityWorkspace(next, workspace)
@@ -179,7 +267,7 @@ describe('document-based receipt and acceptance workflow', () => {
         m15Number: '15',
         m15Date: '2026-10-22',
       }),
-    ).toBe('')
+    ).toContain('АПП')
     expect(
       receiptDocumentError({
         appNumber: '1',
@@ -189,30 +277,26 @@ describe('document-based receipt and acceptance workflow', () => {
       }),
     ).toContain('дату')
   })
-  it('reserves partial ZNIs by receipt across APP and M-15 and snapshots the original request', () => {
+  it('reserves partial ZNIs under the APP and never offers an M15 as a new basis', () => {
     const workspace = fixture(),
       first = inspect(workspace, 1, 2)
-    const refs = bindReceiptDocuments(
-      {
-        ...receiptDocumentFields(
-          receiptsOf(workspace)[0]!,
-          workspace.qualityWorkflow,
-        ),
-        m15Number: '15',
-        m15Date: '2026-10-22',
-      },
-      workspace.qualityWorkflow.receiptDocuments!,
-    )
-    Object.assign(workspace.materialReceipts[0]!, refs)
-    const create = (quantity: number) =>
+    const appId = receiptsOf(workspace)[0]!.appDocumentId!
+    workspace.qualityWorkflow.receiptDocuments!.push({
+      id: 'm15',
+      kind: 'm15',
+      number: '15',
+      date: '2026-10-22',
+    })
+    const create = (quantity: number, basis = appId) =>
       newInspection(
         workspace.qualityWorkflow,
         [{ receiptId: 'receipt', quantity }],
         receiptsOf(workspace),
         linesOf(workspace),
-        refs.m15DocumentId!,
+        basis,
       )
     expect(() => create(3)).toThrow(/остаток/)
+    expect(() => create(1, 'm15')).toThrow(/только по АПП/)
     workspace.qualityWorkflow.cases.push(create(2))
     expect(
       inspectionAvailableQuantities(
@@ -285,7 +369,7 @@ describe('document-based receipt and acceptance workflow', () => {
         [{ receiptId: 'receipt', quantity: 1 }],
         receiptsOf(workspace),
         linesOf(workspace),
-        String(workspace.materialReceipts[0]!.m15DocumentId),
+        String(workspace.materialReceipts[0]!.appDocumentId),
       ),
     ).toThrow(/остаток/)
     const removed = structuredClone(workspace)

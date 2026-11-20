@@ -12,6 +12,7 @@ import {
   buildDocumentPhotosArchive,
 } from './document-archive.server'
 import { documentRegistryFixture } from './document-registry.fixtures'
+import { withM15Document } from './m15-document'
 import { buildRequestPrintData } from './request-print-data'
 import { builtinPrintTemplate } from './request-print-store.server'
 import {
@@ -74,6 +75,77 @@ afterEach(async () => {
 })
 
 describe('document originals and on-demand archives', () => {
+  it('uploads and archives scans for M-15 before receipts, retaining them after the receipt is linked', async () => {
+    const f = await fixture()
+    Object.assign(
+      f.workspace,
+      withM15Document(f.workspace, {
+        id: 'new-m15',
+        kind: 'm15',
+        number: '15-NEW',
+        date: '2026-11-18',
+      }),
+    )
+    f.workspace.m15Reconciliations = [
+      { id: 'new-m15', mode: 'automatic', lines: [], allocations: [] },
+    ]
+    const source = buildDocumentRegistry(f.workspace).documents.find(
+      (doc) => doc.receiptDocumentId === 'new-m15',
+    )!
+    expect(source.materialIds).toEqual([])
+    const uploaded = await f.post({
+      action: 'upload',
+      documentId: source.id,
+      name: 'Скан М-15.pdf',
+      base64: pdf.toString('base64'),
+    })
+    expect(uploaded.status).toBe(200)
+    const response = await f.post({
+      action: 'archive',
+      materialIds: [source.id],
+      documentIds: [source.id],
+    })
+    expect(response.status).toBe(200)
+    const zip = await JSZip.loadAsync(await response.arrayBuffer())
+    const originals = Object.values(zip.files).filter(
+      (file) => !file.dir && file.name.endsWith('.pdf'),
+    )
+    expect(originals).toHaveLength(1)
+    expect(await originals[0]!.async('nodebuffer')).toEqual(pdf)
+    expect(
+      (
+        await f.post({
+          action: 'archive',
+          materialIds: ['unknown'],
+          documentIds: [source.id],
+        })
+      ).status,
+    ).not.toBe(200)
+    f.workspace.m15Reconciliations[0]!.lines = [
+      {
+        id: 'l',
+        projectLineId: 'line',
+        name: 'Клапан',
+        unit: 'шт',
+        position: '',
+        quantity: 1,
+      },
+    ]
+    const linked = buildDocumentRegistry(f.workspace).documents.find(
+      (doc) => doc.id === source.id,
+    )!
+    expect(linked.materialIds).toHaveLength(1)
+    expect(
+      (
+        await f.post({
+          action: 'archive',
+          materialIds: linked.materialIds,
+          documentIds: [source.id],
+        })
+      ).status,
+    ).toBe(200)
+    expect((await f.files.load()).files).toHaveLength(1)
+  })
   it('downloads only this document’s 20 original photos with distinct flat names and no rendering', async () => {
     const f = await fixture()
     const docs = buildDocumentRegistry(f.workspace).documents
@@ -82,7 +154,7 @@ describe('document originals and on-demand archives', () => {
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
     const photos = Array.from({ length: 20 }, (_, i) => ({
       name: i < 2 ? 'Фото.png' : `Фото ${i}.PNG`,
-      bytes: png,
+      bytes: Buffer.concat([png, Buffer.from([i])]),
     }))
     await f.files.addMany({
       documentId: avk.id,
@@ -114,7 +186,7 @@ describe('document originals and on-demand archives', () => {
       names.every((name) => !name.includes('/') && /\.png$/i.test(name)),
     ).toBe(true)
     for (const entry of Object.values(zip.files))
-      expect(await entry.async('nodebuffer')).toEqual(png)
+      expect((await entry.async('nodebuffer')).subarray(0, 8)).toEqual(png)
     expect(f.renderer).not.toHaveBeenCalled()
     expect(f.convert).not.toHaveBeenCalled()
     expect(await f.files.load()).toEqual(before)
@@ -218,7 +290,9 @@ describe('document originals and on-demand archives', () => {
             }),
         files: [1, 2, 3].map((n) => ({
           name: `Фото${n}.pdf`,
-          base64: pdf.toString('base64'),
+          base64: Buffer.concat([pdf, Buffer.from(String(n))]).toString(
+            'base64',
+          ),
         })),
       }
       const result = await f.post(body)
@@ -228,7 +302,9 @@ describe('document originals and on-demand archives', () => {
       expect(new Set(saved.files.map((file) => file.documentId)).size).toBe(1)
       expect(saved.documents).toHaveLength(1)
       for (const file of saved.files)
-        expect((await f.files.read(file.id)).bytes).toEqual(pdf)
+        expect(
+          (await f.files.read(file.id)).bytes.subarray(0, pdf.length),
+        ).toEqual(pdf)
       expect((await f.post(body)).status).toBe(409)
       expect(await createDocumentFileStore(f.directory).load()).toEqual(saved)
     },
@@ -261,7 +337,10 @@ describe('document originals and on-demand archives', () => {
     const batch = {
       documentId: 'avk',
       expectedRevision,
-      files: [1, 2].map((n) => ({ name: `${n}.pdf`, bytes: pdf })),
+      files: [1, 2].map((n) => ({
+        name: `${n}.pdf`,
+        bytes: Buffer.concat([pdf, Buffer.from(String(n))]),
+      })),
     }
     const results = await Promise.allSettled([
       f.files.addMany(batch),
@@ -489,7 +568,7 @@ describe('document originals and on-demand archives', () => {
     const zip = await JSZip.loadAsync(await response.arrayBuffer())
     expect(
       Object.keys(zip.files).filter((name) => name.endsWith('.pdf')),
-    ).toHaveLength(2)
+    ).toHaveLength(1)
     expect(f.render).not.toHaveBeenCalled()
   })
   it('reports missing originals and PDF errors without hiding a partial archive', async () => {
@@ -543,7 +622,7 @@ describe('document originals and on-demand archives', () => {
     })
     const zip = await JSZip.loadAsync(archive.bytes)
     const basename =
-      'Заявки/ЗП-10-26-0002-Соединительные детали трубопроводов от 28.10.2026'
+      'Заявки/ЗП-10-26-0002-Соединительные детали трубопроводов от 28-10-26'
     const workbookFile = `${basename}.xlsx`
     expect(zip.file(`${basename}.pdf`)).not.toBeNull()
     expect(
@@ -629,4 +708,76 @@ describe('document originals and on-demand archives', () => {
     expect(response.status).toBe(409)
     expect(f.renderer).not.toHaveBeenCalled()
   })
+})
+
+it('keeps or replaces scans using exact document IDs and rejects unseen concurrent files', async () => {
+  const f = await fixture()
+  const docs = buildDocumentRegistry(f.workspace).documents
+  const app = docs.find((doc) => doc.kind === 'app')!
+  const quality = docs.find((doc) => doc.id.includes('receipt-field'))!
+  const upload = (documentId: string, name: string, extra = {}) =>
+    f.post({
+      action: 'upload-files',
+      documentId,
+      files: [
+        {
+          name,
+          base64: Buffer.concat([pdf, Buffer.from(name)]).toString('base64'),
+        },
+      ],
+      ...extra,
+    })
+  expect(
+    (await upload(app.id, 'APP.pdf', { expectedFileIds: [] })).status,
+  ).toBe(200)
+  expect(
+    (await upload(quality.id, 'Quality.pdf', { expectedFileIds: [] })).status,
+  ).toBe(200)
+  const initial = await f.files.load()
+  const oldApp = initial.files.find((file) => file.documentId === app.id)!
+  const originalQuality = initial.files.find(
+    (file) => file.documentId === quality.id,
+  )!
+  expect(
+    (await upload(app.id, 'Unexpected.pdf', { expectedFileIds: [] })).status,
+  ).toBe(409)
+  expect(
+    (
+      await upload(app.id, 'Page2.pdf', {
+        expectedFileIds: [oldApp.id],
+        replaceFileIds: [],
+      })
+    ).status,
+  ).toBe(200)
+  // Even with a fresh manifest revision, an old replacement decision cannot delete unseen files.
+  expect(
+    (
+      await upload(app.id, 'Wrong.pdf', {
+        expectedFileIds: [oldApp.id],
+        replaceFileIds: [oldApp.id],
+      })
+    ).status,
+  ).toBe(409)
+  const appIds = (await f.files.load()).files
+    .filter((file) => file.documentId === app.id)
+    .map((file) => file.id)
+  expect(
+    (
+      await upload(app.id, 'New.pdf', {
+        expectedFileIds: appIds,
+        replaceFileIds: appIds,
+      })
+    ).status,
+  ).toBe(200)
+  const catalog = await (await f.get()).json()
+  expect(
+    catalog.manifest.files
+      .filter((file: { documentId: string }) => file.documentId === app.id)
+      .map((file: { name: string }) => file.name),
+  ).toEqual(['New.pdf'])
+  expect(catalog.manifest.files).toContainEqual(originalQuality)
+  expect(
+    catalog.documents.find((doc: { id: string }) => doc.id === app.id)
+      .materialIds,
+  ).toEqual(app.materialIds)
 })

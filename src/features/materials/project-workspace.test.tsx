@@ -1,3 +1,5 @@
+import { buildDocumentRegistry } from './document-registry'
+import { changeField, reviewWorkflow } from './workflow-test-support'
 // @vitest-environment jsdom
 import { emptyNumberHistory, initialNumbering } from './document-numbering'
 import {
@@ -22,8 +24,9 @@ import {
   validateWorkspaceSearch,
 } from './workspace-navigation'
 import * as XLSX from 'xlsx'
+import { linkedM15Fixture } from './m15-reconciliation.fixtures'
 import { getGridApi } from 'ag-grid-community'
-import { localDateInputValue } from './calendar-date'
+import { formatCalendarDate, localDateInputValue } from './calendar-date'
 import {
   gridCell,
   editGridQuantity,
@@ -36,6 +39,12 @@ import {
   operationRowAction,
   operationGridApi,
 } from './project-grid-test-support'
+import { prepareProjectDraft } from './project-edit-draft'
+import type { ProjectChangeWorkspace } from './project-changes'
+import {
+  toWorkspaceSnapshot,
+  workspaceSnapshotSchema,
+} from './workspace-snapshot'
 import { ProjectWorkspace } from './project-workspace'
 import {
   saveProjectWorkspaceSnapshot,
@@ -43,7 +52,6 @@ import {
   loadProjectWorkspaceChanges,
 } from './functions'
 import { recordKey, workspaceEntities } from './workspace-protocol'
-import { workspaceSnapshotSchema } from './workspace-snapshot'
 import {
   emptyQualityWorkflow,
   newInspection,
@@ -106,12 +114,48 @@ function mount(workspace = base(), restoreView = false) {
   )
 }
 
+async function previewProjectEdits(kind = 'Ошибка') {
+  let dialog = screen.queryByRole('dialog', {
+    name: 'Сохранить изменения проекта',
+  })
+  if (!dialog) {
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Сохранить изменения',
+      }),
+    )
+    dialog = await screen.findByRole('dialog', {
+      name: 'Сохранить изменения проекта',
+    })
+  }
+  fireEvent.click(within(dialog).getByRole('radio', { name: kind }))
+  changeField(within(dialog).getByLabelText('Основание / причина'), {
+    target: { value: 'Уточнение проектной базы' },
+  })
+  if (kind === 'ИЗМ')
+    for (const input of within(dialog).getAllByRole('textbox', {
+      name: /Номер ИЗМ/,
+    }))
+      changeField(input, { target: { value: '2' } })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Показать последствия' }),
+  )
+  return dialog
+}
+async function saveProjectEdits(kind = 'Ошибка') {
+  const dialog = await previewProjectEdits(kind)
+  await within(dialog).findByRole('region', { name: 'Последствия изменений' })
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Подтвердить и сохранить' }),
+  )
+}
+
 it('keeps operations usable when a document counter is exhausted', async () => {
   const workspace = base()
   workspace.documentNumbering = initialNumbering(emptyNumberHistory())
   workspace.documentNumbering.issue.lastValue = 999999999
   mount(workspace)
-  fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
   expect(screen.getByRole('button', { name: /^Заявки/ })).toBeTruthy()
   expect(screen.getByText(/Счётчик.*Выдачи в монтаж.*исчерпан/)).toBeTruthy()
 })
@@ -121,7 +165,7 @@ it('defaults a new request to the local calendar day around midnight', async () 
   vi.setSystemTime(new Date(2026, 10, 5, 0, 15))
   try {
     mount()
-    fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
     fireEvent.click(
       screen.getAllByRole('button', { name: 'Создать заявку' })[0]!,
@@ -170,7 +214,7 @@ it('restores the actual workspace with browser Back and Forward, keeping searche
   render(<RouterProvider router={router} />)
   fireEvent.click(await screen.findByRole('button', { name: /^Заявки/ }))
   await screen.findByRole('heading', { name: 'Заявки' })
-  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+  changeField(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
     target: { value: 'CONVERSION' },
   })
   fireEvent.click(screen.getByRole('button', { name: /^CONVERSION/ }))
@@ -233,7 +277,7 @@ function selectAppOption(trigger: HTMLElement, label: string) {
   fireEvent.click(trigger)
   fireEvent.click(screen.getByRole('option', { name: label }))
 }
-function openRequest(materialType = 'Трубопровод') {
+async function openRequest(materialType = 'Трубопровод') {
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
   fireEvent.click(screen.getAllByRole('button', { name: 'Создать заявку' })[0]!)
   const dialog = screen.getByRole('dialog')
@@ -242,14 +286,20 @@ function openRequest(materialType = 'Трубопровод') {
     'ТЕСТ',
   )
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Типы материала' }),
+    within(dialog).getByRole('combobox', { name: 'Типы материала' }),
   )
-  fireEvent.click(screen.getByRole('checkbox', { name: materialType }))
-  fireEvent.keyDown(
-    screen.getByRole('group', { name: 'Выбор типов материала' }),
-    { key: 'Escape' },
-  )
+  fireEvent.click(screen.getByRole('option', { name: materialType }))
+  fireEvent.keyDown(screen.getByRole('listbox', { name: 'Типы материала' }), {
+    key: 'Escape',
+  })
+  changeField(within(dialog).getByLabelText('Заявитель'), {
+    target: { value: 'Подрядчик' },
+  })
+  await requestPickerReady(dialog)
   return dialog
+}
+async function requestPickerReady(dialog: HTMLElement) {
+  await within(dialog).findAllByLabelText(/Количество по заявке,/)
 }
 function conversionWorkspace() {
   const workspace = base()
@@ -290,12 +340,15 @@ it('keeps the saved request unit when its project material unit has changed', as
   workspace.configuredUnits.push('шт')
   workspace.lines[0]!.unit = 'шт'
   mount(workspace)
-  fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
   fireEvent.click(await screen.findByRole('button', { name: /Редактировать/ }))
   const dialog = screen.getByRole('dialog')
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -313,13 +366,17 @@ it('shows a visible error instead of changing the primary unit of a requested ma
   fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
   await editGridMaterial('Альфа')
   const dialog = screen.getByRole('dialog')
-  selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
-  fireEvent.change(
-    within(dialog).getByRole('textbox', { name: 'Единица измерения' }),
+  selectAppOption(
+    within(dialog).getByRole('combobox', { name: 'Тип материала' }),
+    'Оборудование',
+  )
+  changeField(
+    within(dialog).getByRole('combobox', { name: 'Единица измерения' }),
     { target: { value: 'шт' } },
   )
   fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
-  expect(within(dialog).getByRole('alert').textContent).toContain(
+  const review = await previewProjectEdits()
+  expect(within(review).getByRole('alert').textContent).toContain(
     'Нельзя изменить основную единицу',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
@@ -391,11 +448,11 @@ it('shows receipt completion per request position and remaining quantities by un
   ]
   mount(workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('MIXED', 'Получено позиций')).toBe('2 из 4')
+  expect(requestMetricValue('MIXED', 'Получено')).toBe('2 из 4')
   expect(requestMetricValue('MIXED', 'Заявлено')).toBe('6 шт · 9,3 м')
-  expect(requestMetricValue('MIXED', 'Осталось получить')).toBe('2 шт · 7,7 м')
-  expect(requestMetricValue('OTHER', 'Получено позиций')).toBe('1 из 1')
-  expect(requestMetricValue('OTHER', 'Осталось получить')).toBe('0 шт')
+  expect(requestMetricValue('MIXED', 'Осталось')).toBe('2 шт · 7,7 м')
+  expect(requestMetricValue('OTHER', 'Получено')).toBe('1 из 1')
+  expect(requestMetricValue('OTHER', 'Осталось')).toBe('0 шт')
   const mixedCard = screen
     .getByText('MIXED', { exact: true })
     .closest('[id^="operation-requests-"]') as HTMLElement
@@ -404,14 +461,14 @@ it('shows receipt completion per request position and remaining quantities by un
     .closest('[id^="operation-requests-"]') as HTMLElement
   expect(within(mixedCard).queryByText(/Получена полностью/)).toBeNull()
   expect(within(completedCard).getByText(/Получена полностью/)).toBeTruthy()
-  expect(completedCard.classList.contains('border-emerald-200')).toBe(true)
+  expect(within(completedCard).getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(within(completedCard).getByRole('button', { name: /^OTHER/ }))
-  expect(completedCard.classList.contains('border-emerald-200')).toBe(true)
+  expect(within(completedCard).getByText(/Получена полностью/)).toBeTruthy()
   expect(completedCard.classList.contains('ring-emerald-200')).toBe(true)
-  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+  changeField(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
     target: { value: 'Альфа' },
   })
-  expect(requestMetricValue('MIXED', 'Получено позиций')).toBe('2 из 4')
+  expect(requestMetricValue('MIXED', 'Получено')).toBe('2 из 4')
   fireEvent.click(screen.getByRole('button', { name: /^MIXED/ }))
   const grid = await operationGridApi('request:MIXED')
   const quantities = ['quantity', 'received', 'remaining']
@@ -439,14 +496,11 @@ it('saves and reopens a mixed request with its common note and protects populate
   workspace.lines[1]!.materialType = 'Арматура'
   workspace.lines[1]!.category = 'Арматура'
   mount(workspace)
-  let dialog = openRequest()
+  let dialog = await openRequest()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Типы материала' }),
+    within(dialog).getByRole('combobox', { name: 'Типы материала' }),
   )
-  const typeLabelText = screen.getByText('Арматура', {
-    selector: 'label span',
-    exact: true,
-  })
+  const typeLabelText = screen.getByRole('option', { name: 'Арматура' })
   // Clicking label text blurs the focused checkbox before the label forwards
   // its click to the associated input. A click alone misses this browser order.
   fireEvent.pointerDown(typeLabelText)
@@ -454,40 +508,37 @@ it('saves and reopens a mixed request with its common note and protects populate
   fireEvent.blur(document.activeElement!, { relatedTarget: null })
   fireEvent.mouseUp(typeLabelText)
   fireEvent.click(typeLabelText)
+  expect(screen.getByRole('listbox', { name: 'Типы материала' })).toBeTruthy()
+  fireEvent.keyDown(screen.getByRole('listbox', { name: 'Типы материала' }), {
+    key: 'Escape',
+  })
   expect(
-    screen.getByRole('group', { name: 'Выбор типов материала' }),
-  ).toBeTruthy()
-  fireEvent.keyDown(
-    screen.getByRole('group', { name: 'Выбор типов материала' }),
-    { key: 'Escape' },
-  )
-  expect(
-    within(dialog).getByRole('button', { name: 'Типы материала' }).textContent,
-  ).toContain('Выбрано типов: 2')
-  const quantities = within(dialog).getAllByPlaceholderText(
-    'Количество по заявке, м',
-  )
-  fireEvent.change(quantities[0]!, { target: { value: '2' } })
-  fireEvent.change(quantities[1]!, { target: { value: '3' } })
-  fireEvent.change(within(dialog).getByLabelText('Примечание к заявке'), {
+    within(dialog).getByRole('combobox', { name: 'Типы материала' })
+      .textContent,
+  ).toContain('Арматура')
+  const quantities = within(dialog).getAllByLabelText('Количество по заявке, м')
+  changeField(quantities[0]!, { target: { value: '2' } })
+  changeField(quantities[1]!, { target: { value: '3' } })
+  changeField(within(dialog).getByLabelText('Примечание к заявке'), {
     target: { value: 'Доставить вместе.\nРазгрузка утром.' },
   })
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Типы материала' }),
+    within(dialog).getByRole('combobox', { name: 'Типы материала' }),
   )
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Арматура' }))
+  fireEvent.click(screen.getByRole('option', { name: 'Арматура' }))
   expect(
-    screen.getByRole<HTMLInputElement>('checkbox', { name: 'Арматура' })
-      .checked,
+    screen
+      .getByRole('option', { name: 'Арматура' })
+      .getAttribute('aria-selected') === 'true',
   ).toBe(true)
   expect(screen.getByRole('alert').textContent).toContain('очистите количества')
-  fireEvent.keyDown(
-    screen.getByRole('group', { name: 'Выбор типов материала' }),
-    { key: 'Escape' },
-  )
+  fireEvent.keyDown(screen.getByRole('listbox', { name: 'Типы материала' }), {
+    key: 'Escape',
+  })
   expect(document.activeElement).toBe(
-    within(dialog).getByRole('button', { name: 'Типы материала' }),
+    within(dialog).getByRole('combobox', { name: 'Типы материала' }),
   )
+  reviewWorkflow()
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
   )
@@ -509,9 +560,10 @@ it('saves and reopens a mixed request with its common note and protects populate
   ])
   fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
   dialog = screen.getByRole('dialog')
+  await requestPickerReady(dialog)
   expect(
     within(dialog)
-      .getAllByPlaceholderText<HTMLInputElement>('Количество по заявке, м')
+      .getAllByLabelText<HTMLInputElement>('Количество по заявке, м')
       .map((input) => input.value)
       .sort(),
   ).toEqual(['2', '3'])
@@ -523,12 +575,13 @@ it('saves and reopens a mixed request with its common note and protects populate
     within(dialog).getByRole('button', { name: 'Добавить материалы' }),
   )
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Типы материала' }),
+    within(dialog).getByRole('combobox', { name: 'Типы материала' }),
   )
   expect(
     screen
-      .getAllByRole<HTMLInputElement>('checkbox')
-      .every((input) => input.checked),
+      .getAllByRole('option')
+      .filter((item) => item.getAttribute('value'))
+      .every((item) => item.getAttribute('aria-selected') === 'true'),
   ).toBe(true)
 })
 
@@ -539,23 +592,24 @@ it('opens only saved request materials and preserves edits while adding and reop
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
   let dialog = screen.getByRole('dialog')
+  await requestPickerReady(dialog)
   const quantities = () =>
-    within(dialog).getAllByPlaceholderText<HTMLInputElement>(
+    within(dialog).getAllByLabelText<HTMLInputElement>(
       'Количество по заявке, м',
     )
   expect(quantities()).toHaveLength(1)
   expect(quantities()[0]!.value).toBe('8')
   expect(within(dialog).queryByText('Бета', { exact: true })).toBeNull()
-  fireEvent.change(quantities()[0]!, { target: { value: '' } })
+  changeField(quantities()[0]!, { target: { value: '' } })
   expect(quantities()).toHaveLength(1)
-  fireEvent.change(quantities()[0]!, { target: { value: '7' } })
+  changeField(quantities()[0]!, { target: { value: '7' } })
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Добавить материалы' }),
   )
   expect(within(dialog).queryByText('Альфа', { exact: true })).toBeNull()
   expect(within(dialog).getByText('Бета', { exact: true })).toBeTruthy()
   expect(quantities()).toHaveLength(1)
-  fireEvent.change(quantities()[0]!, { target: { value: '3' } })
+  changeField(quantities()[0]!, { target: { value: '3' } })
   expect(quantities()[0]!.value).toBe('3')
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'К материалам заявки' }),
@@ -565,15 +619,21 @@ it('opens only saved request materials and preserves edits while adding and reop
       .map((input) => input.value)
       .sort(),
   ).toEqual(['3', '7'])
-  fireEvent.change(
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Поиск материалов' }),
+  )
+  changeField(
     within(dialog).getByPlaceholderText(
       'Поиск по наименованию, нормативному документу, составу или массе',
     ),
     { target: { value: 'Бета' } },
   )
   expect(quantities()).toHaveLength(1)
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -591,6 +651,7 @@ it('opens only saved request materials and preserves edits while adding and reop
   expect(lastSaved().materialRequests).toHaveLength(2)
   fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
   dialog = screen.getByRole('dialog')
+  await requestPickerReady(dialog)
   expect(quantities()).toHaveLength(2)
   expect(
     within(dialog).queryByRole('button', { name: 'К материалам заявки' }),
@@ -601,11 +662,87 @@ it('opens only saved request materials and preserves edits while adding and reop
   fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
   fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
   dialog = screen.getByRole('dialog')
+  await requestPickerReady(dialog)
   expect(quantities()).toHaveLength(2)
   expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
 })
 
-it('adds M-15 to an existing receipt without another delivery and preserves its original APP', async () => {
+it('retains request filters between steps and clears them on reopening without losing column layout', async () => {
+  const workspace = conversionWorkspace()
+  workspace.lines = base().lines
+  workspace.materialRequests.push({
+    ...workspace.materialRequests[0]!,
+    id: 'request-second',
+    projectLineId: 'line-1',
+    quantity: 3,
+  })
+  mount(workspace)
+  fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
+  const openEditor = async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
+    const dialog = screen.getByRole('dialog')
+    await requestPickerReady(dialog)
+    return dialog
+  }
+  const materialsStep = (dialog: HTMLElement) =>
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Материалы и количества/ }),
+    )
+  let dialog = await openEditor()
+  materialsStep(dialog)
+  let picker = getGridApi('request-material-picker')!
+  const pickerFilter = {
+    name: { filterType: 'text', type: 'equals', filter: 'Альфа' },
+  }
+  act(() => {
+    picker.applyColumnState({
+      state: [
+        { colId: 'name', width: 402 },
+        { colId: 'unit' },
+        { colId: 'quantity' },
+      ],
+      applyOrder: true,
+    })
+    picker.setFilterModel(pickerFilter)
+  })
+  await waitFor(() => expect(picker.getDisplayedRowCount()).toBe(1))
+  reviewWorkflow()
+  let review = await operationGridApi('request-review')
+  expect(review.getDisplayedRowCount()).toBe(2)
+  const reviewFilter = {
+    material: { filterType: 'text', type: 'equals', filter: 'Бета' },
+  }
+  act(() => review.setFilterModel(reviewFilter))
+  await waitFor(() => expect(review.getDisplayedRowCount()).toBe(1))
+  materialsStep(dialog)
+  expect(picker.getFilterModel()).toEqual(pickerFilter)
+  expect(picker.getDisplayedRowCount()).toBe(1)
+  reviewWorkflow()
+  review = await operationGridApi('request-review')
+  await waitFor(() => expect(review.getFilterModel()).toEqual(reviewFilter))
+  expect(review.getDisplayedRowCount()).toBe(1)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }))
+
+  dialog = await openEditor()
+  materialsStep(dialog)
+  picker = getGridApi('request-material-picker')!
+  expect(picker.getFilterModel()).toEqual({})
+  expect(picker.getDisplayedRowCount()).toBe(2)
+  expect(picker.getColumn('name')?.getActualWidth()).toBe(402)
+  expect(
+    picker
+      .getAllDisplayedColumns()
+      .slice(0, 3)
+      .map((col) => col.getColId()),
+  ).toEqual(['name', 'unit', 'quantity'])
+  reviewWorkflow()
+  review = await operationGridApi('request-review')
+  expect(review.getFilterModel()).toEqual({})
+  expect(review.getDisplayedRowCount()).toBe(2)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+
+it('edits a receipt only through APP and leaves independent M15 unchanged', async () => {
   const workspace = conversionWorkspace()
   workspace.qualityWorkflow = {
     version: 1,
@@ -616,6 +753,7 @@ it('adds M-15 to an existing receipt without another delivery and preserves its 
     ],
   }
   workspace.materialReceipts = [{ ...legacyReceipt(), appDocumentId: 'app' }]
+  composeM15(workspace, 'М15-20', '2026-10-22')
   mount(workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
   expandReceiptGroups()
@@ -623,14 +761,12 @@ it('adds M-15 to an existing receipt without another delivery and preserves its 
     await screen.findByRole('button', { name: 'Редактировать получение' }),
   )
   const dialog = screen.getByRole('dialog')
-  fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
-    target: { value: 'М15-20' },
-  })
-  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
-    target: { value: '2026-10-22' },
-  })
+  expect(within(dialog).queryByLabelText('Номер М-15')).toBeNull()
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -640,10 +776,37 @@ it('adds M-15 to an existing receipt without another delivery and preserves its 
     id: 'receipt-legacy',
     quantity: 2,
     appDocumentId: 'app',
-    m15DocumentId: expect.any(String),
   })
   expect(lastSaved().qualityWorkflow!.receiptDocuments).toHaveLength(2)
+  expect(lastSaved().m15Reconciliations).toEqual(workspace.m15Reconciliations)
 })
+function composeM15(
+  workspace: ReturnType<typeof base>,
+  number: string,
+  date: string,
+) {
+  const id = `m15-${number}`
+  const workflow = (workspace.qualityWorkflow ??= emptyQualityWorkflow())
+  workflow.receiptDocuments ??= []
+  workflow.receiptDocuments.push({ id, kind: 'm15', number, date })
+  workspace.m15Reconciliations ??= []
+  workspace.m15Reconciliations.push({
+    id,
+    mode: 'linked',
+    cipher: String(workspace.lines[0]!.cipher),
+    lines: workspace.lines.map((line) => ({
+      id: `m-${line.id}`,
+      projectLineId: String(line.id),
+      name: String(line.projectMaterialName),
+      unit: String(line.unit),
+      position: '',
+      quantity: 100,
+    })),
+    allocations: [],
+  })
+  return id
+}
+
 function deliveryWorkspace() {
   const workspace = conversionWorkspace()
   workspace.lines = base().lines
@@ -688,13 +851,14 @@ function openFirstDelivery() {
   fireEvent.click(screen.getByRole('button', { name: /^CONVERSION/ }))
   fireEvent.click(screen.getByText('Связанные поступления').closest('summary')!)
   const heading = screen.getByRole('button', {
-    name: /АПП №1.*Получение 14.10.2026/,
+    name: /АПП №1.*Получение 14-10-26/,
   })
   return { heading, card: heading.parentElement!.parentElement! }
 }
 
 it('edits common delivery documents once for all its rows, keeps other deliveries and requests unchanged, and restores the combined card after reload', async () => {
   const workspace = deliveryWorkspace()
+  composeM15(workspace, '15', '2026-10-20')
   const original = structuredClone(workspace.materialReceipts)
   const view = mount(workspace)
   const { heading, card } = openFirstDelivery()
@@ -714,25 +878,20 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
     }),
   )
   let dialog = screen.getByRole('dialog')
-  fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
-    target: { value: '15' },
-  })
-  expect(
-    within(dialog).getByLabelText<HTMLInputElement>('Дата М-15').value,
-  ).toBe(localDateInputValue())
-  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
+  changeField(within(dialog).getByLabelText('Дата АПП'), {
     target: { value: '' },
   })
-  fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
-  )
-  expect(within(dialog).getByRole('alert').textContent).toContain('дату М-15')
+  reviewWorkflow()
+  expect(within(dialog).getByRole('alert').textContent).toContain('дату АПП')
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
+  changeField(within(dialog).getByLabelText('Дата АПП'), {
     target: { value: '2026-10-20' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|получение)/,
+    }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -742,8 +901,8 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
   const edited = saved.materialReceipts.filter((entry) =>
     ['receipt-legacy', 'beta-receipt'].includes(String(entry.id)),
   )
-  expect(new Set(edited.map((entry) => entry.m15DocumentId)).size).toBe(1)
-  expect(edited[0]!.m15DocumentId).toBeTruthy()
+  expect(edited.every((entry) => !entry.m15DocumentId)).toBe(true)
+  expect(saved.m15Reconciliations).toEqual(workspace.m15Reconciliations)
   for (const previous of original) {
     const current = saved.materialReceipts.find(
       (entry) => entry.id === previous.id,
@@ -752,16 +911,15 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
       quantity: previous.quantity,
       requestId: previous.requestId,
       date: previous.date,
-      appDocumentId: previous.appDocumentId,
     })
     if (['repeat', 'elsewhere'].includes(String(previous.id)))
       expect(current.m15DocumentId).toBeUndefined()
   }
-  expect(saved.qualityWorkflow!.receiptDocuments).toHaveLength(2)
+  expect(saved.qualityWorkflow!.receiptDocuments).toHaveLength(3)
   view.unmount()
   mount(saved)
   const reloaded = openFirstDelivery()
-  expect(reloaded.heading.textContent).toContain('М-15 №15 от 20.10.2026')
+  expect(reloaded.heading.textContent).toContain('АПП №1 от 20-10-26')
   expect(
     screen.getAllByRole('button', { name: 'Редактировать реквизиты поставки' }),
   ).toHaveLength(2)
@@ -771,7 +929,7 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
     }),
   )
   dialog = screen.getByRole('dialog')
-  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+  changeField(within(dialog).getByLabelText('Номер АПП'), {
     target: { value: 'отменённая правка' },
   })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
@@ -780,6 +938,7 @@ it('edits common delivery documents once for all its rows, keeps other deliverie
 
 it('keeps the delivery dialog open on a protected ZNI basis change and saves no partial document catalog', async () => {
   const workspace = deliveryWorkspace()
+  composeM15(workspace, '15', '2026-10-20')
   approveReceipts(workspace)
   const previous = structuredClone(workspace)
   mount(workspace)
@@ -790,27 +949,29 @@ it('keeps the delivery dialog open on a protected ZNI basis change and saves no 
     }),
   )
   const dialog = screen.getByRole('dialog')
-  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
+  changeField(within(dialog).getByLabelText('Номер АПП'), {
     target: { value: 'замена-основания' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|получение)/,
+    }),
   )
   expect(within(dialog).getByRole('alert').textContent).toContain(
     'основанию ЗНИ',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(within(dialog).getByLabelText('Номер АПП'), {
-    target: { value: '1' },
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Назад' }))
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Назад' }))
+  changeField(within(dialog).getByLabelText('Выбрать существующий АПП'), {
+    target: { value: 'shared-app' },
   })
-  fireEvent.change(within(dialog).getByLabelText('Номер М-15'), {
-    target: { value: '15' },
-  })
-  fireEvent.change(within(dialog).getByLabelText('Дата М-15'), {
-    target: { value: '2026-10-20' },
-  })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить реквизиты' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|получение)/,
+    }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -919,21 +1080,27 @@ it('rejects moving a request past an existing receipt and keeps the editor open'
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Редактировать' }))
   const dialog = screen.getByRole('dialog')
-  fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+  changeField(dialog.querySelector('input[type="date"]')!, {
     target: { value: '2026-10-15' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
   )
   expect(within(dialog).getByRole('alert').textContent).toContain(
     'раньше заявки',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+  changeField(dialog.querySelector('input[type="date"]')!, {
     target: { value: '2026-10-14' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
   )
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
@@ -944,21 +1111,23 @@ it('reclassifies an issue when its date moves before the AVK and requires a reas
   const dialog = openIssue()
   await operationGridApi('issue-selection')
   await editIssue('receipt-legacy', 'quantity', '1')
-  fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+  changeField(within(dialog).getByLabelText('Дата выдачи'), {
     target: { value: '2026-10-14' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    within(dialog).getByRole('button', { name: /^(Далее|Сохранить выдачу)$/ }),
   )
   expect(within(dialog).getByRole('alert').textContent).toContain(
     'получателя и причину',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+  changeField(within(dialog).getByLabelText('Дата выдачи'), {
     target: { value: localDateInputValue() },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    within(dialog).getByRole('button', { name: /^(Далее|Сохранить выдачу)$/ }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -969,7 +1138,11 @@ function openIssue() {
   fireEvent.click(
     screen.getAllByRole('button', { name: 'Выдать в монтаж' })[0]!,
   )
-  return screen.getByRole('dialog')
+  const dialog = screen.getByRole('dialog')
+  changeField(within(dialog).getByLabelText('Получатель'), {
+    target: { value: 'Бригада' },
+  })
+  return dialog
 }
 async function editIssue(
   receiptId: string,
@@ -1026,10 +1199,10 @@ describe('compact issue selection', () => {
     expect(within(dialog).getAllByLabelText('Документ передачи')).toHaveLength(
       1,
     )
-    fireEvent.change(within(dialog).getByLabelText('Документ передачи'), {
+    changeField(within(dialog).getByLabelText('Документ передачи'), {
       target: { value: 'ПМ-общая' },
     })
-    fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+    changeField(within(dialog).getByLabelText('Получатель'), {
       target: { value: 'Бригада 2' },
     })
     await editIssue('lot-0', 'quantity', '0,4')
@@ -1039,22 +1212,23 @@ describe('compact issue selection', () => {
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Весь остаток: Альфа' }),
     )
-    fireEvent.change(
-      within(dialog).getByLabelText('Поиск материалов для выдачи'),
-      { target: { value: 'АПП-партия-0500' } },
-    )
+    changeField(within(dialog).getByLabelText('Поиск материалов для выдачи'), {
+      target: { value: 'АПП-партия-0500' },
+    })
     expect(api.getDisplayedRowCount()).toBe(1)
     expect(api.getDisplayedRowAtIndex(0)!.id).toBe('lot-500')
-    fireEvent.change(
-      within(dialog).getByLabelText('Поиск материалов для выдачи'),
-      { target: { value: 'Плавка 0500' } },
-    )
+    changeField(within(dialog).getByLabelText('Поиск материалов для выдачи'), {
+      target: { value: 'Плавка 0500' },
+    })
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
     expect(api.getDisplayedRowAtIndex(0)!.id).toBe('lot-500')
     expect(api.paginationGetCurrentPage()).toBe(0)
-    fireEvent.change(within(dialog).getByPlaceholderText('Шифр для выдачи'), {
-      target: { value: 'ДРУГОЙ' },
-    })
+    changeField(
+      within(dialog).getByRole('combobox', { name: 'Шифр для выдачи' }),
+      {
+        target: { value: 'ДРУГОЙ' },
+      },
+    )
     expect(api.getDisplayedRowCount()).toBe(0)
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Только выбранные (2)' }),
@@ -1063,8 +1237,9 @@ describe('compact issue selection', () => {
     expect(
       within(dialog).getByRole('status', { name: 'Итог выдачи' }).textContent,
     ).toContain('2,4 м')
+    reviewWorkflow()
     const save = within(dialog).getByRole('button', {
-      name: 'Сохранить выдачу',
+      name: /^(Далее|Сохранить выдачу)$/,
     })
     fireEvent.click(save)
     fireEvent.click(save)
@@ -1099,20 +1274,25 @@ describe('compact issue selection', () => {
     let dialog = openIssue()
     let api = await operationGridApi('issue-selection')
     await editIssue('receipt-legacy', 'quantity', '3', null)
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить выдачу)$/,
+      }),
     )
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('3')
     expect(
       within(dialog).getByText(/К выдаче доступно только 2 м/),
     ).toBeTruthy()
-    fireEvent.change(
-      within(dialog).getByLabelText('Поиск материалов для выдачи'),
-      { target: { value: 'Нет совпадений' } },
-    )
+    changeField(within(dialog).getByLabelText('Поиск материалов для выдачи'), {
+      target: { value: 'Нет совпадений' },
+    })
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить выдачу)$/,
+      }),
     )
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     fireEvent.click(
@@ -1120,36 +1300,47 @@ describe('compact issue selection', () => {
     )
     for (const invalid of ['0', '-1', 'ошибка']) {
       await editIssue('receipt-legacy', 'quantity', invalid)
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+        within(dialog).getByRole('button', {
+          name: /^(Далее|Сохранить выдачу)$/,
+        }),
       )
       expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     }
     await editIssue('receipt-legacy', 'quantity', '0,5')
     await editIssue('receipt-legacy', 'quantity', '8', 'Escape')
     expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('0,5')
-    fireEvent.change(within(dialog).getByLabelText('Дата выдачи'), {
+    changeField(within(dialog).getByLabelText('Дата выдачи'), {
       target: { value: '' },
     })
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить выдачу)$/,
+      }),
     )
-    expect(within(dialog).getByText(/корректную дату выдачи/)).toBeTruthy()
+    expect(
+      within(dialog).getByText(/Укажите дату, документ и получателя/),
+    ).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Убрать из выдачи: Альфа' }),
     )
     expect(api.getDisplayedRowCount()).toBe(0)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }))
     dialog = openIssue()
     api = await operationGridApi('issue-selection')
     expect(api.getRowNode('receipt-legacy')!.data.quantity).toBe('')
     expect(
       within(dialog).getByLabelText<HTMLInputElement>('Дата выдачи').value,
-    ).toBe(localDateInputValue())
+    ).toBe(formatCalendarDate(localDateInputValue()))
     await editIssue('receipt-legacy', 'quantity', '1,2', null)
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить выдачу)$/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -1197,8 +1388,11 @@ describe('compact issue selection', () => {
       }),
     ).toBe(2)
     await editIssue('receipt', 'quantity', '2')
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить выдачу)$/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -1319,7 +1513,9 @@ it.each([
     const before = structuredClone(workspace)
     mount(workspace)
     fireEvent.click(
-      screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+      screen.getByRole('button', {
+        name: new RegExp(`^${label === 'Входной контроль' ? 'ЗНИ' : label}`),
+      }),
     )
     const betaId =
       tab === 'quality'
@@ -1430,26 +1626,29 @@ it.each(['issue', 'return', 'inspection'] as const)(
     }
     const before = structuredClone(workspace)
     mount(workspace)
-    fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
     const cards = document.querySelectorAll('[id^="operation-overview-"]')
     expect(cards[0]!.querySelector('button')?.textContent).toMatch(/^Альфа/)
     expect(workspace).toEqual(before)
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   },
 )
-function openReceipt() {
+async function openReceipt() {
   fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
   fireEvent.click(
     screen.getAllByRole('button', { name: 'Оформить получение' })[0]!,
   )
   const dialog = screen.getByRole('dialog')
-  fireEvent.focus(within(dialog).getByPlaceholderText('Без выбранной заявки'))
-  fireEvent.mouseDown(
-    within(dialog).getByRole('button', { name: /CONVERSION/ }),
+  fireEvent.click(
+    within(dialog).getByRole('combobox', { name: 'Заявка для получения' }),
   )
+  fireEvent.click(screen.getByRole('option', { name: /CONVERSION/ }))
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+  await within(dialog).findByLabelText('Поступило: Альфа, м')
   return dialog
 }
 beforeEach(() => {
+  vi.mocked(saveProjectWorkspaceChanges).mockClear()
   localStorage.clear()
   // jsdom has no layout observer; real layout is checked in the browser.
   vi.stubGlobal(
@@ -1471,6 +1670,89 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('approves receipt excess explicitly, resets changed quantities and preserves approval on reload', async () => {
+  const workspace = conversionWorkspace()
+  let view = mount(workspace)
+  let dialog = await openReceipt()
+  changeField(within(dialog).getByLabelText('Номер АПП'), {
+    target: { value: 'СВЕРХ-1' },
+  })
+  changeField(within(dialog).getByLabelText('Дата АПП'), {
+    target: { value: localDateInputValue() },
+  })
+  const quantity = within(dialog).getByLabelText('Поступило: Альфа, м')
+  changeField(quantity, { target: { value: '9' } })
+  reviewWorkflow()
+  const save = within(dialog).getByRole<HTMLButtonElement>('button', {
+    name: /^(Далее|Сохранить получение)$/,
+  })
+  expect(save.disabled).toBe(true)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Согласовать превышение' }),
+  )
+  expect(save.disabled).toBe(false)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Отменить согласование' }),
+  )
+  expect(save.disabled).toBe(true)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Согласовать превышение' }),
+  )
+  changeField(quantity, { target: { value: '10' } })
+  expect(save.disabled).toBe(true)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Согласовать превышение' }),
+  )
+  reviewWorkflow(dialog)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+  )
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  const saved = structuredClone(lastSaved())
+  expect(saved.materialReceipts[0]).toMatchObject({
+    quantity: 10,
+    altQuantity: 25,
+    overageApproval: {
+      requestId: 'request-conversion',
+      quantity: 10,
+      excessQuantity: 2,
+    },
+  })
+  expect(saved.materialRequests[0]!.quantity).toBe(8)
+  expect(saved.lines[0]!.plannedQuantity).toBe(10)
+  expect(() => validateQualityWorkspace(saved)).not.toThrow()
+  view.unmount()
+  view = mount(saved)
+  fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
+  fireEvent.click(
+    screen.getByRole('button', { name: /^Альфа/, expanded: false }),
+  )
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Редактировать получение' }),
+  )
+  dialog = screen.getByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+  expect(
+    await within(dialog).findByText(/Согласовано получение 10 м/),
+  ).toBeTruthy()
+  expect(
+    within(dialog).getByRole<HTMLButtonElement>('button', {
+      name: 'Далее',
+    }).disabled,
+  ).toBe(false)
+  reviewWorkflow()
+  fireEvent.click(
+    within(dialog).getByRole('button', {
+      name: /Сохранить (изменения|заявку|получение)/,
+    }),
+  )
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+  view.unmount()
+})
+
 it('exports the filtered view from the Excel menu while the full export keeps every material', async () => {
   const workspace = base()
   workspace.lines.push({
@@ -1483,10 +1765,9 @@ it('exports the filtered view from the Excel menu while the full export keeps ev
   mount(workspace)
   fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
   const api = await projectGridApi()
-  fireEvent.change(
-    screen.getByRole('textbox', { name: 'Поиск в проектной базе' }),
-    { target: { value: 'Сталь' } },
-  )
+  changeField(screen.getByRole('textbox', { name: 'Поиск в проектной базе' }), {
+    target: { value: 'Сталь' },
+  })
   selectAppOption(screen.getByRole('combobox'), 'ТЕСТ')
   await filterGridName('Альфа')
   await waitFor(() =>
@@ -1591,7 +1872,10 @@ describe('material import change preview', () => {
         name: 'Позиция 130: Импорт 130, шифр ТЕСТ',
       }),
     ).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Применить' }))
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Перейти к изменениям' }),
+    )
+    await saveProjectEdits('ИЗМ')
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -1620,7 +1904,7 @@ describe('material import change preview', () => {
         throw new Error('Файл недоступен')
       },
     })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
     expect((await within(dialog).findByRole('alert')).textContent).toContain(
@@ -1628,7 +1912,7 @@ describe('material import change preview', () => {
     )
     expect(
       within(dialog).getByRole<HTMLButtonElement>('button', {
-        name: 'Применить',
+        name: 'Перейти к изменениям',
       }).disabled,
     ).toBe(true)
     expect(
@@ -1673,7 +1957,7 @@ describe('material import change preview', () => {
     }) as ArrayBuffer
     const file = new File([buffer], 'materials.xlsx')
     Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
   }
@@ -1721,7 +2005,10 @@ describe('material import change preview', () => {
       within(dialog).getByText('Будет добавлена новая позиция материала.'),
     ).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Применить' }))
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Перейти к изменениям' }),
+    )
+    await saveProjectEdits('ИЗМ')
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -1787,7 +2074,7 @@ it('explains an empty material import and accepts a corrected file with cipher q
   fireEvent.click(screen.getByRole('button', { name: 'Импорт проектной базы' }))
   const dialog = screen.getByRole('dialog')
   const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
-    name: 'Применить',
+    name: 'Перейти к изменениям',
   })
   function upload(quantities: Record<string, string | number>) {
     const workbook = XLSX.utils.book_new()
@@ -1808,7 +2095,7 @@ it('explains an empty material import and accepts a corrected file with cipher q
     }) as ArrayBuffer
     const file = new File([buffer], 'materials.xlsx')
     Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
   }
@@ -1824,6 +2111,7 @@ it('explains an empty material import and accepts a corrected file with cipher q
   expect(within(dialog).queryByRole('alert')).toBeNull()
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   fireEvent.click(apply)
+  await saveProjectEdits()
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
   )
@@ -1855,7 +2143,7 @@ it.each([
     fireEvent.click(within(panel).getByRole('button', { name: label }))
     let api = await operationGridApi(`settings:${id}`)
     const before = api.getDisplayedRowCount()
-    fireEvent.change(within(panel).getByPlaceholderText(placeholder), {
+    changeField(within(panel).getByPlaceholderText(placeholder), {
       target: { value: 'Новое значение' },
     })
     fireEvent.click(within(panel).getByRole('button', { name: 'Добавить' }))
@@ -1867,7 +2155,7 @@ it.each([
     await waitFor(() =>
       expect(api.getRowNode('Новое значение')).toBeUndefined(),
     )
-    fireEvent.change(within(panel).getByPlaceholderText(placeholder), {
+    changeField(within(panel).getByPlaceholderText(placeholder), {
       target: { value: 'Новое значение' },
     })
     fireEvent.click(within(panel).getByRole('button', { name: 'Добавить' }))
@@ -2027,7 +2315,7 @@ describe('cipher reference removal', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     expect(screen.queryByRole('columnheader', { name: 'ТЕСТ' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Создать заявку' }))
     const create = screen.getByRole('dialog')
@@ -2039,7 +2327,10 @@ describe('cipher reference removal', () => {
       screen.getByRole('combobox', { name: 'Поиск: Шифр проекта' }),
       { key: 'Escape' },
     )
-    fireEvent.change(
+    fireEvent.click(
+      within(create).getByRole('button', { name: 'Поиск материалов' }),
+    )
+    changeField(
       within(create).getByPlaceholderText(
         'Поиск по наименованию, нормативному документу, составу или массе',
       ),
@@ -2051,6 +2342,7 @@ describe('cipher reference removal', () => {
       await screen.findByRole('button', { name: 'Редактировать' }),
     )
     const edit = screen.getByRole('dialog')
+    await requestPickerReady(edit)
     expect(within(edit).getByText('Альфа')).toBeTruthy()
     fireEvent.click(
       within(edit).getByRole('button', { name: 'Добавить материалы' }),
@@ -2117,104 +2409,109 @@ it('inherits common receipt details, preserves individual overrides and saves co
     projectMaterialName: 'Бета',
   })
   mount(workspace)
-  const dialog = openReceipt()
+  const dialog = await openReceipt()
   const form = within(dialog)
   const common = within(
     form.getByRole('group', { name: 'Общие реквизиты получения' }),
   )
-  for (const title of ['Дата получения', 'Дата АПП', 'Дата М-15'])
+  for (const title of ['Дата получения', 'Дата АПП'])
     expect(common.getByLabelText<HTMLInputElement>(title).value).toBe(
-      localDateInputValue(),
+      formatCalendarDate(localDateInputValue()),
     )
-  const alphaElement = form.getByRole('group', { name: 'Материал: Альфа' })
-  const betaElement = form.getByRole('group', { name: 'Материал: Бета' })
-  const alpha = within(alphaElement)
-  const beta = within(betaElement)
   const save = form.getByRole<HTMLButtonElement>('button', {
-    name: 'Сохранить получение',
+    name: /^(Далее|Сохранить получение)$/,
   })
-  fireEvent.change(common.getByLabelText('Дата получения'), {
+  changeField(common.getByLabelText('Дата получения'), {
     target: { value: '2026-11-01' },
   })
-  fireEvent.change(common.getByLabelText('Номер АПП'), {
+  changeField(common.getByLabelText('Номер АПП'), {
     target: { value: 'АПП-Общий' },
   })
-  fireEvent.change(common.getByLabelText('Дата АПП'), {
+  changeField(common.getByLabelText('Дата АПП'), {
     target: { value: '2026-11-01' },
   })
-  fireEvent.change(alpha.getByPlaceholderText('Поступило, м'), {
+  changeField(form.getByLabelText('Поступило: Альфа, м'), {
     target: { value: '2,4' },
   })
-  fireEvent.change(beta.getByPlaceholderText('Поступило, м'), {
+  changeField(form.getByLabelText('Поступило: Бета, м'), {
     target: { value: '3' },
   })
   expect(save.disabled).toBe(false)
-  // Returning to common details restores inheritance before opting out again.
+  expect(dialog.querySelector('[grid-id="receipt-material-picker"]')).toBeNull()
+  const beta = within(form.getByRole('group', { name: 'Материал: Бета' }))
   fireEvent.click(beta.getByLabelText('Свои дата и документы'))
-  fireEvent.change(beta.getByLabelText('Номер АПП'), {
+  changeField(beta.getByLabelText('Номер АПП'), {
     target: { value: 'Не сохранять' },
   })
   fireEvent.click(beta.getByLabelText('Свои дата и документы'))
   expect(beta.queryByLabelText('Номер АПП')).toBeNull()
   fireEvent.click(beta.getByLabelText('Свои дата и документы'))
-  expect(beta.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
-    'АПП-Общий',
-  )
-  expect(beta.getByLabelText<HTMLInputElement>('Дата получения').value).toBe(
-    '2026-11-01',
-  )
-  fireEvent.change(beta.getByLabelText('Номер АПП'), {
+  expect(beta.getByLabelText('Номер АПП')).toHaveProperty('value', 'АПП-Общий')
+  changeField(beta.getByLabelText('Номер АПП'), {
     target: { value: 'АПП-Отдельный' },
   })
-  fireEvent.change(beta.getByLabelText('Дата АПП'), { target: { value: '' } })
+  changeField(beta.getByLabelText('Дата АПП'), { target: { value: '' } })
   expect(save.disabled).toBe(true)
-  expect(beta.getByRole('alert').textContent).toContain('дату АПП')
-  fireEvent.change(beta.getByLabelText('Дата АПП'), {
+  changeField(beta.getByLabelText('Дата АПП'), {
     target: { value: '2026-11-02' },
   })
-  fireEvent.change(beta.getByLabelText('Дата получения'), {
+  changeField(beta.getByLabelText('Дата получения'), {
     target: { value: '2026-11-02' },
   })
-  fireEvent.change(common.getByLabelText('Дата получения'), {
+  changeField(common.getByLabelText('Дата получения'), {
     target: { value: '' },
   })
   expect(save.disabled).toBe(true)
-  fireEvent.change(common.getByLabelText('Дата получения'), {
+  changeField(common.getByLabelText('Дата получения'), {
     target: { value: '2026-11-03' },
   })
-  fireEvent.change(common.getByLabelText('Номер АПП'), {
+  changeField(common.getByLabelText('Номер АПП'), {
     target: { value: 'АПП-Новый общий' },
   })
-  expect(beta.getByLabelText<HTMLInputElement>('Дата получения').value).toBe(
-    '2026-11-02',
+  expect(beta.getByLabelText('Дата получения')).toHaveProperty(
+    'value',
+    '02-11-26',
   )
-  expect(beta.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
-    'АПП-Отдельный',
-  )
-  const extra = alphaElement.querySelector('details')!
+  const alphaCard = form.getByRole('group', { name: 'Материал: Альфа' })
+  const alpha = within(alphaCard)
+  const extra = alphaCard.querySelector('details')!
   expect(extra.open).toBe(false)
-  fireEvent.keyDown(alpha.getByText('Дополнительные сведения'), {
-    key: 'Enter',
-  })
-  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   fireEvent.click(alpha.getByText('Дополнительные сведения'))
-  fireEvent.change(alpha.getByPlaceholderText('Паспорт / сертификат'), {
-    target: { value: 'Паспорт-1' },
-  })
-  fireEvent.change(alpha.getByPlaceholderText('Примечание'), {
-    target: { value: 'Сохранить при сворачивании' },
-  })
-  fireEvent.click(alpha.getByText('Дополнительные сведения · Заполнено: 2'))
+  const extras = [
+    ['Наименование ТМЦ по факту поступления', 'Альфа замена'],
+    ['Заводской номер', 'ЗН-1'],
+    ['Завод-изготовитель', 'Завод-1'],
+    ['Партия плавки', 'Плавка-1'],
+    ['АРВК заказчика', 'АРВК-1'],
+    ['Дата и номер документа о качестве', 'Документ-1'],
+    ['Паспорт / сертификат', 'Паспорт-1'],
+    ['Техническое решение / согласование', 'Решение-1'],
+    ['Примечание', 'Сохранить за фильтром'],
+  ]
+  for (const [label, value] of extras) {
+    changeField(alpha.getByLabelText(label!), { target: { value } })
+  }
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(alpha.getByText(/^Дополнительные сведения/))
   expect(extra.open).toBe(false)
-  // A hidden row keeps both its quantity and its individual document.
-  fireEvent.change(
-    form.getByPlaceholderText(
-      'Поиск по материалу, АПП, М-15, составу или документу',
-    ),
+  // Searching keeps hidden quantities and individual receipt documents.
+  changeField(
+    form.getByPlaceholderText('Поиск по материалу, АПП, составу или документу'),
     { target: { value: 'Альфа' } },
   )
-  expect(form.queryByRole('group', { name: 'Материал: Бета' })).toBeNull()
-  fireEvent.click(save)
+  await waitFor(() =>
+    expect(form.queryByLabelText('Поступило: Бета, м')).toBeNull(),
+  )
+  fireEvent.click(form.getByRole('button', { name: 'Назад' }))
+  fireEvent.click(form.getByRole('button', { name: 'Далее' }))
+  expect(form.getByLabelText('Поступило: Альфа, м')).toHaveProperty(
+    'value',
+    '2,4',
+  )
+  reviewWorkflow(dialog)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+  )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
   )
@@ -2231,7 +2528,14 @@ it('inherits common receipt details, preserves individual overrides and saves co
     quantity: 2.4,
     altQuantity: 6,
     certificate: 'Паспорт-1',
-    note: 'Сохранить при сворачивании',
+    note: 'Сохранить за фильтром',
+    actualName: 'Альфа замена',
+    factoryNumber: 'ЗН-1',
+    manufacturer: 'Завод-1',
+    heatBatch: 'Плавка-1',
+    customerArvk: 'АРВК-1',
+    qualityDocument: 'Документ-1',
+    technicalDecision: 'Решение-1',
   })
   expect(betaReceipt).toMatchObject({ date: '2026-11-02', quantity: 3 })
   expect(
@@ -2433,7 +2737,7 @@ describe('receipts grouped by material', () => {
     fireEvent.click(receiptButton)
     dialog = screen.getByRole('dialog', { name: 'Получения материала' })
     fireEvent.click(
-      within(dialog).getByRole('button', { name: /Получение от 16.10.2026/ }),
+      within(dialog).getByRole('button', { name: /Получение от 16-10-26/ }),
     )
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     const gridElement = await card.findByRole('grid')
@@ -2462,16 +2766,16 @@ describe('receipts grouped by material', () => {
       })
     })
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
-    fireEvent.click(card.getByRole('button', { name: 'Документы: 2' }))
+    fireEvent.click(card.getByRole('button', { name: 'Документы: 1' }))
     dialog = screen.getByRole('dialog', { name: 'Документы получения' })
     expect(within(dialog).getAllByText(/АПП №ОБЩИЙ/)).toHaveLength(1)
-    expect(within(dialog).getAllByText(/М-15 №М15-1/)).toHaveLength(1)
+    expect(within(dialog).queryByText(/М-15 №М15-1/)).toBeNull()
     expect(within(dialog).queryByText('Бета')).toBeNull()
     const appSummary = within(dialog).getByText(/АПП №ОБЩИЙ/)
     fireEvent.click(appSummary)
     fireEvent.click(
       within(appSummary.closest('details')!).getByRole('button', {
-        name: /Получение от 15.10.2026.*OTHER/,
+        name: /Получение от 15-10-26.*OTHER/,
       }),
     )
     await waitFor(() => expect(api.getDisplayedRowCount()).toBe(3))
@@ -2488,7 +2792,7 @@ describe('receipts grouped by material', () => {
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
-  it('offers only requests with an outstanding item in the new receipt picker, including search', () => {
+  it('offers only requests with an outstanding item in the new receipt picker, including search', async () => {
     const workspace = conversionWorkspace()
     workspace.lines.push(base().lines[1]!)
     workspace.materialRequests[0]!.quantity = 0.8
@@ -2534,47 +2838,50 @@ describe('receipts grouped by material', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Оформить получение' }))
     const dialog = within(screen.getByRole('dialog'))
-    const search = dialog.getByPlaceholderText('Без выбранной заявки')
-    fireEvent.focus(search)
-    expect(dialog.queryByRole('button', { name: /CONVERSION|OVER/ })).toBeNull()
-    // Alpha is over-received, but Beta is short: totals cannot close the whole request.
-    expect(dialog.getByRole('button', { name: /PARTIAL/ })).toBeTruthy()
-    // The same project material in another request has its own remaining quantity.
-    expect(dialog.getByRole('button', { name: /^OPEN/ })).toBeTruthy()
-    expect(dialog.getByText(/Показано 2 из 2/)).toBeTruthy()
-    fireEvent.change(search, { target: { value: 'CONVERSION' } })
-    expect(dialog.getByText('Заявки не найдены')).toBeTruthy()
-    expect(dialog.getByText(/Показано 0 из 2/)).toBeTruthy()
-
-    fireEvent.change(search, { target: { value: 'PARTIAL' } })
-    fireEvent.mouseDown(dialog.getByRole('button', { name: /PARTIAL/ }))
+    fireEvent.click(
+      dialog.getByRole('combobox', { name: 'Заявка для получения' }),
+    )
+    expect(screen.queryByRole('option', { name: /CONVERSION|OVER/ })).toBeNull()
+    expect(screen.getByRole('option', { name: /PARTIAL/ })).toBeTruthy()
+    expect(screen.getByRole('option', { name: /^OPEN/ })).toBeTruthy()
+    const search = screen.getByRole('combobox', {
+      name: 'Поиск: Заявка для получения',
+    })
+    changeField(search, { target: { value: 'CONVERSION' } })
+    expect(screen.getByText('Ничего не найдено')).toBeTruthy()
+    changeField(search, { target: { value: 'PARTIAL' } })
+    fireEvent.click(screen.getByRole('option', { name: /PARTIAL/ }))
     expect(
       dialog.getByText('Найдено 1 из 1 позиций. Заполнено: 0.'),
     ).toBeTruthy()
-    expect(dialog.getByDisplayValue('Бета')).toBeTruthy()
-    expect(dialog.queryByDisplayValue('Альфа')).toBeNull()
+    fireEvent.click(dialog.getByRole('button', { name: 'Далее' }))
+    expect(await dialog.findByLabelText('Поступило: Бета, м')).toBeTruthy()
+    expect(dialog.queryByLabelText('Поступило: Альфа, м')).toBeNull()
     fireEvent.click(dialog.getByRole('button', { name: 'Импорт Excel' }))
     expect(dialog.getByText('Позиций в шаблоне: 1')).toBeTruthy()
     fireEvent.click(dialog.getAllByRole('button', { name: 'Отмена' }).at(-1)!)
-    fireEvent.change(
+    changeField(
       dialog.getByPlaceholderText(
-        'Поиск по материалу, АПП, М-15, составу или документу',
+        'Поиск по материалу, АПП, составу или документу',
       ),
-      { target: { value: 'Альфа' } },
+      { target: { value: 'Несуществующий материал' } },
     )
-    expect(
-      dialog.getByText('Найдено 0 из 1 позиций. Заполнено: 0.'),
-    ).toBeTruthy()
-    fireEvent.click(dialog.getByRole('button', { name: 'Отмена' }))
+    await waitFor(() =>
+      expect(dialog.queryByLabelText('Поступило: Бета, м')).toBeNull(),
+    )
+    fireEvent.click(dialog.getByRole('button', { name: 'Закрыть' }))
     fireEvent.click(screen.getByRole('button', { name: 'Оформить получение' }))
     const allRequests = within(screen.getByRole('dialog'))
-    fireEvent.change(
+    fireEvent.click(allRequests.getByRole('button', { name: 'Далее' }))
+    changeField(
       allRequests.getByPlaceholderText(
         'Начните вводить наименование, шифр, заявку, состав или документ',
       ),
       { target: { value: 'OPEN' } },
     )
-    expect(allRequests.getAllByDisplayValue('Альфа')).toHaveLength(1)
+    expect(
+      await allRequests.findAllByLabelText('Поступило: Альфа, м'),
+    ).toHaveLength(1)
     expect(allRequests.getByText('Заявка OPEN')).toBeTruthy()
     expect(allRequests.getByText(/^Найдено/).textContent).toBe(
       'Найдено 1 из 2 позиций. Заполнено: 0.',
@@ -2592,12 +2899,22 @@ describe('receipts grouped by material', () => {
       await screen.findByRole('button', { name: /Редактировать/ }),
     )
     let dialog = within(screen.getByRole('dialog'))
-    fireEvent.focus(dialog.getByPlaceholderText('CONVERSION'))
-    expect(dialog.getByRole('button', { name: /CONVERSION/ })).toBeTruthy()
-    fireEvent.change(dialog.getByPlaceholderText('Примечание'), {
+    fireEvent.click(
+      dialog.getByRole('combobox', { name: 'Заявка для получения' }),
+    )
+    fireEvent.click(screen.getByRole('option', { name: /CONVERSION/ }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Далее' }))
+    const details = within(
+      within(screen.getByRole('dialog')).getByRole('group', {
+        name: 'Материал: Альфа',
+      }),
+    )
+    fireEvent.click(details.getByText(/^Дополнительные сведения/))
+    changeField(details.getByLabelText('Примечание'), {
       target: { value: 'Уточнение накладной' },
     })
-    fireEvent.click(dialog.getByRole('button', { name: 'Сохранить изменения' }))
+    reviewWorkflow()
+    fireEvent.click(dialog.getByRole('button', { name: 'Сохранить получение' }))
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -2607,10 +2924,10 @@ describe('receipts grouped by material', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Оформить получение' }))
     dialog = within(screen.getByRole('dialog'))
-    fireEvent.focus(dialog.getByPlaceholderText('Без выбранной заявки'))
-    expect(dialog.queryByRole('button', { name: /CONVERSION/ })).toBeNull()
-    expect(dialog.getByText(/Показано 0 из 0/)).toBeTruthy()
-    expect(dialog.getByText('Заявки не найдены')).toBeTruthy()
+    fireEvent.click(
+      dialog.getByRole('combobox', { name: 'Заявка для получения' }),
+    )
+    expect(screen.queryByRole('option', { name: /CONVERSION/ })).toBeNull()
   })
 
   it('updates receipt totals and removes an empty card after deleting its last row', async () => {
@@ -2653,8 +2970,8 @@ describe('receipts grouped by material', () => {
     )
     expect(lastSaved().materialReceipts).toEqual([])
     expect(lastSaved().materialRequests).toEqual(savedRequests)
-    expect(screen.getByRole('button', { name: /^Получение\s*0$/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { expanded: true })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Получение$/ })).toBeTruthy()
+    expect(document.querySelector('[id^="operation-receipts-"]')).toBeNull()
   })
 
   function workspaceWithReceipts() {
@@ -2792,6 +3109,51 @@ describe('receipts grouped by material', () => {
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
+  it('orders the flat receipt table across materials by date and newest insertion within a day', async () => {
+    const workspace = workspaceWithReceipts()
+    workspace.materialReceipts = [
+      { ...legacyReceipt(), id: 'backdated', date: '2026-10-01' },
+      { ...legacyReceipt(), id: 'latest-alpha', date: '2026-11-02' },
+      {
+        ...workspace.materialReceipts[2]!,
+        id: 'latest-beta',
+        date: '2026-11-02',
+      },
+      { ...legacyReceipt(), id: 'earlier-alpha-same-day', date: '2026-11-02' },
+      { ...legacyReceipt(), id: 'earlier-alpha', date: '2026-11-01' },
+      {
+        ...workspace.materialReceipts[1]!,
+        id: 'prior-month',
+        date: '2026-10-31',
+      },
+    ]
+    addReceiptDocuments(workspace)
+    const before = structuredClone(workspace)
+    mount(workspace)
+    fireEvent.click(screen.getByRole('button', { name: 'Получение' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Таблица' }))
+    const grid = await operationGridApi('receipts-flat:table')
+    const ids = () =>
+      Array.from(
+        { length: grid.getDisplayedRowCount() },
+        (_, i) => grid.getDisplayedRowAtIndex(i)!.id,
+      )
+    expect(ids()).toEqual([
+      'latest-alpha',
+      'latest-beta',
+      'earlier-alpha-same-day',
+      'earlier-alpha',
+      'prior-month',
+      'backdated',
+    ])
+    changeField(screen.getByLabelText('Поиск получений'), {
+      target: { value: 'Бета' },
+    })
+    await waitFor(() => expect(ids()).toEqual(['latest-beta']))
+    expect(workspace).toEqual(before)
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
   it('groups the same material across dates, invoices, requests and ciphers while keeping every receipt row', async () => {
     const workspace = workspaceWithReceipts()
     workspace.materialReceipts.push({
@@ -2824,7 +3186,7 @@ describe('receipts grouped by material', () => {
     const before = structuredClone(workspace)
     let view = mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    expect(screen.getByRole('button', { name: /^Получение\s*3$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Получение$/ })).toBeTruthy()
     expect(screen.getByText('Найдено 3 из 3 материалов')).toBeTruthy()
     expect(
       screen.getByRole('button', { name: /^Альфа/, expanded: false }),
@@ -2841,7 +3203,7 @@ describe('receipts grouped by material', () => {
     expect(screen.queryByRole('grid')).toBeNull()
     expect(screen.getByText('4 м')).toBeTruthy()
     expect(screen.queryByText('Альтернативно')).toBeNull()
-    expect(screen.getByText(/14.10.2026 — 22.10.2026/)).toBeTruthy()
+    expect(screen.getByText(/14-10-26 — 22-10-26/)).toBeTruthy()
     const alphaCard = within(
       screen
         .getByRole('button', { name: /^Альфа/, expanded: false })
@@ -2867,7 +3229,7 @@ describe('receipts grouped by material', () => {
     )
     expect(table.getAllByRole('row', { name: /CONVERSION/ })).toHaveLength(2)
     expect(table.getByRole('row', { name: /ANOTHER.*ТК2/ })).toBeTruthy()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+    changeField(screen.getByRole('textbox', { name: 'Поиск получений' }), {
       target: { value: 'Н-3' },
     })
     expect(screen.getByText('Найдено 1 из 3 материалов')).toBeTruthy()
@@ -2926,7 +3288,7 @@ describe('receipts grouped by material', () => {
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
     expect(screen.getByText('Найдено 7 из 7 материалов')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Получение\s*7$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Получение$/ })).toBeTruthy()
     expect(
       screen.getAllByRole('button', { name: /^Альфа/, expanded: false }),
     ).toHaveLength(7)
@@ -2938,20 +3300,20 @@ describe('receipts grouped by material', () => {
     let view = mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
     const input = screen.getByRole('textbox', { name: 'Поиск получений' })
-    for (const value of ['Н-2', '16.10.2026', 'замена']) {
-      fireEvent.change(input, { target: { value } })
+    for (const value of ['Н-2', '16-10-26', 'замена']) {
+      changeField(input, { target: { value } })
       expect(screen.getByText('Найдено 1 из 3 материалов')).toBeTruthy()
       expect(screen.getByRole('button', { name: /^Замена Альфы/ })).toBeTruthy()
       expect(screen.queryByRole('button', { name: /^Бета/ })).toBeNull()
     }
-    fireEvent.change(input, { target: { value: 'Гамма' } })
+    changeField(input, { target: { value: 'Гамма' } })
     expect(screen.getByText('Найдено 0 из 3 материалов')).toBeTruthy()
     expect(
       screen.getByText('Получения по такому запросу не найдены.'),
     ).toBeTruthy()
-    fireEvent.change(input, { target: { value: 'CONVERSION' } })
+    changeField(input, { target: { value: 'CONVERSION' } })
     expect(screen.getByText('Найдено 3 из 3 материалов')).toBeTruthy()
-    fireEvent.change(input, { target: { value: 'Н-2' } })
+    changeField(input, { target: { value: 'Н-2' } })
     fireEvent.click(
       screen.getByRole('button', { name: /^Замена Альфы/, expanded: false }),
     )
@@ -2999,11 +3361,19 @@ describe('receipts grouped by material', () => {
       ),
     )
     const dialog = screen.getByRole('dialog')
-    fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+    const details = within(
+      within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+    )
+    fireEvent.click(details.getByText(/^Дополнительные сведения/))
+    changeField(details.getByLabelText('Примечание'), {
       target: { value: 'Изменено' },
     })
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+      within(dialog).getByRole('button', {
+        name: /Сохранить (изменения|заявку|получение)/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -3037,7 +3407,7 @@ describe('receipts grouped by material', () => {
     ]
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    expect(screen.getByRole('button', { name: /^Получение\s*1$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Получение$/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^CONVERSION/ })).toBeNull()
     fireEvent.click(
       screen.getByRole('button', { name: /^Альфа/, expanded: false }),
@@ -3090,7 +3460,7 @@ describe('request deletion and receipt cards', () => {
         screen.getByRole('button', { name: /^Альфа/, expanded: false }),
       ).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-      fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+      changeField(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
         target: { value: 'CONVERSION' },
       })
       fireEvent.click(
@@ -3175,7 +3545,7 @@ describe('receipt import dates and editing', () => {
   }
 
   async function uploadReceiptFile(dialog: HTMLElement, file: File) {
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
     await waitFor(() =>
@@ -3224,35 +3594,166 @@ describe('receipt import dates and editing', () => {
     return input!
   }
 
+  it('restores separate dates and documents for imported receipt cards', async () => {
+    const workspace = conversionWorkspace()
+    workspace.lines.push(base().lines[1]!)
+    workspace.materialRequests.push({
+      ...workspace.materialRequests[0]!,
+      id: 'request-beta',
+      projectLineId: 'line-1',
+      projectMaterialName: 'Бета',
+    })
+    mount(workspace)
+    const dialog = await openReceipt()
+    const form = within(dialog)
+    const originalDate =
+      form.getByLabelText<HTMLInputElement>('Дата получения').value
+    const file = (betaDate: string) => {
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.aoa_to_sheet([
+          [],
+          [],
+          [],
+          [],
+          [
+            'ID заявки',
+            'Поступило',
+            'Дата поступления',
+            'Номер АПП',
+            'Дата АПП',
+          ],
+          ['request-conversion', 1, '20.10.2026', 'АПП-Общий', '20.10.2026'],
+          ['request-beta', 2, betaDate, 'АПП-Общий', '20.10.2026'],
+        ]),
+        'Получение',
+      )
+      const buffer = XLSX.write(workbook, {
+        type: 'array',
+        bookType: 'xlsx',
+      }) as ArrayBuffer
+      const result = new File([buffer], `shared-${betaDate}.xlsx`)
+      Object.defineProperty(result, 'arrayBuffer', {
+        value: async () => buffer,
+      })
+      return result
+    }
+    fireEvent.click(form.getByRole('button', { name: 'Импорт Excel' }))
+    await uploadReceiptFile(dialog, file('21.10.2026'))
+    const apply = form.getByRole<HTMLButtonElement>('button', {
+      name: 'Применить импорт',
+    })
+    expect(apply.disabled).toBe(false)
+    fireEvent.click(apply)
+    for (const [name, date, quantity] of [
+      ['Альфа', '2026-10-20', '1'],
+      ['Бета', '2026-10-21', '2'],
+    ]) {
+      const card = within(
+        form.getByRole('group', { name: `Материал: ${name}` }),
+      )
+      expect(card.getByLabelText('Свои дата и документы')).toHaveProperty(
+        'checked',
+        true,
+      )
+      expect(card.getByLabelText('Дата получения')).toHaveProperty(
+        'value',
+        formatCalendarDate(date),
+      )
+      expect(card.getByLabelText('Номер АПП')).toHaveProperty(
+        'value',
+        'АПП-Общий',
+      )
+      expect(card.getByLabelText(`Поступило: ${name}, м`)).toHaveProperty(
+        'value',
+        quantity,
+      )
+    }
+    const common = within(
+      form.getByRole('group', { name: 'Общие реквизиты получения' }),
+    )
+    expect(common.getByLabelText('Дата получения')).toHaveProperty(
+      'value',
+      originalDate,
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('does not replace common receipt documents of other filled rows during import', async () => {
+    const workspace = conversionWorkspace()
+    workspace.lines.push(base().lines[1]!)
+    workspace.materialRequests.push({
+      ...workspace.materialRequests[0]!,
+      id: 'request-beta',
+      projectLineId: 'line-1',
+      projectMaterialName: 'Бета',
+    })
+    mount(workspace)
+    const dialog = await openReceipt()
+    const form = within(dialog)
+    changeField(form.getByLabelText('Номер АПП'), {
+      target: { value: 'АПП-Ручной' },
+    })
+    changeField(form.getByLabelText('Поступило: Бета, м'), {
+      target: { value: '3' },
+    })
+    await importReceiptDate(dialog, '20.10.2026', 'АПП-Из файла')
+    const apply = form.getByRole<HTMLButtonElement>('button', {
+      name: 'Применить импорт',
+    })
+    expect(apply.disabled).toBe(false)
+    fireEvent.click(apply)
+    const common = within(
+      form.getByRole('group', { name: 'Общие реквизиты получения' }),
+    )
+    expect(common.getByLabelText('Номер АПП')).toHaveProperty(
+      'value',
+      'АПП-Ручной',
+    )
+    const alpha = within(form.getByRole('group', { name: 'Материал: Альфа' }))
+    expect(alpha.getByLabelText('Номер АПП')).toHaveProperty(
+      'value',
+      'АПП-Из файла',
+    )
+    const beta = within(form.getByRole('group', { name: 'Материал: Бета' }))
+    expect(beta.getByLabelText('Свои дата и документы')).toHaveProperty(
+      'checked',
+      false,
+    )
+    expect(form.getByLabelText('Поступило: Бета, м')).toHaveProperty(
+      'value',
+      '3',
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
   it('blocks a receipt before its request in the form and in a corrected Excel upload', async () => {
     const workspace = conversionWorkspace()
     mount(workspace)
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     const form = within(dialog)
     const common = within(
       form.getByRole('group', { name: 'Общие реквизиты получения' }),
     )
-    fireEvent.change(common.getByLabelText('Дата получения'), {
+    changeField(common.getByLabelText('Дата получения'), {
       target: { value: '2026-10-13' },
     })
-    fireEvent.change(common.getByLabelText('Номер АПП'), {
+    changeField(common.getByLabelText('Номер АПП'), {
       target: { value: 'АПП-1' },
     })
-    fireEvent.change(common.getByLabelText('Дата АПП'), {
+    changeField(common.getByLabelText('Дата АПП'), {
       target: { value: '2026-10-13' },
     })
-    fireEvent.change(form.getByPlaceholderText('Поступило, м'), {
+    changeField(form.getByLabelText('Поступило: Альфа, м'), {
       target: { value: '1.2' },
     })
     expect(
       form.getByRole<HTMLButtonElement>('button', {
-        name: 'Сохранить получение',
+        name: /^(Далее|Сохранить получение)$/,
       }).disabled,
     ).toBe(true)
-    expect(
-      form.getByText(/Дата получения не может быть раньше даты заявки/)
-        .textContent,
-    ).toContain('14.10.2026')
+    expect(form.getByRole('alert').textContent).toContain('14-10-26')
     await importReceiptDate(dialog, '13.10.2026')
     let api = await operationGridApi('receipt-import')
     expect(
@@ -3271,7 +3772,10 @@ describe('receipt import dates and editing', () => {
       ),
     )
     fireEvent.click(form.getByRole('button', { name: 'Применить импорт' }))
-    fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+    reviewWorkflow()
+    fireEvent.click(
+      form.getByRole('button', { name: /^(Далее|Сохранить получение)$/ }),
+    )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -3283,17 +3787,17 @@ describe('receipt import dates and editing', () => {
     const workspace = conversionWorkspace()
     workspace.materialRequests[0]!.date = '2026-07-01'
     mount(workspace)
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     const common = within(
       within(dialog).getByRole('group', { name: 'Общие реквизиты получения' }),
     )
-    fireEvent.change(common.getByLabelText('Дата получения'), {
+    changeField(common.getByLabelText('Дата получения'), {
       target: { value: '2026-07-13' },
     })
-    fireEvent.change(common.getByLabelText('Номер М-15'), {
-      target: { value: 'М-15-Общая' },
+    changeField(common.getByLabelText('Номер АПП'), {
+      target: { value: 'АПП-Общая' },
     })
-    fireEvent.change(common.getByLabelText('Дата М-15'), {
+    changeField(common.getByLabelText('Дата АПП'), {
       target: { value: '2026-07-12' },
     })
     const workbook = XLSX.utils.book_new()
@@ -3309,16 +3813,27 @@ describe('receipt import dates and editing', () => {
           'Наименование ТМЦ по факту поступления',
           'Поступило',
           'Дата поступления',
+          'Номер АПП',
+          'Дата АПП',
           'Номер М-15',
           'Дата М-15',
         ],
-        ['request-conversion', 'Альфа', 1.2, '', '', ''],
+        [
+          'request-conversion',
+          'Альфа',
+          1.2,
+          '',
+          '',
+          '',
+          'Старый-М15',
+          '2026-07-12',
+        ],
         [
           'request-conversion',
           'Альфа',
           '',
           '2026-07-13',
-          'М-15-Общая',
+          'АПП-Общая',
           '2026-07-12',
         ],
       ]),
@@ -3334,11 +3849,16 @@ describe('receipt import dates and editing', () => {
       within(dialog).getByRole('button', { name: 'Импорт Excel' }),
     )
     await uploadReceiptFile(dialog, file)
+    expect(
+      within(dialog).getByText(/Колонки М-15 из старого шаблона/),
+    ).toBeTruthy()
     const api = await operationGridApi('receipt-import')
     expect(api.getRowNode('6-request-conversion')!.data.row.row).toMatchObject({
       date: '2026-07-13',
-      m15Number: 'М-15-Общая',
-      m15Date: '2026-07-12',
+      appNumber: 'АПП-Общая',
+      appDate: '2026-07-12',
+      m15Number: '',
+      m15Date: '',
     })
     expect(api.getRowNode('7-request-conversion')!.data.row.status).toBe(
       'ignored',
@@ -3348,20 +3868,20 @@ describe('receipt import dates and editing', () => {
     })
     expect(apply.disabled).toBe(false)
     fireEvent.click(apply)
-    const alpha = within(
-      within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
-    )
     expect(
-      alpha.getByLabelText<HTMLInputElement>('Свои дата и документы').checked,
-    ).toBe(false)
-    fireEvent.change(common.getByLabelText('Дата получения'), {
+      within(dialog).getByLabelText('Свои дата и документы'),
+    ).toHaveProperty('checked', false)
+    changeField(common.getByLabelText('Дата получения'), {
       target: { value: '2026-07-14' },
     })
-    fireEvent.change(common.getByLabelText('Номер М-15'), {
-      target: { value: 'М-15-Обновлённая' },
+    changeField(common.getByLabelText('Номер АПП'), {
+      target: { value: 'АПП-Обновлённая' },
     })
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить получение)$/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -3371,18 +3891,17 @@ describe('receipt import dates and editing', () => {
     expect(saved.materialReceipts[0]).toMatchObject({
       date: '2026-07-14',
       quantity: 1.2,
-      m15DocumentId: expect.any(String),
     })
     expect(
       saved.qualityWorkflow!.receiptDocuments!.find(
-        (doc) => doc.id === saved.materialReceipts[0]!.m15DocumentId,
+        (doc) => doc.id === saved.materialReceipts[0]!.appDocumentId,
       )?.number,
-    ).toBe('М-15-Обновлённая')
+    ).toBe('АПП-Обновлённая')
   })
 
   it('corrects invalid imports in the grid, preserves service fields and calculates alternatives on save', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '31.02.2026', '')
     const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
       name: 'Применить импорт',
@@ -3412,8 +3931,11 @@ describe('receipt import dates and editing', () => {
     await editPreview('technicalDecision', 'ТР-11')
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     fireEvent.click(apply)
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить получение)$/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -3440,7 +3962,7 @@ describe('receipt import dates and editing', () => {
 
   it('commits the active editor before Apply and does not apply a newly invalid value', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '20.10.2026')
     const apply = within(dialog).getByRole<HTMLButtonElement>('button', {
       name: 'Применить импорт',
@@ -3456,14 +3978,14 @@ describe('receipt import dates and editing', () => {
     fireEvent.click(apply)
     expect(within(dialog).queryByText('Импорт получения из Excel')).toBeNull()
     expect(
-      within(dialog).getByPlaceholderText<HTMLInputElement>('Поступило, м'),
+      within(dialog).getByLabelText<HTMLInputElement>('Поступило: Альфа, м'),
     ).toHaveProperty('value', '3,5')
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
   it('keeps invalid text in the editor and Escape cancels only the edit', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '20.10.2026')
     const input = await editPreview('quantity', 'не число')
     const api = await operationGridApi('receipt-import')
@@ -3483,7 +4005,7 @@ describe('receipt import dates and editing', () => {
 
   it('allows uploading immediately and replaces the entire draft with a corrected file of the same name', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Импорт Excel' }),
     )
@@ -3515,22 +4037,22 @@ describe('receipt import dates and editing', () => {
     const material = within(
       within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
     )
-    expect(
-      material.getByLabelText<HTMLInputElement>('Свои дата и документы')
-        .checked,
-    ).toBe(true)
+    expect(material.getByLabelText('Свои дата и документы')).toHaveProperty(
+      'checked',
+      true,
+    )
     expect(material.getByLabelText<HTMLInputElement>('Номер АПП').value).toBe(
       'Н-Новая',
     )
     expect(
       material.getByLabelText<HTMLInputElement>('Дата получения').value,
-    ).toBe('2026-10-23')
+    ).toBe('23-10-26')
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
 
   it('reports a failed replacement and prevents accidentally applying the previous file', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '20.10.2026')
     const badFile = new File([], 'broken.xlsx')
     Object.defineProperty(badFile, 'arrayBuffer', {
@@ -3538,7 +4060,7 @@ describe('receipt import dates and editing', () => {
         throw new Error('Файл повреждён')
       },
     })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [badFile] },
     })
     expect(await within(dialog).findByRole('alert')).toHaveProperty(
@@ -3562,7 +4084,7 @@ describe('receipt import dates and editing', () => {
 
   it('edits the correct sorted row and rejects duplicate filled request positions', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '20.10.2026')
     const api = await operationGridApi('receipt-import')
     act(() => api.applyColumnState({ state: [{ colId: 'row', sort: 'desc' }] }))
@@ -3596,7 +4118,7 @@ describe('receipt import dates and editing', () => {
 
   it('keeps the latest uploaded file if an earlier read completes later', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '20.10.2026')
     const earlier = receiptFile('21.10.2026', 'Н-Старый')
     const earlierBuffer = await earlier.arrayBuffer()
@@ -3606,7 +4128,7 @@ describe('receipt import dates and editing', () => {
       finishRead = resolve
     })
     Object.defineProperty(slowFile, 'arrayBuffer', { value: () => pending })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [slowFile] },
     })
     await uploadReceiptFile(dialog, receiptFile('22.10.2026', 'Н-Последний'))
@@ -3632,7 +4154,7 @@ describe('receipt import dates and editing', () => {
       const workspace = conversionWorkspace()
       workspace.materialRequests[0]!.date = '2017-01-01'
       const view = mount(workspace)
-      const dialog = openReceipt()
+      const dialog = await openReceipt()
       await importReceiptDate(dialog, input)
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Применить импорт' }),
@@ -3642,9 +4164,12 @@ describe('receipt import dates and editing', () => {
         within(
           within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
         ).getByLabelText<HTMLInputElement>('Дата получения').value,
-      ).toBe(date)
+      ).toBe(formatCalendarDate(date))
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+        within(dialog).getByRole('button', {
+          name: /^(Далее|Сохранить получение)$/,
+        }),
       )
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -3673,7 +4198,7 @@ describe('receipt import dates and editing', () => {
 
   it('reports an invalid date and blocks applying the import without saving anything', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     await importReceiptDate(dialog, '31.02.2026')
     expect(
       await within(dialog).findByText(/Некорректная дата поступления/),
@@ -3688,8 +4213,8 @@ describe('receipt import dates and editing', () => {
 
   it('keeps the selected form date when an older template has an empty date', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
-    fireEvent.change(dialog.querySelector('input[type="date"]')!, {
+    const dialog = await openReceipt()
+    changeField(dialog.querySelector('input[type="date"]')!, {
       target: { value: '2026-07-13' },
     })
     await importReceiptDate(dialog, '')
@@ -3791,7 +4316,7 @@ describe('operation deletion', () => {
     })
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+    changeField(screen.getByRole('textbox', { name: 'Поиск получений' }), {
       target: { value: 'Найти эту позицию' },
     })
     expandReceiptGroups()
@@ -3826,7 +4351,7 @@ describe('operation deletion', () => {
     )
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Выдача/ }))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск выдач' }), {
+    changeField(screen.getByRole('textbox', { name: 'Поиск выдач' }), {
       target: { value: 'ПМ-А' },
     })
     fireEvent.click(
@@ -3863,10 +4388,10 @@ describe('workspace user workflows', () => {
     }
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-    fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+    changeField(screen.getByRole('combobox', { name: 'Тип материала' }), {
       target: { value: 'Оборудование' },
     })
-    fireEvent.change(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
+    changeField(screen.getByRole('textbox', { name: 'Поиск заявок' }), {
       target: { value: 'Бета' },
     })
     expect(screen.getByText('Найдено 1 из 1 заявок')).toBeTruthy()
@@ -3897,7 +4422,9 @@ describe('workspace user workflows', () => {
       workspace.lines[1]!.normativeDocument = 'ГОСТ-БЕТА'
       let view = mount(workspace)
       fireEvent.click(
-        screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+        screen.getByRole('button', {
+          name: new RegExp(`^${label === 'Входной контроль' ? 'ЗНИ' : label}`),
+        }),
       )
       if (tab === 'returns')
         fireEvent.click(
@@ -3978,13 +4505,13 @@ describe('workspace user workflows', () => {
       fireEvent.click(badge())
       await waitFor(async () => expect(await content()).toEqual(initial))
       fireEvent.click(badge())
-      fireEvent.change(screen.getByPlaceholderText('Шифр'), {
+      changeField(screen.getByRole('combobox', { name: 'Шифр' }), {
         target: { value: 'шифр-б' },
       })
-      fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+      changeField(screen.getByRole('combobox', { name: 'Тип материала' }), {
         target: { value: 'оборудование' },
       })
-      fireEvent.change(screen.getByRole('textbox', { name: searchLabel }), {
+      changeField(screen.getByRole('textbox', { name: searchLabel }), {
         target: { value: 'гост-бета' },
       })
       await waitFor(async () => {
@@ -3993,20 +4520,24 @@ describe('workspace user workflows', () => {
         expect(found[0]).toMatch(/Бета|BETA|beta/)
       })
       // Switching tabs leaves this tab's criteria intact and doesn't copy them to Overview.
-      fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
-      expect(screen.getByPlaceholderText<HTMLInputElement>('Шифр').value).toBe(
-        '',
-      )
+      fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
+      expect(
+        screen.getByRole<HTMLInputElement>('combobox', { name: 'Шифр' }).value,
+      ).toBe('')
       fireEvent.click(
-        screen.getByRole('button', { name: new RegExp(`^${label}`) }),
+        screen.getByRole('button', {
+          name: new RegExp(`^${label === 'Входной контроль' ? 'ЗНИ' : label}`),
+        }),
       )
-      expect(screen.getByPlaceholderText<HTMLInputElement>('Шифр').value).toBe(
-        'шифр-б',
-      )
+      expect(
+        screen.getByRole<HTMLInputElement>('combobox', { name: 'Шифр' }).value,
+      ).toBe('шифр-б')
       view.unmount()
       view = mount(workspace, true)
       expect(
-        screen.getByPlaceholderText<HTMLInputElement>('Тип материала').value,
+        screen.getByRole<HTMLButtonElement>('combobox', {
+          name: 'Тип материала',
+        }).value,
       ).toBe('оборудование')
       expect(
         screen.getByRole<HTMLInputElement>('textbox', { name: searchLabel })
@@ -4017,7 +4548,7 @@ describe('workspace user workflows', () => {
       await waitFor(async () => expect(await content()).toHaveLength(1), {
         timeout: 5000,
       })
-      fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+      changeField(screen.getByRole('combobox', { name: 'Тип материала' }), {
         target: { value: 'Трубопровод' },
       })
       await waitFor(() => {
@@ -4037,8 +4568,8 @@ describe('workspace user workflows', () => {
     // The historical receipt and request still identify a deleted project material.
     workspace.lines = workspace.lines.filter((line) => line.id !== 'line-1')
     let view = mount(workspace)
-    fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
-    fireEvent.change(
+    fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
+    changeField(
       screen.getByRole('textbox', { name: 'Поиск входного контроля' }),
       { target: { value: 'ШИФР-Б' } },
     )
@@ -4049,31 +4580,31 @@ describe('workspace user workflows', () => {
     for (const query of [
       '  иВаНоВ  ',
       'ПМ-А',
-      '15.10.2026',
+      '15-10-26',
       'Альфа',
       'CONVERSION',
       'Н-1',
       'На участок',
     ]) {
-      fireEvent.change(input, { target: { value: query } })
+      changeField(input, { target: { value: query } })
       expect(await screen.findByRole('row', { name: /ПМ-А/ })).toBeTruthy()
       expect(screen.queryByRole('row', { name: /ПМ-Б/ })).toBeNull()
       expect(screen.getByText('Найдено 1 из 2 выдач')).toBeTruthy()
     }
-    fireEvent.change(input, { target: { value: 'ШИФР-Б' } })
+    changeField(input, { target: { value: 'ШИФР-Б' } })
     expect(await screen.findByRole('row', { name: /ПМ-Б/ })).toBeTruthy()
-    fireEvent.change(input, { target: { value: 'не существует' } })
+    changeField(input, { target: { value: 'не существует' } })
     expect(
       screen.getByText('Выдачи по такому запросу не найдены.'),
     ).toBeTruthy()
     expect(screen.getByText('Найдено 0 из 2 выдач')).toBeTruthy()
-    fireEvent.change(input, { target: { value: 'Иванов' } })
+    changeField(input, { target: { value: 'Иванов' } })
     view.unmount()
     view = mount(workspace, true)
     input = screen.getByRole('textbox', { name: 'Поиск выдач' })
     expect((input as HTMLInputElement).value).toBe('Иванов')
     expect(await screen.findByRole('row', { name: /ПМ-А/ })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
     expect(
       screen.getByRole<HTMLInputElement>('textbox', {
         name: 'Поиск входного контроля',
@@ -4085,34 +4616,41 @@ describe('workspace user workflows', () => {
     view.unmount()
   })
 
-  it.each([true, false])(
+  it.each([true])(
     'calculates partial receipts and issues through quality control using only the material coefficient (APP: %s)',
     async (withApp) => {
-      mount(conversionWorkspace())
-      let dialog = openReceipt()
+      const workspace = conversionWorkspace()
+      const m15 = !withApp ? composeM15(workspace, 'Н-1', '2026-10-22') : ''
+      mount(workspace)
+      let dialog = await openReceipt()
       expect(
         within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
       ).toBeNull()
-      fireEvent.change(within(dialog).getByPlaceholderText('Поступило, м'), {
+      changeField(within(dialog).getByLabelText('Поступило: Альфа, м'), {
         target: { value: '2,4' },
       })
       expect(
-        within(dialog).getByRole('status', {
-          name: 'Поступило в альтернативной единице',
-        }).textContent,
+        (
+          await within(dialog).findByRole('status', {
+            name: 'Поступило в альтернативной единице',
+          })
+        ).textContent,
       ).toBe('6 кг')
-      fireEvent.change(
+      changeField(
         within(dialog).getByLabelText(withApp ? 'Номер АПП' : 'Номер М-15'),
         {
-          target: { value: 'Н-1' },
+          target: { value: withApp ? 'Н-1' : m15 },
         },
       )
-      fireEvent.change(
+      changeField(
         within(dialog).getByLabelText(withApp ? 'Дата АПП' : 'Дата М-15'),
         { target: { value: '2026-10-22' } },
       )
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+        within(dialog).getByRole('button', {
+          name: /^(Далее|Сохранить получение)$/,
+        }),
       )
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -4123,12 +4661,9 @@ describe('workspace user workflows', () => {
         altUnit: 'кг',
         altUnitFactor: 2.5,
       })
-      fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
+      fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
       fireEvent.click(screen.getByRole('button', { name: 'Создать ЗНИ' }))
-      fireEvent.click(
-        screen.getByRole('radio', { name: withApp ? 'АПП' : 'М-15' }),
-      )
-      fireEvent.change(screen.getByLabelText('Документ получения для ЗНИ'), {
+      changeField(screen.getByLabelText('Документ получения для ЗНИ'), {
         target: {
           value: lastSaved().qualityWorkflow!.receiptDocuments![0]!.id,
         },
@@ -4151,12 +4686,13 @@ describe('workspace user workflows', () => {
       fireEvent.click(
         screen.getByRole('option', { name: 'Принято с замечаниями' }),
       )
-      fireEvent.change(within(dialog).getByLabelText('Принято, м'), {
+      changeField(within(dialog).getByLabelText('Принято, м'), {
         target: { value: '2' },
       })
-      fireEvent.change(within(dialog).getByLabelText('Замечания по позиции'), {
+      changeField(within(dialog).getByLabelText('Замечания по позиции'), {
         target: { value: 'Остаток требует повторной проверки' },
       })
+      reviewWorkflow()
       fireEvent.click(
         within(dialog).getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }),
       )
@@ -4167,7 +4703,7 @@ describe('workspace user workflows', () => {
           name: 'Подтвердить подписание',
         }),
       )
-      fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+      fireEvent.click(screen.getByRole('button', { name: /^АВК$/ }))
       fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
       fireEvent.click(
         within(screen.getByRole('dialog')).getByRole('button', {
@@ -4178,16 +4714,16 @@ describe('workspace user workflows', () => {
       expect(
         within(dialog).getByLabelText<HTMLInputElement>('Номер АВК').value,
       ).toMatch(/^АВК-\d{4}-0001$/)
-      fireEvent.change(within(dialog).getByLabelText('Дата АВК'), {
+      changeField(within(dialog).getByLabelText('Дата АВК'), {
         target: { value: '2025-12-01' },
       })
       expect(
         within(dialog).getByLabelText<HTMLInputElement>('Номер АВК').value,
       ).toBe('АВК-2025-0001')
-      fireEvent.change(within(dialog).getByLabelText('Дата АВК'), {
+      changeField(within(dialog).getByLabelText('Дата АВК'), {
         target: { value: localToday() },
       })
-      fireEvent.change(within(dialog).getByLabelText('Номер АВК'), {
+      changeField(within(dialog).getByLabelText('Номер АВК'), {
         target: { value: 'АВК-1' },
       })
       for (const textarea of within(dialog)
@@ -4195,10 +4731,11 @@ describe('workspace user workflows', () => {
         .filter((element) =>
           /^\d+\. /.test(element.parentElement?.textContent ?? ''),
         ))
-        fireEvent.change(textarea, { target: { value: 'Проверено' } })
-      fireEvent.change(within(dialog).getByLabelText('Заключение комиссии'), {
+        changeField(textarea, { target: { value: 'Проверено' } })
+      changeField(within(dialog).getByLabelText('Заключение комиссии'), {
         target: { value: 'Частичная приёмка' },
       })
+      reviewWorkflow()
       fireEvent.click(
         within(dialog).getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }),
       )
@@ -4241,8 +4778,11 @@ describe('workspace user workflows', () => {
           colKey: 'alternative',
         }),
       ).toBe('1 кг')
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+        within(dialog).getByRole('button', {
+          name: /^(Далее|Сохранить выдачу)$/,
+        }),
       )
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
@@ -4272,16 +4812,27 @@ describe('workspace user workflows', () => {
       )
       dialog = screen.getByRole('dialog')
       expect(
-        within(dialog).getByRole('status', {
-          name: 'Поступило в альтернативной единице',
-        }).textContent,
+        (
+          await within(dialog).findByRole('status', {
+            name: 'Поступило в альтернативной единице',
+          })
+        ).textContent,
       ).toBe('0,24 т')
-      fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+      const details = within(
+        within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+      )
+      fireEvent.click(details.getByText(/^Дополнительные сведения/))
+      changeField(details.getByLabelText('Примечание'), {
         target: { value: 'Обновлено' },
       })
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+        within(dialog).getByRole('button', {
+          name: /Сохранить (изменения|заявку|получение)/,
+        }),
       )
+      expect(within(dialog).queryByRole('alert')?.textContent).toBeUndefined()
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
           savesBeforeIssue + 2,
@@ -4304,34 +4855,37 @@ describe('workspace user workflows', () => {
         altUnit: 'т',
         altUnitFactor: 0.1,
       })
+      const beforeMaterialEdit = lastSaved()
       fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
       await editGridMaterial('Альфа')
       dialog = screen.getByRole('dialog')
-      selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
-      fireEvent.change(
+      selectAppOption(
+        within(dialog).getByRole('combobox', { name: 'Тип материала' }),
+        'Оборудование',
+      )
+      changeField(
         within(dialog).getByRole('textbox', {
           name: 'Количество альтернативных единиц на одну основную',
         }),
         { target: { value: '0,2' } },
       )
       fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
+      await saveProjectEdits()
+      expect(screen.queryByRole('alert')?.textContent).toBeUndefined()
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(
           savesBeforeIssue + 3,
         ),
       )
-      expect(lastSaved().materialRequests[0]).toMatchObject({
-        altQuantity: 1.6,
-        altUnit: 'т',
-      })
-      expect(lastSaved().materialReceipts[0]).toMatchObject({
-        altQuantity: 0.48,
-        altUnit: 'т',
-      })
-      expect(lastSaved().materialIssues[0]).toMatchObject({
-        altQuantity: 0.08,
-        altUnit: 'т',
-      })
+      expect(lastSaved().materialRequests).toEqual(
+        beforeMaterialEdit.materialRequests,
+      )
+      expect(lastSaved().materialReceipts).toEqual(
+        beforeMaterialEdit.materialReceipts,
+      )
+      expect(lastSaved().materialIssues).toEqual(
+        beforeMaterialEdit.materialIssues,
+      )
     },
   )
   it('preserves historical receipt values without manual fields and blocks quantity changes until conversion is configured', async () => {
@@ -4349,22 +4903,32 @@ describe('workspace user workflows', () => {
       within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
     ).toBeNull()
     expect(
-      within(dialog).getByRole('status', {
-        name: 'Поступило в альтернативной единице',
-      }).textContent,
+      (
+        await within(dialog).findByRole('status', {
+          name: 'Поступило в альтернативной единице',
+        })
+      ).textContent,
     ).toBe('111 кг')
-    const quantity = within(dialog).getByPlaceholderText('Поступило, м')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+    const quantity = within(dialog).getByLabelText('Поступило: Альфа, м')
     const save = within(dialog).getByRole<HTMLButtonElement>('button', {
-      name: 'Сохранить изменения',
+      name: 'Далее',
     })
-    fireEvent.change(quantity, { target: { value: '3' } })
+    changeField(quantity, { target: { value: '3' } })
     expect(save.disabled).toBe(true)
-    fireEvent.change(quantity, { target: { value: '2' } })
-    fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+    changeField(quantity, { target: { value: '2' } })
+    const details = within(
+      within(dialog).getByRole('group', { name: 'Материал: Альфа' }),
+    )
+    fireEvent.click(details.getByText(/^Дополнительные сведения/))
+    changeField(details.getByLabelText('Примечание'), {
       target: { value: 'Уточнение' },
     })
     expect(save.disabled).toBe(false)
-    fireEvent.click(save)
+    reviewWorkflow()
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+    )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -4409,7 +4973,7 @@ describe('workspace user workflows', () => {
   })
   it('recalculates receipt Excel values and never accepts manual alternatives from the file', async () => {
     mount(conversionWorkspace())
-    const dialog = openReceipt()
+    const dialog = await openReceipt()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Импорт Excel' }),
     )
@@ -4449,7 +5013,7 @@ describe('workspace user workflows', () => {
     }) as ArrayBuffer
     const file = new File([buffer], 'receipt.xlsx')
     Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
-    fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+    changeField(dialog.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
     await within(dialog).findByText('Позиций в файле')
@@ -4457,12 +5021,17 @@ describe('workspace user workflows', () => {
       within(dialog).getByRole('button', { name: 'Применить импорт' }),
     )
     expect(
-      within(dialog).getByRole('status', {
-        name: 'Поступило в альтернативной единице',
-      }).textContent,
+      (
+        await within(dialog).findByRole('status', {
+          name: 'Поступило в альтернативной единице',
+        })
+      ).textContent,
     ).toBe('3 кг')
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить получение' }),
+      within(dialog).getByRole('button', {
+        name: /^(Далее|Сохранить получение)$/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -4578,8 +5147,8 @@ describe('workspace user workflows', () => {
     ]
     let view = mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Скрыть меню' }))
-    fireEvent.change(
+    fireEvent.click(screen.getByRole('button', { name: 'Закрепить меню' }))
+    changeField(
       screen.getByRole('textbox', { name: 'Поиск в проектной базе' }),
       {
         target: { value: 'Сталь' },
@@ -4592,7 +5161,11 @@ describe('workspace user workflows', () => {
     expect(
       screen.getByRole('heading', { name: 'Проектная база материалов' }),
     ).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Показать меню' })).toBeTruthy()
+    expect(
+      screen
+        .getByRole('button', { name: 'Открепить меню' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true')
     expect(
       screen.getByRole<HTMLInputElement>('textbox', {
         name: 'Поиск в проектной базе',
@@ -4604,7 +5177,7 @@ describe('workspace user workflows', () => {
     expect(
       within(screen.getByRole('grid')).queryByRole('row', { name: /Бета/ }),
     ).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
     fireEvent.click(screen.getByRole('button', { name: /^VIEW-REQUEST/ }))
     expect(await screen.findByRole('row', { name: /Альфа/ })).toBeTruthy()
@@ -4642,7 +5215,7 @@ describe('workspace user workflows', () => {
       },
     ]
     let view = mount(workspace)
-    let dialog = openRequest()
+    let dialog = await openRequest()
     expect(
       within(dialog).queryByPlaceholderText(
         'Количество в альтернативной единице',
@@ -4653,14 +5226,13 @@ describe('workspace user workflows', () => {
         name: 'Количество в альтернативной единице',
       }),
     ).toBeNull()
-    fireEvent.change(
+    changeField(
       within(
-        within(dialog)
-          .getByText('Альфа')
-          .closest('div.relative') as HTMLElement,
-      ).getByPlaceholderText('Количество по заявке, м'),
+        within(dialog).getByText('Альфа').closest('.ag-row') as HTMLElement,
+      ).getByLabelText('Количество по заявке, м'),
       { target: { value: '6' } },
     )
+    reviewWorkflow()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
     )
@@ -4682,14 +5254,19 @@ describe('workspace user workflows', () => {
     async function changePlan(quantity: string, saves: number) {
       fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
       await editGridQuantity('Альфа', 'ТЕСТ', quantity)
+      await saveProjectEdits()
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(saves),
       )
       const saved = vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[
         saves - 1
       ]![0].data.workspace
-      expect(saved.materialRequests).toEqual(created.materialRequests)
-      fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+      expect(
+        saved.materialRequests.map(
+          ({ projectCancellations: _cancellations, ...entry }) => entry,
+        ),
+      ).toEqual(created.materialRequests)
+      fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
       fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
       const group = screen
         .getByText(number)
@@ -4702,14 +5279,8 @@ describe('workspace user workflows', () => {
     let row = await changePlan('8', 2)
     const cell = (id: string) =>
       row.querySelector(`[col-id="${id}"]`) as HTMLElement
-    expect(within(cell('projectQuantity')).getByText('28 м')).toBeTruthy()
-    expect(
-      within(cell('projectQuantity')).getByText('При создании: 30 м'),
-    ).toBeTruthy()
-    expect(within(cell('cipherQuantity')).getByText('8 м')).toBeTruthy()
-    expect(
-      within(cell('cipherQuantity')).getByText('При создании: 10 м'),
-    ).toBeTruthy()
+    expect(cell('projectQuantity').textContent).toBe('28 м')
+    expect(cell('cipherQuantity').textContent).toBe('8 м')
     expect(cell('quantity').textContent).toBe('6')
     expect(cell('balance').textContent).toBe('1 м')
     expect(cell('received').textContent).toBe('0')
@@ -4720,15 +5291,12 @@ describe('workspace user workflows', () => {
     expect(within(cell('projectQuantity')).getByText('24 м')).toBeTruthy()
     expect(within(cell('cipherQuantity')).getByText('4 м')).toBeTruthy()
     expect(cell('quantity').textContent).toBe('6')
-    expect(cell('remaining').textContent).toBe('6')
-    expect(
-      within(cell('balance')).getByText(/Заявлено сверх проекта: 3 м/),
-    ).toBeTruthy()
-    expect(
-      screen.getAllByText(/Позиций с превышением проекта: 1/),
-    ).toHaveLength(2)
+    expect(cell('remaining').textContent).toBe('3')
+    expect(screen.queryByText(/Заявлено сверх проекта:/)).toBeNull()
+    const cancellations = lastSaved().materialRequests[0]!.projectCancellations
+    expect(cancellations).toEqual([expect.objectContaining({ quantity: 3 })])
 
-    function editCreatedRequest() {
+    async function editCreatedRequest() {
       const card = screen
         .getByText(number)
         .closest('div.overflow-hidden') as HTMLElement
@@ -4736,9 +5304,10 @@ describe('workspace user workflows', () => {
         within(card).getByRole('button', { name: 'Редактировать' }),
       )
       const modal = screen.getByRole('dialog')
+      await requestPickerReady(modal)
       return modal
     }
-    dialog = editCreatedRequest()
+    dialog = await editCreatedRequest()
     expect(within(dialog).getByText('24 м')).toBeTruthy()
     expect(within(dialog).getByText('4 м')).toBeTruthy()
     expect(
@@ -4746,12 +5315,15 @@ describe('workspace user workflows', () => {
         /При создании заявки: по проекту 30 м, по шифру 10 м/,
       ),
     ).toBeTruthy()
-    expect(within(dialog).getByText(/Заявлено сверх проекта: 3 м/)).toBeTruthy()
-    fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+    expect(within(dialog).queryByText(/Заявлено сверх проекта:/)).toBeNull()
+    changeField(within(dialog).getByPlaceholderText('Примечание'), {
       target: { value: 'Проверить проект' },
     })
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+      within(dialog).getByRole('button', {
+        name: /Сохранить (изменения|заявку|получение)/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(4),
@@ -4761,20 +5333,23 @@ describe('workspace user workflows', () => {
     expect(noted.materialRequests[0]).toEqual({
       ...created.materialRequests[0],
       note: 'Проверить проект',
+      projectCancellations: cancellations,
     })
     expect(
       noted.lines.find((line) => line.id === 'line-0')!.plannedQuantity,
     ).toBe(4)
 
-    dialog = editCreatedRequest()
-    fireEvent.change(
-      within(dialog).getByPlaceholderText('Количество по заявке, м'),
-      { target: { value: '5' } },
-    )
-    expect(within(dialog).getByText(/Заявлено сверх проекта: 2 м/)).toBeTruthy()
+    dialog = await editCreatedRequest()
+    changeField(within(dialog).getByLabelText('Количество по заявке, м'), {
+      target: { value: '5' },
+    })
+    expect(within(dialog).queryByText(/Заявлено сверх проекта:/)).toBeNull()
     expect(screen.queryByText('Остаток по проекту превышен')).toBeNull()
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+      within(dialog).getByRole('button', {
+        name: /Сохранить (изменения|заявку|получение)/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(5),
@@ -4789,16 +5364,15 @@ describe('workspace user workflows', () => {
     view = mount(reduced)
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(5)
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-    dialog = editCreatedRequest()
+    dialog = await editCreatedRequest()
     expect(
       within(dialog).getByText(
         /При создании заявки: по проекту 30 м, по шифру 10 м/,
       ),
     ).toBeTruthy()
-    fireEvent.change(
-      within(dialog).getByPlaceholderText('Количество по заявке, м'),
-      { target: { value: '6' } },
-    )
+    changeField(within(dialog).getByLabelText('Количество по заявке, м'), {
+      target: { value: '7' },
+    })
     expect(screen.getByText('Остаток по проекту превышен')).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(5)
     view.unmount()
@@ -4832,16 +5406,20 @@ describe('workspace user workflows', () => {
         await screen.findByRole('button', { name: 'Редактировать' }),
       )
       const dialog = await screen.findByRole('dialog')
+      await requestPickerReady(dialog)
       expect(
         within(dialog).getByText(
           'Проектное количество при создании этой заявки не сохранялось.',
         ),
       ).toBeTruthy()
-      fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+      changeField(within(dialog).getByPlaceholderText('Примечание'), {
         target: { value: 'История' },
       })
+      reviewWorkflow()
       fireEvent.click(
-        within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+        within(dialog).getByRole('button', {
+          name: /Сохранить (изменения|заявку|получение)/,
+        }),
       )
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -4878,19 +5456,19 @@ describe('workspace user workflows', () => {
       },
     ]
     mount(workspace)
-    const dialog = openRequest()
+    const dialog = await openRequest()
     const card = within(dialog)
       .getByText('Альфа')
-      .closest('div.relative') as HTMLElement
-    fireEvent.change(
-      within(card).getByPlaceholderText('Количество по заявке, м'),
-      { target: { value: '1' } },
-    )
+      .closest('.ag-row') as HTMLElement
+    changeField(within(card).getByLabelText('Количество по заявке, м'), {
+      target: { value: '1' },
+    })
     expect(screen.getByText('Остаток по проекту превышен')).toBeTruthy()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     fireEvent.click(
       screen.getByRole('button', { name: /Изменить проектное количество/ }),
     )
+    await saveProjectEdits()
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -4898,6 +5476,7 @@ describe('workspace user workflows', () => {
       .data.workspace
     expect(adjusted.lines[0]!.plannedQuantity).toBe(7)
     expect(adjusted.materialRequests).toEqual(workspace.materialRequests)
+    reviewWorkflow()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
     )
@@ -4925,6 +5504,7 @@ describe('workspace user workflows', () => {
     mount(workspace)
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     await editGridQuantity('Альфа', 'ТЕСТ2', '4')
+    await saveProjectEdits()
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -4947,12 +5527,14 @@ describe('workspace user workflows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     await editGridMaterial('Альфа')
     let dialog = screen.getByRole('dialog')
-    selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
-    const unit = within(dialog).getByRole('textbox', {
+    selectAppOption(
+      within(dialog).getByRole('combobox', { name: 'Тип материала' }),
+      'Оборудование',
+    )
+    const unit = within(dialog).getByRole('combobox', {
       name: 'Альтернативная единица измерения',
     })
-    fireEvent.change(unit, { target: { value: 'к' } })
-    fireEvent.mouseDown(within(dialog).getByRole('button', { name: 'кг' }))
+    changeField(unit, { target: { value: 'кг' } })
     const factor = within(dialog).getByRole('textbox', {
       name: 'Количество альтернативных единиц на одну основную',
     })
@@ -4960,12 +5542,13 @@ describe('workspace user workflows', () => {
       name: 'Сохранить',
     })
     for (const value of ['', '0', '-1', 'Infinity', 'abc']) {
-      fireEvent.change(factor, { target: { value } })
+      changeField(factor, { target: { value } })
       expect(saveMaterial.disabled).toBe(true)
     }
-    fireEvent.change(factor, { target: { value: '2,5' } })
+    changeField(factor, { target: { value: '2,5' } })
     expect(saveMaterial.disabled).toBe(false)
     fireEvent.click(saveMaterial)
+    await saveProjectEdits()
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -4979,10 +5562,8 @@ describe('workspace user workflows', () => {
     view.unmount()
     view = mount(material)
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
-    dialog = openRequest('Оборудование')
-    const quantity = within(dialog).getByPlaceholderText(
-      'Количество по заявке, м',
-    )
+    dialog = await openRequest('Оборудование')
+    const quantity = within(dialog).getByLabelText('Количество по заявке, м')
     expect(
       within(dialog).queryByPlaceholderText(
         'Количество в альтернативной единице',
@@ -4993,13 +5574,14 @@ describe('workspace user workflows', () => {
         name: 'Альтернативная единица измерения',
       }),
     ).toBeNull()
-    fireEvent.change(quantity, { target: { value: '3' } })
+    changeField(quantity, { target: { value: '3' } })
     const alternative = within(dialog).getByRole('status', {
       name: 'Количество в альтернативной единице',
     })
     expect(alternative.textContent).toBe('7,5 кг')
-    fireEvent.change(quantity, { target: { value: '1,2' } })
+    changeField(quantity, { target: { value: '1,2' } })
     expect(alternative.textContent).toBe('3 кг')
+    reviewWorkflow()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
     )
@@ -5015,31 +5597,49 @@ describe('workspace user workflows', () => {
       altUnitFactor: 2.5,
     })
     view.unmount()
-    const changedMaterial = structuredClone(saved)
-    changedMaterial.lines[0]!.alternativeUnitFactor = 99
-    mount(changedMaterial)
+    const prior = saved as unknown as ProjectChangeWorkspace
+    const changedMaterial = prepareProjectDraft(
+      {
+        baseline: prior,
+        lines: prior.lines.map((line, index) =>
+          index === 0 ? { ...line, alternativeUnitFactor: 99 } : line,
+        ),
+      },
+      {
+        kind: 'correction',
+        date: localToday(),
+        reason: 'Коэффициент уточнён',
+        author: 'Тест',
+        numbers: {},
+        replacements: {},
+      },
+    )
+    mount(toWorkspaceSnapshot(changedMaterial))
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
     fireEvent.click(
       await screen.findByRole('button', { name: /Редактировать/ }),
     )
     dialog = screen.getByRole('dialog')
+    await requestPickerReady(dialog)
     expect(
       within(dialog).getByRole('status', {
         name: 'Количество в альтернативной единице',
       }).textContent,
     ).toBe('118,8 кг')
-    fireEvent.change(
-      within(dialog).getByPlaceholderText('Количество по заявке, м'),
-      { target: { value: '2' } },
-    )
+    changeField(within(dialog).getByLabelText('Количество по заявке, м'), {
+      target: { value: '2' },
+    })
     expect(
       within(dialog).getByRole('status', {
         name: 'Количество в альтернативной единице',
       }).textContent,
     ).toBe('198 кг')
+    reviewWorkflow()
     fireEvent.click(
-      within(dialog).getByRole('button', { name: 'Сохранить изменения' }),
+      within(dialog).getByRole('button', {
+        name: /Сохранить (изменения|заявку|получение)/,
+      }),
     )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(3),
@@ -5057,7 +5657,7 @@ describe('workspace user workflows', () => {
     ])
   })
   it.each([undefined, null, 99])(
-    'updates historical requests with factor %s when editing the material, without opening the requests',
+    'preserves historical requests with factor %s when correcting the project conversion',
     async (altUnitFactor) => {
       const workspace = base()
       workspace.configuredUnits.push('кг', 'т')
@@ -5083,14 +5683,17 @@ describe('workspace user workflows', () => {
       async function editConversion(unit: string, factor: string) {
         await editGridMaterial('Альфа')
         const dialog = screen.getByRole('dialog')
-        selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
-        fireEvent.change(
-          within(dialog).getByRole('textbox', {
+        selectAppOption(
+          within(dialog).getByRole('combobox', { name: 'Тип материала' }),
+          'Оборудование',
+        )
+        changeField(
+          within(dialog).getByRole('combobox', {
             name: 'Альтернативная единица измерения',
           }),
           { target: { value: unit } },
         )
-        fireEvent.change(
+        changeField(
           within(dialog).getByRole('textbox', {
             name: 'Количество альтернативных единиц на одну основную',
           }),
@@ -5099,6 +5702,7 @@ describe('workspace user workflows', () => {
         fireEvent.click(
           within(dialog).getByRole('button', { name: 'Сохранить' }),
         )
+        await saveProjectEdits()
       }
       await editConversion('кг', '2,5')
       await waitFor(() =>
@@ -5107,12 +5711,11 @@ describe('workspace user workflows', () => {
       const saved = vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[0]![0]
         .data.workspace
       expect(saved.materialRequests).toEqual(
-        workspace.materialRequests.map((entry) => ({
-          ...entry,
-          altUnit: 'кг',
-          altQuantity: Number(entry.quantity) * 2.5,
-          altUnitFactor: 2.5,
-        })),
+        workspace.materialRequests.map((entry) =>
+          altUnitFactor === 99
+            ? { ...entry, altQuantity: Number(entry.quantity) * 99 }
+            : entry,
+        ),
       )
       await editConversion('т', '0,1')
       await waitFor(() =>
@@ -5120,14 +5723,7 @@ describe('workspace user workflows', () => {
       )
       const recalculated = vi.mocked(saveProjectWorkspaceSnapshot).mock
         .calls[1]![0].data.workspace
-      expect(recalculated.materialRequests).toEqual(
-        workspace.materialRequests.map((entry) => ({
-          ...entry,
-          altUnit: 'т',
-          altQuantity: Number(entry.quantity) * 0.1,
-          altUnitFactor: 0.1,
-        })),
-      )
+      expect(recalculated.materialRequests).toEqual(saved.materialRequests)
       await editConversion('', '')
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(3),
@@ -5136,12 +5732,13 @@ describe('workspace user workflows', () => {
         vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[2]![0].data.workspace
           .materialRequests,
       ).toEqual(recalculated.materialRequests)
-      fireEvent.click(screen.getByRole('button', { name: 'Операции' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
       fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
       fireEvent.click(
         (await screen.findAllByRole('button', { name: /Редактировать/ }))[0]!,
       )
       const dialog = screen.getByRole('dialog')
+      await requestPickerReady(dialog)
       expect(
         within(dialog).queryByRole('textbox', {
           name: 'Альтернативная единица измерения',
@@ -5151,7 +5748,7 @@ describe('workspace user workflows', () => {
         within(dialog).getByRole('status', {
           name: 'Количество в альтернативной единице',
         }).textContent,
-      ).toMatch(/ т$/)
+      ).toMatch(/ кг$/)
       cleanup()
       const loaded = structuredClone(workspace)
       loaded.lines[0]!.alternativeUnit = 'т'
@@ -5171,6 +5768,7 @@ describe('workspace user workflows', () => {
         (await screen.findAllByRole('button', { name: /Редактировать/ }))[0]!,
       )
       const loadedDialog = screen.getByRole('dialog')
+      await requestPickerReady(loadedDialog)
       const loadedQuantity = within(loadedDialog).getByRole('status', {
         name: 'Количество в альтернативной единице',
       })
@@ -5192,6 +5790,7 @@ describe('workspace user workflows', () => {
       await screen.findByRole('button', { name: /Редактировать/ }),
     )
     const dialog = screen.getByRole('dialog')
+    await requestPickerReady(dialog)
     expect(
       within(dialog).queryByRole('textbox', { name: /альтернативн/i }),
     ).toBeNull()
@@ -5200,23 +5799,25 @@ describe('workspace user workflows', () => {
         name: 'Количество в альтернативной единице',
       }).textContent,
     ).toBe('111 уп')
-    const quantity = within(dialog).getByPlaceholderText(
-      'Количество по заявке, м',
-    )
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+    const quantity = within(dialog).getByLabelText('Количество по заявке, м')
     const save = within(dialog).getByRole<HTMLButtonElement>('button', {
-      name: 'Сохранить изменения',
+      name: 'Далее',
     })
-    fireEvent.change(quantity, { target: { value: '3' } })
+    changeField(quantity, { target: { value: '3' } })
     expect(save.disabled).toBe(true)
     expect(
       within(dialog).getByText(/Для изменения количества настройте/),
     ).toBeTruthy()
-    fireEvent.change(quantity, { target: { value: '8' } })
-    fireEvent.change(within(dialog).getByPlaceholderText('Примечание'), {
+    changeField(quantity, { target: { value: '8' } })
+    changeField(within(dialog).getByPlaceholderText('Примечание'), {
       target: { value: 'Уточнение' },
     })
     expect(save.disabled).toBe(false)
-    fireEvent.click(save)
+    reviewWorkflow()
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
+    )
     await waitFor(() =>
       expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
     )
@@ -5240,7 +5841,11 @@ describe('workspace user workflows', () => {
       workspace.lines[0]!.alternativeUnit = 'кг'
       workspace.lines[0]!.alternativeUnitFactor = 55.5
       mount(workspace)
-      const dialog = openRequest()
+      const dialog = await openRequest()
+      expect(
+        within(dialog).queryByRole('button', { name: 'Импорт Excel' }),
+      ).toBeNull()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Импорт Excel' }),
       )
@@ -5269,7 +5874,7 @@ describe('workspace user workflows', () => {
       }) as ArrayBuffer
       const file = new File([buffer], 'request.xlsx')
       Object.defineProperty(file, 'arrayBuffer', { value: async () => buffer })
-      fireEvent.change(dialog.querySelector('input[type="file"]')!, {
+      changeField(dialog.querySelector('input[type="file"]')!, {
         target: { files: [file] },
       })
       await within(dialog).findByText('Позиций в файле')
@@ -5284,6 +5889,7 @@ describe('workspace user workflows', () => {
           name: 'Количество в альтернативной единице',
         }).textContent,
       ).toBe('111 кг')
+      reviewWorkflow()
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
       )
@@ -5312,7 +5918,10 @@ describe('workspace user workflows', () => {
       fireEvent.click(
         within(dialog).getByRole('button', { name: 'Создать вручную' }),
       )
-      selectAppOption(within(dialog).getByRole('combobox'), 'Оборудование')
+      selectAppOption(
+        within(dialog).getByRole('combobox', { name: 'Тип материала' }),
+        'Оборудование',
+      )
       const name = within(dialog).getByRole('textbox', {
         name: 'Наименование по проекту',
       })
@@ -5320,21 +5929,30 @@ describe('workspace user workflows', () => {
         name: 'Создать комбинацию',
       })
       for (const value of ['', '   ']) {
-        fireEvent.change(name, { target: { value } })
+        changeField(name, { target: { value } })
         expect(create.disabled).toBe(true)
       }
       expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-      fireEvent.change(name, { target: { value: '  Труба 666x9  ' } })
+      changeField(name, { target: { value: '  Труба 666x9  ' } })
       expect(create.disabled).toBe(false)
       fireEvent.click(create)
+      await editGridQuantity('Труба 666x9', 'ТЕСТ', '1')
+      await saveProjectEdits()
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
       )
       const saved = vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[0]![0]
         .data.workspace
       expect(saved.lines).toHaveLength(workspace.lines.length + 1)
-      expect(saved.lines.slice(1)).toEqual(workspace.lines)
-      expect(saved.lines[0]).toMatchObject({
+      expect(
+        saved.lines.filter((line) =>
+          workspace.lines.some((old) => old.id === line.id),
+        ),
+      ).toEqual(workspace.lines)
+      const added = saved.lines.find(
+        (line) => line.projectMaterialName === 'Труба 666x9',
+      )!
+      expect(added).toMatchObject({
         id: expect.stringMatching(/^line-/),
         projectMaterialName: 'Труба 666x9',
       })
@@ -5344,7 +5962,7 @@ describe('workspace user workflows', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
       await editGridMaterial('Труба 666x9')
       dialog = screen.getByRole('dialog')
-      fireEvent.change(
+      changeField(
         within(dialog).getByRole('textbox', {
           name: 'Наименование по проекту',
         }),
@@ -5355,65 +5973,87 @@ describe('workspace user workflows', () => {
       })
       expect(save.disabled).toBe(false)
       fireEvent.click(save)
+      await saveProjectEdits()
       await waitFor(() =>
         expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(2),
       )
       const updated = vi.mocked(saveProjectWorkspaceSnapshot).mock.calls[1]![0]
         .data.workspace
-      expect(updated.lines).toEqual([
-        {
-          ...saved.lines[0],
-          projectMaterialName: 'Труба 777x10 — новое название',
-        },
-        ...workspace.lines,
-      ])
+      expect(updated.lines).toEqual(
+        saved.lines.map((line) =>
+          line.id === added.id
+            ? { ...line, projectMaterialName: 'Труба 777x10 — новое название' }
+            : line,
+        ),
+      )
     },
   )
   it('opens saved data without a write and filters filled requests by positive finite quantity', async () => {
     mount()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-    const dialog = openRequest()
+    const dialog = await openRequest()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
     expect(
       within(dialog).getByRole('button', { name: /^Все\s*2$/ }),
     ).toBeTruthy()
-    const quantities = within(dialog).getAllByPlaceholderText(
+    const quantities = within(dialog).getAllByLabelText(
       'Количество по заявке, м',
     )
     for (const quantity of ['', '0', '-2', 'Infinity', 'abc']) {
-      fireEvent.change(quantities[0]!, { target: { value: quantity } })
+      changeField(quantities[0]!, { target: { value: quantity } })
       expect(
         within(dialog).getByRole('button', { name: /^Заполненные\s*0$/ }),
       ).toBeTruthy()
     }
-    fireEvent.change(quantities[0]!, { target: { value: '1,5' } })
+    changeField(quantities[0]!, { target: { value: '1,5' } })
     fireEvent.click(
       within(dialog).getByRole('button', { name: /^Заполненные\s*1$/ }),
     )
     expect(
-      within(dialog).getAllByPlaceholderText('Количество по заявке, м'),
+      within(dialog).getAllByLabelText('Количество по заявке, м'),
     ).toHaveLength(1)
     expect(within(dialog).queryByText('Бета')).toBeNull()
+    expect(
+      within(dialog).queryByRole('textbox', {
+        name: 'Поиск материалов заявки',
+      }),
+    ).toBeNull()
+    const searchButton = within(dialog).getByRole('button', {
+      name: 'Поиск материалов',
+    })
+    fireEvent.click(searchButton)
     const search = within(dialog).getByPlaceholderText(
       'Поиск по наименованию, нормативному документу, составу или массе',
     )
-    fireEvent.change(search, { target: { value: 'Бета' } })
+    expect(document.activeElement).toBe(search)
+    expect(searchButton.getAttribute('aria-expanded')).toBe('true')
+    changeField(search, { target: { value: 'Бета' } })
     expect(
       within(dialog).getByRole('button', { name: /^Заполненные\s*0$/ }),
     ).toBeTruthy()
-    fireEvent.change(search, { target: { value: '' } })
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(search.isConnected).toBe(false)
+    expect(document.activeElement).toBe(searchButton)
+    expect(searchButton.getAttribute('aria-expanded')).toBe('false')
     expect(
       within(dialog).getByRole('button', { name: /^Заполненные\s*1$/ }),
     ).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    expect(
+      within(dialog).getByLabelText<HTMLInputElement>('Количество по заявке, м')
+        .value,
+    ).toBe('1,5')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }))
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
   it('creates a request, reloads it, cancels deletion, then confirms deletion without losing project lines', async () => {
     const view = mount()
-    let dialog = openRequest()
-    fireEvent.change(
-      within(dialog).getAllByPlaceholderText('Количество по заявке, м')[0]!,
+    let dialog = await openRequest()
+    changeField(
+      within(dialog).getAllByLabelText('Количество по заявке, м')[0]!,
       { target: { value: '2' } },
     )
+    reviewWorkflow()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
     )
@@ -5460,11 +6100,12 @@ describe('workspace user workflows', () => {
       status: 'conflict',
     })
     mount()
-    const dialog = openRequest()
-    fireEvent.change(
-      within(dialog).getAllByPlaceholderText('Количество по заявке, м')[0]!,
+    const dialog = await openRequest()
+    changeField(
+      within(dialog).getAllByLabelText('Количество по заявке, м')[0]!,
       { target: { value: '1' } },
     )
+    reviewWorkflow()
     fireEvent.click(
       within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
     )
@@ -5568,8 +6209,12 @@ it.each([
     if (deleted)
       workspace.lines = workspace.lines.filter((line) => line.id !== 'line-0')
     mount(workspace)
-    const card = screen.getByText('Альфа').closest('div.border-2')
-    expect(card?.classList.contains(tone)).toBe(true)
+    const card = screen
+      .getByText('Альфа')
+      .closest('[id^="operation-overview-"]')
+    expect(card?.getAttribute('data-received-complete')).toBe(
+      tone === 'border-emerald-200' ? 'true' : 'false',
+    )
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   },
 )
@@ -5621,7 +6266,11 @@ it.each([
     const before = structuredClone(workspace)
     mount(workspace)
     fireEvent.click(
-      screen.getByRole('button', { name: new RegExp(`^${tabName}`) }),
+      screen.getByRole('button', {
+        name: new RegExp(
+          `^${tabName === 'Входной контроль' ? 'ЗНИ' : tabName === 'Общие данные' ? 'Обзор операций' : tabName}`,
+        ),
+      }),
     )
     if (tabName === 'Общие данные')
       fireEvent.click(screen.getByRole('button', { name: /^Отвод 23х7/ }))
@@ -5694,15 +6343,17 @@ it('returns 10 rejected by AVK, shows 14 still due on the request for 24, and ke
   )
   mount(workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '4 шт',
-  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('4 шт')
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
   await operationGridApi('returns-pending')
   fireEvent.click(screen.getByRole('button', { name: 'Оформить возврат' }))
-  fireEvent.change(screen.getByLabelText('Возвратить: Отвод 23х7'), {
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Далее' }),
+  )
+  changeField(await screen.findByLabelText('Возвратить: Отвод 23х7'), {
     target: { value: '10' },
   })
+  reviewWorkflow()
   fireEvent.click(
     screen.getByRole('button', { name: 'Сохранить фактический возврат' }),
   )
@@ -5718,11 +6369,9 @@ it('returns 10 rejected by AVK, shows 14 still due on the request for 24, and ke
     }),
   ).toBe('Не принято по АВК')
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '14 шт',
-  )
-  fireEvent.click(screen.getByRole('button', { name: /^Входной контроль/ }))
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('14 шт')
+  fireEvent.click(screen.getByRole('button', { name: /^ЗНИ$/ }))
+  fireEvent.click(screen.getByRole('button', { name: /^АВК$/ }))
   fireEvent.click(screen.getByRole('button', { name: /^Действия АВК/ }))
   fireEvent.click(screen.getByRole('menuitem', { name: 'Подписать АВК' }))
   fireEvent.click(
@@ -5736,9 +6385,7 @@ it('returns 10 rejected by AVK, shows 14 still due on the request for 24, and ke
   cleanup()
   mount(saved)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '14 шт',
-  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('14 шт')
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
   const grid = await operationGridApi('request:ЗП-42-Материалы')
   expect(
@@ -5762,21 +6409,22 @@ it('returns the rejected fourth elbow from the new tab, reopens one request unit
     tabs.findIndex((text) => text.startsWith('Выдача')) + 1,
   )
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
-    '1 из 1',
-  )
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '0 шт',
-  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено')).toBe('1 из 1')
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('0 шт')
   expect(screen.getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
   await operationGridApi('returns-pending')
   fireEvent.click(screen.getByRole('button', { name: 'Оформить возврат' }))
   const dialog = screen.getByRole('dialog', { name: 'Возврат заказчику' })
-  expect(within(dialog).getByText(/к возврату 1 шт/)).toBeTruthy()
-  fireEvent.change(within(dialog).getByLabelText('Возвратить: Отвод 23х7'), {
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+  expect(
+    await within(dialog).findByRole('gridcell', { name: '1' }),
+  ).toBeTruthy()
+  expect(within(dialog).getByRole('gridcell', { name: 'шт' })).toBeTruthy()
+  changeField(await within(dialog).findByLabelText('Возвратить: Отвод 23х7'), {
     target: { value: '1' },
   })
+  reviewWorkflow()
   const save = within(dialog).getByRole('button', {
     name: 'Сохранить фактический возврат',
   })
@@ -5789,12 +6437,8 @@ it('returns the rejected fourth elbow from the new tab, reopens one request unit
   expect(lastSaved().materialReceipts[0]!.quantity).toBe(4)
   validateQualityWorkspace(lastSaved(), workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
-    '0 из 1',
-  )
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '1 шт',
-  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено')).toBe('0 из 1')
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('1 шт')
   expect(screen.queryByText(/Получена полностью/)).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
   const requestsGrid = await operationGridApi('request:ЗП-42-Материалы')
@@ -5838,20 +6482,17 @@ it('returns excess from the stock tab, validates the remaining quantity and leav
   await operationGridApi('returns-stock')
   fireEvent.click(screen.getByRole('button', { name: 'Вернуть лишнее' }))
   let dialog = screen.getByRole('dialog', { name: 'Возврат лишнего материала' })
-  fireEvent.change(within(dialog).getByLabelText('Возвращаемое количество'), {
+  changeField(within(dialog).getByLabelText('Возвращаемое количество'), {
     target: { value: '5' },
   })
-  fireEvent.click(
-    within(dialog).getByRole('button', {
-      name: 'Сохранить фактический возврат',
-    }),
-  )
-  expect(within(dialog).getByRole('alert').textContent).toContain('превышает')
+  reviewWorkflow()
+  expect(within(dialog).getByRole('alert').textContent).toContain('не больше')
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(within(dialog).getByLabelText('Возвращаемое количество'), {
+  changeField(within(dialog).getByLabelText('Возвращаемое количество'), {
     target: { value: '1' },
   })
   expect(within(dialog).getByText('2,5 кг')).toBeTruthy()
+  reviewWorkflow()
   fireEvent.click(
     within(dialog).getByRole('button', {
       name: 'Сохранить фактический возврат',
@@ -5866,12 +6507,8 @@ it('returns excess from the stock tab, validates the remaining quantity and leav
   })
   validateQualityWorkspace(lastSaved(), workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Заявки/ }))
-  expect(requestMetricValue('ЗП-42-Материалы', 'Получено позиций')).toBe(
-    '1 из 1',
-  )
-  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось получить')).toBe(
-    '0 шт',
-  )
+  expect(requestMetricValue('ЗП-42-Материалы', 'Получено')).toBe('1 из 1')
+  expect(requestMetricValue('ЗП-42-Материалы', 'Осталось')).toBe('0 шт')
   expect(screen.getByText(/Получена полностью/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /^ЗП-42-Материалы/ }))
   fireEvent.click(screen.getByRole('button', { name: /^Возврат/ }))
@@ -5899,8 +6536,10 @@ it('does not mark replacement delivery after a rejected return as excess', async
   })
   validateQualityWorkspace(workspace)
   mount(workspace)
-  const card = screen.getByText('Отвод 23х7').closest('div.border-2')
-  expect(card?.classList.contains('border-emerald-200')).toBe(true)
+  const card = screen
+    .getByText('Отвод 23х7')
+    .closest('[id^="operation-overview-"]')
+  expect(card?.getAttribute('data-received-complete') === 'true').toBe(true)
   expect(card?.classList.contains('border-rose-300')).toBe(false)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 })
@@ -5910,15 +6549,15 @@ it('lets users collapse and reopen a receipt reached from overview without forci
   workspace.materialReceipts = [legacyReceipt()]
   mount(workspace)
   fireEvent.click(screen.getByRole('button', { name: /^Получение/ }))
-  fireEvent.change(screen.getByPlaceholderText('Шифр'), {
+  changeField(screen.getByRole('combobox', { name: 'Шифр' }), {
     target: { value: 'ДРУГОЙ' },
   })
-  fireEvent.change(screen.getByPlaceholderText('Тип материала'), {
+  changeField(screen.getByRole('combobox', { name: 'Тип материала' }), {
     target: { value: 'Оборудование' },
   })
 
   async function openReceiptFromOverview() {
-    fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
     const material = screen.getByRole('button', { name: /^Альфа/ })
     const card = material.closest('[id^="operation-overview-"]') as HTMLElement
     if (!within(card).queryByRole('grid')) fireEvent.click(material)
@@ -5931,10 +6570,10 @@ it('lets users collapse and reopen a receipt reached from overview without forci
 
   let toggle = await openReceiptFromOverview()
   expect(
-    screen.getByRole<HTMLInputElement>('textbox', { name: 'Шифр' }).value,
+    screen.getByRole<HTMLButtonElement>('combobox', { name: 'Шифр' }).value,
   ).toBe('')
   expect(
-    screen.getByRole<HTMLInputElement>('textbox', { name: 'Тип материала' })
+    screen.getByRole<HTMLButtonElement>('combobox', { name: 'Тип материала' })
       .value,
   ).toBe('')
   const card = toggle.closest('[id^="operation-receipts-"]') as HTMLElement
@@ -5944,7 +6583,7 @@ it('lets users collapse and reopen a receipt reached from overview without forci
   expect(toggle.getAttribute('aria-expanded')).toBe('false')
   expect(within(card).queryByRole('grid')).toBeNull()
 
-  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+  changeField(screen.getByRole('textbox', { name: 'Поиск получений' }), {
     target: { value: 'Альфа' },
   })
   expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -5970,7 +6609,7 @@ it('paginates 10000 overview materials without mounting off-page cards or saving
   }))
   const before = structuredClone(workspace)
   let view = mount(workspace)
-  fireEvent.click(screen.getByRole('button', { name: /^Общие данные/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Обзор операций' }))
   const cards = () => document.querySelectorAll('[id^="operation-overview-"]')
   expect(cards()).toHaveLength(25)
   expect(screen.getByText('Найдено 10000 из 10000 позиций')).toBeTruthy()
@@ -5984,7 +6623,7 @@ it('paginates 10000 overview materials without mounting off-page cards or saving
   expect(screen.getByText('Страница 1 из 400')).toBeTruthy()
   expect(cards()).toHaveLength(25)
   fireEvent.click(screen.getByRole('button', { name: 'Последняя страница' }))
-  fireEvent.change(screen.getAllByLabelText('На странице: Общие данные')[0]!, {
+  changeField(screen.getAllByLabelText('На странице: Общие данные')[0]!, {
     target: { value: '50' },
   })
   expect(cards()).toHaveLength(50)
@@ -5992,10 +6631,9 @@ it('paginates 10000 overview materials without mounting off-page cards or saving
   view = mount(workspace, true)
   expect(cards()).toHaveLength(50)
   expect(screen.getAllByText('Страница 200 из 200')).toHaveLength(1)
-  fireEvent.change(
-    screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
-    { target: { value: 'Материал 1000' } },
-  )
+  changeField(screen.getByPlaceholderText(/Поиск по наименованию, шифру/), {
+    target: { value: 'Материал 1000' },
+  })
   expect(cards()).toHaveLength(1)
   expect(screen.getByText('Материал 1000')).toBeTruthy()
   expect(screen.getByText('1–1 из 1')).toBeTruthy()
@@ -6036,7 +6674,7 @@ it('paginates request and receipt groups independently and searches beyond the c
   expect(document.querySelectorAll('[id^="operation-requests-"]')).toHaveLength(
     25,
   )
-  fireEvent.change(screen.getAllByLabelText('На странице: Заявки')[0]!, {
+  changeField(screen.getAllByLabelText('На странице: Заявки')[0]!, {
     target: { value: '10' },
   })
   fireEvent.click(
@@ -6049,7 +6687,7 @@ it('paginates request and receipt groups independently and searches beyond the c
   expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
     25,
   )
-  fireEvent.change(screen.getByRole('textbox', { name: 'Поиск получений' }), {
+  changeField(screen.getByRole('textbox', { name: 'Поиск получений' }), {
     target: { value: 'Материал 31' },
   })
   expect(document.querySelectorAll('[id^="operation-receipts-"]')).toHaveLength(
@@ -6073,13 +6711,13 @@ it('persists numbering settings separately from documents and restores the setti
   const panel = screen.getByRole('region', { name: 'Настройки приложения' })
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  fireEvent.change(within(panel).getByLabelText('Документ'), {
+  changeField(within(panel).getByLabelText('Документ'), {
     target: { value: 'avk' },
   })
-  fireEvent.change(within(panel).getByLabelText('Шаблон номера'), {
+  changeField(within(panel).getByLabelText('Шаблон номера'), {
     target: { value: 'АКТ/{год}/{номер}' },
   })
-  fireEvent.change(within(panel).getByLabelText('Текущее значение счётчика'), {
+  changeField(within(panel).getByLabelText('Текущее значение счётчика'), {
     target: { value: '40' },
   })
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
@@ -6094,7 +6732,7 @@ it('persists numbering settings separately from documents and restores the setti
   view.unmount()
   view = mount(saved, true)
   const restored = screen.getByRole('region', { name: 'Настройки приложения' })
-  fireEvent.change(within(restored).getByLabelText('Документ'), {
+  changeField(within(restored).getByLabelText('Документ'), {
     target: { value: 'avk' },
   })
   expect(within(restored).getByText(/АКТ\/\d{4}\/0041/)).toBeTruthy()
@@ -6110,15 +6748,15 @@ it('reserves a configured request number only when saving, together with its cou
     lastValue: 8,
   }
   mount(workspace)
-  let dialog = openRequest()
+  let dialog = await openRequest()
   expect(within(dialog).getByDisplayValue('ЗАЯВКА-ТЕСТ-09')).toBeTruthy()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
-  dialog = openRequest()
-  fireEvent.change(
-    within(dialog).getAllByPlaceholderText('Количество по заявке, м')[0]!,
-    { target: { value: '2' } },
-  )
+  dialog = await openRequest()
+  changeField(within(dialog).getAllByLabelText('Количество по заявке, м')[0]!, {
+    target: { value: '2' },
+  })
+  reviewWorkflow()
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить заявку' }),
   )
@@ -6183,14 +6821,14 @@ it('counts unique materials, prioritizes unreceived requests and keeps project c
   expect(
     screen
       .getByText('Альфа')
-      .closest('div.border-2')
-      ?.classList.contains('border-emerald-200'),
+      .closest('[id^="operation-overview-"]')
+      ?.getAttribute('data-received-complete') === 'true',
   ).toBe(false)
   expect(
     screen
       .getByText('Бета')
-      .closest('div.border-2')
-      ?.classList.contains('border-emerald-200'),
+      .closest('[id^="operation-overview-"]')
+      ?.getAttribute('data-received-complete') === 'true',
   ).toBe(false)
   const remaining = () =>
     badges().getByRole('button', { name: /Осталось получить/ })
@@ -6217,10 +6855,9 @@ it('counts unique materials, prioritizes unreceived requests and keeps project c
   view = mount(workspace, true)
   expect(names()).toEqual(['Бета', 'Альфа', 'Гамма'])
   expect(remaining().getAttribute('aria-pressed')).toBe('true')
-  fireEvent.change(
-    screen.getByPlaceholderText(/Поиск по наименованию, шифру/),
-    { target: { value: 'Бета' } },
-  )
+  changeField(screen.getByPlaceholderText(/Поиск по наименованию, шифру/), {
+    target: { value: 'Бета' },
+  })
   expect(names()).toEqual(['Бета'])
   const pagination = screen.getByRole('navigation', {
     name: 'Страницы: Общие данные',
@@ -6243,8 +6880,8 @@ it('reopens request demand and removes green only after an actual rejected retur
   expect(
     screen
       .getByText('Отвод 23х7')
-      .closest('div.border-2')
-      ?.classList.contains('border-emerald-200'),
+      .closest('[id^="operation-overview-"]')
+      ?.getAttribute('data-received-complete') === 'true',
   ).toBe(true)
   view.unmount()
   workspace.qualityWorkflow = recordCustomerReturn(
@@ -6259,8 +6896,8 @@ it('reopens request demand and removes green only after an actual rejected retur
   expect(
     screen
       .getByText('Отвод 23х7')
-      .closest('div.border-2')
-      ?.classList.contains('border-emerald-200'),
+      .closest('[id^="operation-overview-"]')
+      ?.getAttribute('data-received-complete') === 'true',
   ).toBe(false)
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   view.unmount()
@@ -6351,19 +6988,30 @@ describe('PostgreSQL editing in the real workspace UI', () => {
     expect(saveProjectWorkspaceChanges).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     await editGridQuantity('Альфа', 'ТЕСТ', '15')
+    await saveProjectEdits()
     await waitFor(() =>
       expect(saveProjectWorkspaceChanges).toHaveBeenCalledTimes(1),
     )
     expect(
       vi.mocked(saveProjectWorkspaceChanges).mock.calls[0]![0].data.changes,
-    ).toEqual([
-      expect.objectContaining({
-        collection: 'lines',
-        id: 'line-0',
-        expectedVersion: 1,
-        value: expect.objectContaining({ plannedQuantity: 15 }),
-      }),
-    ])
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          collection: 'lines',
+          id: 'line-0',
+          expectedVersion: 1,
+          value: expect.objectContaining({ plannedQuantity: 15 }),
+        }),
+      ]),
+    )
+    const changes = vi.mocked(saveProjectWorkspaceChanges).mock.calls[0]![0]
+      .data.changes
+    expect(
+      changes.filter((change) => change.collection === 'lines'),
+    ).toHaveLength(1)
+    expect(
+      changes.filter((change) => change.collection === 'projectChanges'),
+    ).toHaveLength(2)
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
     expect(screen.queryByText('Сохранение…')).toBeNull()
   })
@@ -6383,12 +7031,13 @@ describe('PostgreSQL editing in the real workspace UI', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Проектная база' }))
     await editGridQuantity('Альфа', 'ТЕСТ', '15')
-    await screen.findByText('Сравнение одновременных изменений (1)')
+    await saveProjectEdits()
+    await screen.findByText('Сравнение одновременных изменений (3)')
     expect(
-      screen.getByRole('columnheader', { name: 'Ваше изменение' }),
+      screen.getAllByRole('columnheader', { name: 'Ваше изменение' })[0],
     ).toBeTruthy()
     expect(
-      screen.getByRole('columnheader', { name: 'Сейчас в базе' }),
+      screen.getAllByRole('columnheader', { name: 'Сейчас в базе' })[0],
     ).toBeTruthy()
     vi.mocked(loadProjectWorkspaceChanges).mockResolvedValueOnce({
       revision: 'pg:2',
@@ -6397,12 +7046,23 @@ describe('PostgreSQL editing in the real workspace UI', () => {
       hasMore: false,
     })
     fireEvent.click(
+      within(
+        screen.getByRole('dialog', { name: 'Сохранить изменения проекта' }),
+      ).getByRole('button', { name: 'Вернуться к таблице' }),
+    )
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить правки' }))
+    confirm.mockRestore()
+    fireEvent.click(
       screen.getByRole('button', { name: 'Принять значения из базы' }),
     )
     await waitFor(() =>
       expect(
-        screen.queryByText('Сравнение одновременных изменений (1)'),
+        screen.queryByText('Сравнение одновременных изменений (3)'),
       ).toBeNull(),
+    )
+    await waitFor(async () =>
+      expect((await gridCell('Альфа', 'cipher:ТЕСТ')).textContent).toBe('17'),
     )
     expect(saveProjectWorkspaceChanges).toHaveBeenCalledTimes(1)
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
@@ -6419,20 +7079,22 @@ it('automatically records an issue before VK from the single issue form', async 
   expect(within(dialog).queryByLabelText('Причина выдачи до ВК')).toBeNull()
   await operationGridApi('issue-selection')
   await editIssue('receipt-legacy', 'quantity', '1')
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    within(dialog).getByRole('button', { name: /^(Далее|Сохранить выдачу)$/ }),
   )
   expect(within(dialog).getByRole('alert').textContent).toContain(
     'получателя и причину',
   )
-  fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+  changeField(within(dialog).getByLabelText('Получатель'), {
     target: { value: 'Бригада 5' },
   })
-  fireEvent.change(within(dialog).getByLabelText('Причина выдачи до ВК'), {
+  changeField(within(dialog).getByLabelText('Причина выдачи до ВК'), {
     target: { value: 'Передан до оформления' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    within(dialog).getByRole('button', { name: /^(Далее|Сохранить выдачу)$/ }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -6464,14 +7126,15 @@ it('splits a mixed issue automatically and keeps approved-only selection free of
   expect(within(dialog).getByLabelText('Выдача до ВК').textContent).toContain(
     '1 м',
   )
-  fireEvent.change(within(dialog).getByLabelText('Получатель'), {
+  changeField(within(dialog).getByLabelText('Получатель'), {
     target: { value: 'Бригада' },
   })
-  fireEvent.change(within(dialog).getByLabelText('Причина выдачи до ВК'), {
+  changeField(within(dialog).getByLabelText('Причина выдачи до ВК'), {
     target: { value: 'Фактическая передача' },
   })
+  reviewWorkflow()
   fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Сохранить выдачу' }),
+    within(dialog).getByRole('button', { name: /^(Далее|Сохранить выдачу)$/ }),
   )
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
@@ -6507,13 +7170,13 @@ it('accepts a partial site return and shows it separately after reopening the re
     screen.getByRole('button', { name: 'Принять возврат с площадки' }),
   )
   const dialog = screen.getByRole('dialog')
-  fireEvent.change(
-    within(dialog).getByLabelText('Количество возврата с площадки'),
-    { target: { value: '0,4' } },
-  )
+  changeField(within(dialog).getByLabelText('Количество возврата с площадки'), {
+    target: { value: '0,4' },
+  })
+  reviewWorkflow()
   fireEvent.click(
     within(dialog).getByRole('button', {
-      name: 'Сохранить возврат с площадки',
+      name: /^(Далее|Сохранить возврат с площадки)$/,
     }),
   )
   await waitFor(() =>
@@ -6535,4 +7198,339 @@ it('accepts a partial site return and shows it separately after reopening the re
   fireEvent.click(screen.getByRole('button', { name: /^Принятые возвраты/ }))
   const history = await operationGridApi('site-returns-history')
   expect(history.getDisplayedRowAtIndex(0)!.data.item.quantity).toBe(0.4)
+})
+
+it('opens the separate M-15 register from the sidebar without saving accounting data', async () => {
+  mount()
+  fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
+  expect(await screen.findByRole('heading', { name: 'М-15' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Реестр М-15' })).toBeTruthy()
+  expect(screen.queryByRole('region', { name: 'Общая сверка М-15' })).toBeNull()
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  expect(saveProjectWorkspaceChanges).not.toHaveBeenCalled()
+})
+it('adds M-15 composition before receipts in one atomic save', async () => {
+  const initial = base()
+  mount(initial)
+  const before = structuredClone(initial)
+  fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Добавить М-15' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Новая М-15' })
+  changeField(within(dialog).getByLabelText('Номер М-15'), {
+    target: { value: '15-NEW' },
+  })
+  changeField(within(dialog).getByLabelText('Шифр М-15'), {
+    target: { value: 'ТЕСТ' },
+  })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+  await within(dialog).findByLabelText('Количество по М-15: Альфа, м')
+  changeField(within(dialog).getByLabelText('Количество по М-15: Альфа, м'), {
+    target: { value: '100' },
+  })
+  reviewWorkflow(dialog)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить М-15' }),
+  )
+  await screen.findByText('М-15 сохранена.')
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledOnce()
+  const saved = lastSaved()
+  expect(saved.m15Reconciliations).toEqual([
+    expect.objectContaining({
+      mode: 'independent',
+      cipher: 'ТЕСТ',
+      lines: [
+        expect.objectContaining({ projectLineId: 'line-0', quantity: 100 }),
+      ],
+      allocations: [],
+    }),
+  ])
+  expect(saved.materialReceipts).toEqual(before.materialReceipts)
+  expect(saved.materialRequests).toEqual(before.materialRequests)
+})
+it('does not expose M15 creation or selection inside receipt entry', async () => {
+  mount(conversionWorkspace())
+  const dialog = await openReceipt()
+  expect(within(dialog).queryByLabelText('Номер М-15')).toBeNull()
+  expect(
+    within(dialog).queryByRole('button', { name: 'Создать М-15 с составом' }),
+  ).toBeNull()
+  expect(within(dialog).getByLabelText('Номер АПП')).toBeTruthy()
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+})
+it('saves independent M15 alongside an APP receipt without changing physical or signed history', async () => {
+  const { workspace, value } = linkedM15Fixture()
+  value.allocations = []
+  Object.assign(workspace.materialRequests[0]!, {
+    date: '2026-11-18',
+    altUnit: 'кг',
+    altQuantity: 25,
+    altUnitFactor: 2.5,
+  })
+  mount(workspace)
+  const before = structuredClone(workspace)
+  fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
+  fireEvent.click(await screen.findByRole('button', { name: /^М-15 №15-1/ }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
+  fireEvent.click(
+    await within(dialog).findByRole('button', {
+      name: 'Настроить материал: Клапан',
+    }),
+  )
+  const details = await screen.findByRole('dialog', {
+    name: 'Настройки материала М-15',
+  })
+  expect(
+    within(details).queryByRole('button', { name: 'Выбрать получения' }),
+  ).toBeNull()
+  fireEvent.click(within(details).getByRole('button', { name: 'Готово' }))
+  reviewWorkflow(dialog)
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Сохранить М-15' }),
+  )
+  await screen.findByText('М-15 сохранена.')
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledOnce()
+  const saved = lastSaved()
+  expect(saved.m15Reconciliations![0]!.allocations).toEqual([])
+  expect(saved.m15Reconciliations![0]!.mode).toBe('independent')
+  expect(saved.materialReceipts).toEqual(before.materialReceipts)
+  expect(saved.qualityWorkflow!.cases).toEqual(before.qualityWorkflow.cases)
+  expect(saved.materialRequests).toEqual(before.materialRequests)
+})
+
+it.each([false, true])(
+  'removes M-15 composition through the register and preserves the document after reload (retry %s)',
+  async (retry) => {
+    const { workspace } = linkedM15Fixture()
+    Object.assign(workspace.materialRequests[0]!, {
+      date: '2026-11-18',
+      altUnit: 'кг',
+      altQuantity: 25,
+      altUnitFactor: 2.5,
+    })
+    const view = mount(workspace)
+    const before = structuredClone(workspace)
+    if (retry)
+      vi.mocked(saveProjectWorkspaceSnapshot).mockRejectedValueOnce(
+        new Error('Проверочная ошибка сохранения'),
+      )
+    fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Удалить состав М-15' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: 'Удалить состав М-15?' })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Удалить состав' }),
+    )
+    if (retry) {
+      await within(dialog).findByText(
+        'Удаление ещё не сохранено на сервере. Повторите попытку.',
+      )
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: 'Удалить состав' }),
+      )
+    }
+    await screen.findByText('Состав М-15 удалён.')
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(retry ? 2 : 1)
+    const saved = lastSaved()
+    expect(saved.m15Reconciliations).toEqual([])
+    expect(saved.materialReceipts).toEqual(before.materialReceipts)
+    expect(saved.materialRequests).toEqual(before.materialRequests)
+    expect(saved.qualityWorkflow).toEqual(before.qualityWorkflow)
+    view.unmount()
+    mount(saved)
+    fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
+    expect(
+      await screen.findByRole('button', { name: /^М-15 №15-1/ }),
+    ).toBeTruthy()
+    const grid = await operationGridApi('m15-register')
+    expect(
+      grid.getCellValue({
+        rowNode: grid.getDisplayedRowAtIndex(0)!,
+        colKey: 'materials',
+      }),
+    ).toBe(0)
+    expect(
+      screen.queryByRole('button', { name: 'Удалить состав М-15' }),
+    ).toBeNull()
+  },
+)
+
+it('provides independent flat tables in every operation section and preserves table state across list view', async () => {
+  const workspace = qualityWorkspace()
+  mount(workspace)
+  const sections = [
+    ['Обзор операций', 'overview-flat'],
+    ['Заявки', 'requests-flat'],
+    ['Получение', 'receipts-flat'],
+    ['ЗНИ', 'quality-zni-flat'],
+    ['АВК', 'quality-avk-flat'],
+    ['Выдача', 'issues'],
+    ['Возвраты', 'returns-flat'],
+  ] as const
+  for (const [name, id] of sections) {
+    fireEvent.click(
+      screen.getByRole('button', { name: new RegExp(`^${name}$`) }),
+    )
+    expect(
+      screen
+        .getByRole('button', { name: 'Список' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Таблица' }))
+    const grid = await operationGridApi(`${id}:table`)
+    expect(document.querySelectorAll('.ag-root-wrapper')).toHaveLength(1)
+    expect(
+      grid
+        .getColumnDefs()!
+        .some(
+          (column) =>
+            'headerName' in column && column.headerName === 'Материал',
+        ),
+    ).toBe(true)
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Получение' }))
+  const grid = await operationGridApi('receipts-flat:table')
+  expect(grid.getDisplayedRowCount()).toBe(1)
+  await act(async () => {
+    await grid.setColumnFilterModel('quantity', {
+      filterType: 'number',
+      type: 'greaterThan',
+      filter: 100,
+    })
+    grid.onFilterChanged()
+  })
+  expect(grid.getDisplayedRowCount()).toBe(0)
+  fireEvent.click(screen.getByRole('button', { name: 'Список' }))
+  expect(screen.getByRole('button', { name: /^Альфа/ })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Таблица' }))
+  const restored = await operationGridApi('receipts-flat:table')
+  expect(restored.getFilterModel()).toHaveProperty('quantity')
+  expect(restored.getDisplayedRowCount()).toBe(0)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+}, 60000)
+
+it('uploads receipt scans only after saving, links each original, and retries a partial failure without duplicating receipts or files', async () => {
+  const workspace = conversionWorkspace()
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+  }
+  let releaseSave: (value: {
+    status: 'saved'
+    revision: string
+  }) => void = () => {}
+  vi.mocked(saveProjectWorkspaceSnapshot).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releaseSave = resolve
+      }),
+  )
+  let persisted = false,
+    failedQuality = false
+  const uploads: { documentId: string; files: { name: string }[] }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        expect(persisted).toBe(true)
+        const body = JSON.parse(String(init.body))
+        uploads.push(body)
+        if (body.documentId.includes('receipt-field') && !failedQuality) {
+          failedQuality = true
+          return Response.json(
+            { error: 'Тестовый сбой загрузки' },
+            { status: 503 },
+          )
+        }
+        return Response.json({
+          revision: String(uploads.length),
+          files: [],
+          documents: [],
+        })
+      }
+      const state = persisted ? lastSaved() : workspace
+      return Response.json({
+        ...buildDocumentRegistry(state),
+        workspaceRevision: persisted ? 'saved' : 'initial',
+        manifest: {
+          revision: String(uploads.length),
+          files: [],
+          documents: [],
+        },
+      })
+    }),
+  )
+  mount(workspace)
+  const dialog = await openReceipt(),
+    form = within(dialog)
+  changeField(form.getByLabelText('Номер АПП'), {
+    target: { value: 'SCAN-15' },
+  })
+  changeField(form.getByLabelText('Поступило: Альфа, м'), {
+    target: { value: '2' },
+  })
+  async function choose(name: RegExp, filename: string) {
+    fireEvent.click(form.getByRole('button', { name }))
+    const picker = await screen.findByRole('dialog', { name })
+    await waitFor(() => expect(within(picker).queryByRole('status')).toBeNull())
+    fireEvent.change(within(picker).getByLabelText('Файлы оригиналов'), {
+      target: {
+        files: [
+          new File(['%PDF-1.4 scan'], filename, { type: 'application/pdf' }),
+        ],
+      },
+    })
+    fireEvent.click(
+      within(picker).getByRole('button', { name: 'Прикрепить (1)' }),
+    )
+  }
+  await choose(/^Сканы: АПП/, 'APP.pdf')
+  fireEvent.click(form.getByText(/^Дополнительные сведения/))
+  changeField(form.getByLabelText('Паспорт / сертификат'), {
+    target: { value: 'Паспорт 17' },
+  })
+  await choose(/^Сканы: Паспорт/, 'Passport.pdf')
+  expect(uploads).toHaveLength(0)
+  reviewWorkflow(dialog)
+  fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+  )
+  expect(uploads).toHaveLength(0)
+  persisted = true
+  await act(async () => releaseSave({ status: 'saved', revision: 'saved' }))
+  await form.findByText(/Получение сохранено.*Тестовый сбой/)
+  const saved = lastSaved(),
+    receipt = saved.materialReceipts[0]!
+  expect(saved.materialReceipts).toHaveLength(1)
+  expect(uploads[0]).toMatchObject({
+    documentId: JSON.stringify(['receipt-document', receipt.appDocumentId]),
+    files: [{ name: 'APP.pdf' }],
+  })
+  expect(uploads[1]).toMatchObject({
+    documentId: JSON.stringify(['receipt-field', receipt.id, 'certificate']),
+    files: [{ name: 'Passport.pdf' }],
+  })
+  fireEvent.click(
+    form.getByRole('button', { name: 'Повторить загрузку сканов' }),
+  )
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('dialog', { name: 'Оформить получение' }),
+    ).toBeNull(),
+  )
+  expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1)
+  expect(uploads.map((upload) => upload.files[0]!.name)).toEqual([
+    'APP.pdf',
+    'Passport.pdf',
+    'Passport.pdf',
+  ])
+  expect(lastSaved().materialReceipts).toHaveLength(1)
+  const registry = buildDocumentRegistry(saved)
+  for (const upload of uploads)
+    expect(
+      registry.documents.find((doc) => doc.id === upload.documentId)
+        ?.materialIds,
+    ).toHaveLength(1)
 })

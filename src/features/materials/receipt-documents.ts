@@ -1,5 +1,7 @@
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
+import type { M15Reconciliation } from './m15-reconciliation'
+import { indexM15Links } from './m15-linked'
 import { z } from 'zod'
-import { normalizeCalendarDate } from './calendar-date'
 import { documentNumberLabel, normalizeDocumentNumber } from './document-number'
 
 const calendarDate = z
@@ -28,7 +30,9 @@ export type DocumentReceipt = {
   appDocumentId?: string
   m15DocumentId?: string
 }
-type DocumentWorkspace = {
+export type DocumentWorkspace = {
+  /** Read-only projection; composition is stored in the workspace collection. */
+  m15Reconciliations?: readonly M15Reconciliation[]
   receiptDocuments?: Array<ReceiptDocument>
 }
 export const emptyReceiptDocumentFields: ReceiptDocumentFields = {
@@ -48,14 +52,14 @@ export function receiptDocumentNumberLabel(
   )
 }
 export function receiptDocumentLabel(document: ReceiptDocument) {
-  return `${receiptDocumentNumberLabel(document)} от ${document.date.split('-').reverse().join('.')}`
+  return `${receiptDocumentNumberLabel(document)} от ${formatCalendarDate(document.date)}`
 }
 export function receiptDocumentKey(
   document: Pick<ReceiptDocument, 'kind' | 'number' | 'date'>,
 ) {
   return JSON.stringify([
     document.kind,
-    document.number.trim().toLocaleLowerCase('ru'),
+    normalizeDocumentNumber(document.number).trim().toLocaleLowerCase('ru'),
     document.date,
   ])
 }
@@ -69,24 +73,75 @@ export function documentsForReceipt(
   workflow?: DocumentWorkspace,
   index?: ReadonlyMap<string, ReceiptDocument>,
 ): Array<ReceiptDocument> {
-  const documents = receiptDocuments(workflow)
-  const find = (id?: string) =>
-    id
-      ? index
-        ? index.get(id)
-        : documents.find((doc) => doc.id === id)
-      : undefined
-  return [find(receipt.appDocumentId), find(receipt.m15DocumentId)].filter(
-    (doc): doc is ReceiptDocument => !!doc,
+  const document = (index ?? indexReceiptDocuments(workflow)).get(
+    receipt.appDocumentId ?? '',
+  )
+  return document?.kind === 'app' ? [document] : []
+}
+
+export type ReceiptDocumentIndex = Map<string, ReceiptDocument> & {
+  linkedIds: Set<string>
+  m15ByReceipt: ReturnType<typeof indexM15Links>['byReceipt']
+}
+/** Build once for a calculation/render. Quantities come only from M-15 composition. */
+export function indexReceiptDocuments(
+  workflow?: DocumentWorkspace,
+): ReceiptDocumentIndex {
+  return Object.assign(
+    new Map(
+      receiptDocuments(workflow).map((document) => [document.id, document]),
+    ),
+    {
+      linkedIds: new Set(
+        workflow?.m15Reconciliations
+          ?.filter((row) => row.mode === 'linked')
+          .map((row) => row.id),
+      ),
+      m15ByReceipt: indexM15Links(workflow?.m15Reconciliations).byReceipt,
+    },
   )
 }
 
-/** Build once for a calculation/render; never cache a mutable catalog globally. */
-export function indexReceiptDocuments(workflow?: DocumentWorkspace) {
-  return new Map(
-    receiptDocuments(workflow).map((document) => [document.id, document]),
-  )
+export function quantityForReceiptDocument(
+  receipt: DocumentReceipt & { quantity: number },
+  documentId: string,
+  workflow?: DocumentWorkspace,
+  index = indexReceiptDocuments(workflow),
+) {
+  if (receipt.appDocumentId === documentId) return receipt.quantity
+  if (index.linkedIds.has(documentId))
+    return (index.m15ByReceipt.get(receipt.id) ?? [])
+      .filter((row) => row.documentId === documentId)
+      .reduce((total, row) => total + row.link.quantity, 0)
+  return 0
 }
+
+/** Documentary coverage is distinct from physical receipts and never added to stock totals. */
+export function receiptDocumentCoverage(
+  receipt: DocumentReceipt & { quantity: number; projectUnit: string },
+  workflow?: DocumentWorkspace,
+  index = indexReceiptDocuments(workflow),
+) {
+  return documentsForReceipt(receipt, workflow, index).map((document) => ({
+    document,
+    quantity:
+      document.kind === 'app'
+        ? receipt.quantity
+        : index.linkedIds.has(document.id)
+          ? quantityForReceiptDocument(receipt, document.id, workflow, index)
+          : null,
+    unit: receipt.projectUnit,
+    links: (index.m15ByReceipt.get(receipt.id) ?? []).filter(
+      (link) => link.documentId === document.id,
+    ),
+  }))
+}
+export function receiptDocumentCoverageLabel(
+  item: ReturnType<typeof receiptDocumentCoverage>[number],
+) {
+  return `${receiptDocumentLabel(item.document)}${item.document.kind === 'm15' && item.quantity !== null ? ` · ${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 9 }).format(item.quantity)} ${item.unit}` : ''}`
+}
+
 export function receiptDocumentFields(
   receipt: DocumentReceipt,
   workflow?: DocumentWorkspace,
@@ -102,18 +157,11 @@ export function receiptDocumentFields(
   }
 }
 export function receiptDocumentError(fields: ReceiptDocumentFields) {
-  for (const kind of ['app', 'm15'] as const) {
-    const number = normalizeDocumentNumber(fields[`${kind}Number`]),
-      date = fields[`${kind}Date`]
-    if (!number && !date) continue
-    if (!number || !calendarDate.safeParse(date).success)
-      return `Укажите номер и корректную дату ${receiptDocumentKindLabel(kind)}.`
-  }
   if (
-    !normalizeDocumentNumber(fields.appNumber) &&
-    !normalizeDocumentNumber(fields.m15Number)
+    !normalizeDocumentNumber(fields.appNumber).trim() ||
+    !calendarDate.safeParse(fields.appDate).success
   )
-    return 'Укажите АПП или М-15: номер и дату хотя бы одного документа.'
+    return 'Укажите номер и корректную дату АПП.'
   return ''
 }
 /** The caller saves the returned catalog and receipt references in one workspace update. */
@@ -122,7 +170,7 @@ export function bindReceiptDocuments(
   catalog: Array<ReceiptDocument>,
 ) {
   const result: { appDocumentId?: string; m15DocumentId?: string } = {}
-  for (const kind of ['app', 'm15'] as const) {
+  for (const kind of ['app'] as const) {
     const rawNumber = fields[`${kind}Number`].trim(),
       number = normalizeDocumentNumber(rawNumber),
       date = fields[`${kind}Date`]
@@ -149,7 +197,7 @@ export function bindReceiptDocuments(
       })
       catalog.push(document)
     }
-    result[kind === 'app' ? 'appDocumentId' : 'm15DocumentId'] = document.id
+    result.appDocumentId = document.id
   }
   return result
 }

@@ -1,3 +1,10 @@
+import { receiptDocumentKey, receiptDocumentSchema } from './receipt-documents'
+import { validateProjectAccounting } from './project-changes'
+import {
+  projectChangeSchema,
+  stockTransferSchema,
+  requestCancellationSchema,
+} from './project-change-types'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { workspaceSql } from '../../db/connection.server'
@@ -8,6 +15,10 @@ import {
   validateQualityWorkspace,
 } from './quality-workflow'
 import { workspaceSnapshotSchema } from './workspace-snapshot'
+import {
+  m15ReconciliationSchema,
+  validateM15Workspace,
+} from './m15-reconciliation'
 import {
   entitiesWorkspace,
   entityGroups,
@@ -45,6 +56,8 @@ export function parseWorkspaceRevision(value: string): number {
 }
 const jsonRecord = z.record(z.string(), z.json())
 function validateEntity(entity: Pick<Entity, 'collection' | 'id' | 'value'>) {
+  if (entity.collection === 'settings' && entity.id === 'accountingGeneration')
+    throw new Error('Служебную отметку чистого старта нельзя изменять.')
   if (entity.value === null) return
   const { collection, id, value } = entity
   if (collection === 'settings') {
@@ -66,8 +79,14 @@ function validateEntity(entity: Pick<Entity, 'collection' | 'id' | 'value'>) {
     const parsed = jsonRecord.parse(value)
     if (parsed.id !== id)
       throw new Error('ID записи не совпадает с изменением.')
+    if (collection === 'projectChanges') projectChangeSchema.parse(value)
+    if (collection === 'stockTransfers') stockTransferSchema.parse(value)
+    if (collection === 'materialRequests' && parsed.projectCancellations)
+      z.array(requestCancellationSchema).parse(parsed.projectCancellations)
     if (collection === 'cases')
       qualityWorkflowSchema.shape.cases.element.parse(value)
+    if (collection === 'm15Reconciliations')
+      m15ReconciliationSchema.parse(value)
     if (collection === 'receiptDocuments')
       qualityWorkflowSchema.shape.receiptDocuments.unwrap().element.parse(value)
     if (collection === 'customerReturns')
@@ -90,10 +109,51 @@ export function entityLinks(
     )
   )
     add('lines', value.projectLineId)
+  if (entity.collection === 'projectChanges') {
+    const change = projectChangeSchema.parse(value)
+    add('projectChanges', change.previousId)
+    for (const item of change.items) {
+      add('lines', item.after.id)
+      add('lines', item.replacesLineId)
+    }
+  }
+  if (entity.collection === 'stockTransfers') {
+    const transfer = stockTransferSchema.parse(value)
+    add('materialReceipts', transfer.receiptId)
+    add('lines', transfer.fromProjectLineId)
+    add('lines', transfer.toProjectLineId)
+    add('projectChanges', transfer.projectChangeId)
+  }
+  if (
+    entity.collection === 'materialRequests' &&
+    Array.isArray(value.projectCancellations)
+  )
+    for (const entry of z
+      .array(requestCancellationSchema)
+      .parse(value.projectCancellations))
+      add(
+        entry.basisKind === 'transfer' ? 'stockTransfers' : 'projectChanges',
+        entry.basisId,
+      )
+  if (entity.collection === 'customerReturns') {
+    add('lines', value.projectLineId)
+    add('projectChanges', value.projectChangeId)
+  }
   if (entity.collection === 'materialReceipts') {
     add('materialRequests', value.requestId)
     add('receiptDocuments', value.appDocumentId)
     add('receiptDocuments', value.m15DocumentId)
+  }
+  if (entity.collection === 'm15Reconciliations') {
+    const reconciliation = m15ReconciliationSchema.parse(value)
+    add('receiptDocuments', reconciliation.id)
+    if (
+      reconciliation.mode === 'linked' ||
+      reconciliation.mode === 'independent'
+    )
+      for (const line of reconciliation.lines) add('lines', line.projectLineId)
+    for (const allocation of reconciliation.allocations)
+      add('materialReceipts', allocation.receiptId)
   }
   if (
     entity.collection === 'materialIssues' ||
@@ -116,6 +176,10 @@ export function entityLinks(
 }
 function uniqueKeys(entity: Pick<Entity, 'collection' | 'value'>): string[] {
   if (entity.value === null) return []
+  if (entity.collection === 'lines' || entity.collection === 'projectChanges') {
+    const value = entity.value as Record<string, Json>
+    return [`project-scope:${JSON.stringify([value.project, value.cipher])}`]
+  }
   if (entity.collection === 'cases') {
     const entry = entity.value as unknown as NonNullable<
       WorkspaceSnapshot['qualityWorkflow']
@@ -130,9 +194,8 @@ function uniqueKeys(entity: Pick<Entity, 'collection' | 'value'>): string[] {
     ]
   }
   if (entity.collection === 'receiptDocuments') {
-    const doc = entity.value as Record<string, Json>
     return [
-      `receipt:${JSON.stringify([doc.kind, String(doc.number).trim().toLocaleLowerCase('ru'), doc.date])}`,
+      `receipt:${receiptDocumentKey(receiptDocumentSchema.parse(entity.value))}`,
     ]
   }
   return []
@@ -161,12 +224,28 @@ async function validationScope(
     ...old.flatMap((row) => row.links),
     'settings/qualityDefaults',
   ]
+  // The first baseline must include every existing position, including untouched legacy rows.
+  for (const change of changes)
+    if (change.collection === 'projectChanges' && change.value) {
+      const value = projectChangeSchema.parse(change.value)
+      if (value.kind !== 'baseline') continue
+      const rows = await sql<
+        DbRecord[]
+      >`select * from workspace_records where collection = 'lines' and value->>'project' = ${value.project} and value->>'cipher' = ${value.cipher}`
+      for (const row of rows) {
+        found.set(row.key, row)
+        pending.push(row.key, ...row.links)
+      }
+    }
   const visited = new Set<string>()
   const uniqueness = [...new Set(changes.flatMap(uniqueKeys))]
   if (uniqueness.length) {
+    // Project positions share a scope marker, not a uniqueness constraint.
+    // Load the scope's change history here; its explicit links provide positions.
+    // A first baseline separately loads every legacy position above.
     const collisions = await sql<
       DbRecord[]
-    >`select * from workspace_records where unique_keys && ${sql.array(uniqueness)}::text[]`
+    >`select * from workspace_records where collection <> 'lines' and unique_keys && ${sql.array(uniqueness)}::text[]`
     for (const row of collisions) {
       found.set(row.key, row)
       pending.push(row.key, ...row.links)
@@ -179,7 +258,9 @@ async function validationScope(
     const reverse = keys.filter(
       (key) =>
         roots.has(key) ||
-        /^(materialRequests|materialReceipts|cases)\//.test(key),
+        /^(lines|projectChanges|stockTransfers|materialRequests|materialReceipts|cases)\//.test(
+          key,
+        ),
     )
     const rows = await sql<
       DbRecord[]
@@ -188,7 +269,11 @@ async function validationScope(
     for (const row of rows) {
       found.set(row.key, row)
       pending.push(...row.links)
-      if (/^(materialRequests|materialReceipts|cases)\//.test(row.key))
+      if (
+        /^(lines|projectChanges|stockTransfers|materialRequests|materialReceipts|cases)\//.test(
+          row.key,
+        )
+      )
         pending.push(row.key)
     }
   }
@@ -202,6 +287,14 @@ function validateReferences(
 ) {
   for (const entity of next.values())
     for (const link of entityLinks(entity)) {
+      // Reconciliation is a comparison, not a stock movement. Receipt deletion
+      // leaves an explicitly stale allocation instead of blocking the operation.
+      if (
+        entity.collection === 'm15Reconciliations' &&
+        (entity.value as { mode?: string }).mode !== 'linked' &&
+        link.startsWith('materialReceipts/')
+      )
+        continue
       if (old.has(link) && !next.has(link))
         throw new Error(
           'Нельзя удалить запись, пока на неё ссылаются сохранённые операции.',
@@ -232,7 +325,19 @@ function validateReferences(
       const receipt = next.get(
         entityKey('materialReceipts', String(value.receiptId)),
       )?.value as Record<string, Json> | undefined
-      if (receipt && receipt.projectLineId !== value.projectLineId)
+      if (
+        receipt &&
+        receipt.projectLineId !== value.projectLineId &&
+        ![...next.values()].some(
+          (row) =>
+            row.collection === 'stockTransfers' &&
+            row.value &&
+            !Array.isArray(row.value) &&
+            typeof row.value === 'object' &&
+            row.value.receiptId === value.receiptId &&
+            row.value.toProjectLineId === value.projectLineId,
+        )
+      )
         throw new Error('Материал выдачи не соответствует поступлению.')
     }
   }
@@ -256,6 +361,9 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
           { key: string; version: number }[]
         >`select * from workspace_groups`
         return {
+          accountingGeneration: rows.find(
+            (row) => row.key === 'settings/accountingGeneration',
+          )?.value as string | undefined,
           workspace: entitiesWorkspace(rows),
           revision: revisionString(Number(meta.revision)),
           storage: 'postgres' as const,
@@ -292,6 +400,37 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
         // Short database-wide commit queue protects cross-record invariants in every server process.
         // It does not compare workspace revisions: unrelated stale clients can both save.
         await tx`select pg_advisory_xact_lock(43187, 1)`
+        const [generation] =
+          await tx`select value from workspace_records where key = 'settings/accountingGeneration'`
+        if (generation?.value !== patch.accountingGeneration)
+          return {
+            status: 'rejected',
+            message:
+              'Учёт начат заново. Обновите страницу; старые правки нельзя сохранить в новую базу.',
+          }
+        if (generation) {
+          for (const change of patch.changes) {
+            const value = change.value as Record<string, unknown> | null
+            if (
+              change.collection === 'm15Reconciliations' &&
+              value &&
+              value.mode !== 'independent'
+            )
+              return {
+                status: 'rejected',
+                message:
+                  'М-15 ведётся независимо от получений. Обновите страницу.',
+              }
+            if (
+              change.collection === 'materialReceipts' &&
+              value?.m15DocumentId
+            )
+              return {
+                status: 'rejected',
+                message: 'Получение оформляется только по АПП.',
+              }
+          }
+        }
         const [done] =
           await tx`select * from workspace_commits where mutation_id = ${patch.mutationId}`
         if (done) {
@@ -327,7 +466,14 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
         const groupVersions = new Map(
           groupRows.map((row) => [row.key, Number(row.version)]),
         )
-        if (patch.creatingGroups?.some((key) => groupVersions.has(key)))
+        if (
+          patch.creatingGroups?.some(
+            (key) =>
+              !key.startsWith('project:') &&
+              !key.startsWith('stock:') &&
+              groupVersions.has(key),
+          )
+        )
           return {
             status: 'rejected',
             message:
@@ -340,7 +486,7 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
           return {
             status: 'conflict',
             message: groupConflict
-              ? 'Документ изменён другим пользователем. Сравните изменения перед сохранением.'
+              ? 'Документ, шифр или партия изменены другим пользователем. Обновите данные и предпросмотр перед сохранением.'
               : 'Эти записи уже изменены другим пользователем.',
             conflicts: (conflicts.length ? conflicts : patch.changes).map(
               (change) => ({
@@ -359,6 +505,14 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
         }
         validateReferences(patch.changes, next, scope)
         validateQualityWorkspace(
+          entitiesWorkspace([...next.values()]),
+          entitiesWorkspace([...scope.values()]),
+        )
+        validateProjectAccounting(
+          entitiesWorkspace([...next.values()]),
+          entitiesWorkspace([...scope.values()]),
+        )
+        validateM15Workspace(
           entitiesWorkspace([...next.values()]),
           entitiesWorkspace([...scope.values()]),
         )
@@ -437,7 +591,10 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
         records.set(recordKey(entity), entity)
       Object.assign(groups, row.groups)
     }
+    const [generation] =
+      await sql`select value from workspace_records where key = 'settings/accountingGeneration'`
     return {
+      accountingGeneration: generation?.value as string | undefined,
       revision: revisionString(Number(batch.at(-1)?.revision ?? revision)),
       records: [...records.values()],
       groups,
@@ -447,6 +604,8 @@ export function createPostgresWorkspaceStore(sql: postgres.Sql) {
   async function importWorkspace(value: WorkspaceSnapshot) {
     const workspace = workspaceSnapshotSchema.parse(value)
     validateQualityWorkspace(workspace, workspace)
+    validateProjectAccounting(workspace, workspace)
+    validateM15Workspace(workspace)
     const entities = [...workspaceEntities(workspace).values()]
     entities.forEach(validateEntity)
     return sql.begin(async (tx) => {

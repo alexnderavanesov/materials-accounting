@@ -1,4 +1,10 @@
-import { useRef, useState } from 'react'
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
+import { DateInput } from '#/components/ui/date-input'
+import { Undo2 } from 'lucide-react'
+import { RowActionButton } from '#/components/ui/row-action'
+import { WorkflowSteps } from './workflow-dialog'
+import { SelectField } from '#/components/ui/select-field'
+import { useId, useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { OperationsGrid } from './operations-grid'
@@ -32,7 +38,7 @@ type Receipt = {
 }
 const fmt = (value: number) =>
   new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 12 }).format(value)
-const dateLabel = (value: string) => value.split('-').reverse().join('.')
+const dateLabel = (value: string) => formatCalendarDate(value)
 
 export function SiteReturnForm({
   issue,
@@ -47,6 +53,8 @@ export function SiteReturnForm({
   onSubmit: (issueId: string, value: SiteReturn) => void
   onClose: () => void
 }) {
+  const quantityId = useId()
+  const [step, setStep] = useState(0)
   const [quantity, setQuantity] = useState('')
   const [date, setDate] = useState(localToday())
   const [condition, setCondition] = useState<SiteReturn['condition']>('good')
@@ -54,17 +62,63 @@ export function SiteReturnForm({
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const saving = useRef(false)
+  const available = netIssued(issue)
+  const amount = Number(quantity.replace(/\s/g, '').replace(',', '.'))
+  const validQuantity =
+    Number.isFinite(amount) && amount > 0 && amount <= available
+  const conditionLabel =
+    condition === 'good' ? 'Без повреждений' : 'Требует проверки / повреждён'
+  const conditionHint =
+    condition === 'good'
+      ? 'Повторная выдача доступна только в пределах подписанных АВК.'
+      : 'Материал вернётся на склад заблокированным для выдачи.'
+  function advance(next: number) {
+    if (next <= step) {
+      setStep(next)
+      setError('')
+      return
+    }
+    if (!date || normalizeCalendarDate(date) !== date) {
+      setError('Укажите корректную дату возврата.')
+      return
+    }
+    if (date < issue.date) {
+      setError('Дата возврата не может быть раньше даты выдачи.')
+      return
+    }
+    if (step === 1 && !validQuantity) {
+      setError(
+        `Укажите количество больше нуля и не больше ${fmt(available)} ${unit}.`,
+      )
+      return
+    }
+    setError('')
+    setStep(Math.min(next, step + 1))
+  }
   return (
     <form
-      className="grid gap-4"
+      noValidate
+      className="flex min-h-0 flex-1 flex-col"
+      onKeyDown={(event) => {
+        if (
+          event.key === 'Enter' &&
+          !(event.target instanceof HTMLButtonElement) &&
+          !(event.target instanceof HTMLTextAreaElement)
+        )
+          event.preventDefault()
+      }}
       onSubmit={(event) => {
         event.preventDefault()
         if (saving.current) return
+        if (step < 2) {
+          advance(step + 1)
+          return
+        }
         try {
           const result = siteReturnSchema.safeParse({
             id: crypto.randomUUID(),
             date,
-            quantity: Number(quantity.replace(/\s/g, '').replace(',', '.')),
+            quantity: amount,
             condition,
             document: document.trim(),
             note: note.trim(),
@@ -73,7 +127,7 @@ export function SiteReturnForm({
             throw new Error(
               'Укажите корректную дату и положительное количество.',
             )
-          if (result.data.quantity > netIssued(issue))
+          if (result.data.quantity > available)
             throw new Error(
               'Количество превышает остаток у площадки по этой выдаче.',
             )
@@ -88,72 +142,197 @@ export function SiteReturnForm({
         }
       }}
     >
-      <div>
-        <p>{name}</p>
-        <p className="text-sm text-slate-500">
-          {issue.document} · {issue.receiver || 'Получатель не указан'} ·
-          Осталось у площадки: {fmt(netIssued(issue))} {unit}
-        </p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label>
-          Возвращается, {unit}
-          <Input
-            aria-label="Количество возврата с площадки"
-            inputMode="decimal"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-          />
-        </label>
-        <label>
-          Дата возврата
-          <Input
-            aria-label="Дата возврата с площадки"
-            type="date"
-            min={issue.date}
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </label>
-      </div>
-      <label>
-        Состояние
-        <select
-          aria-label="Состояние материала"
-          className="mt-1 block w-full rounded-md border p-2"
-          value={condition}
-          onChange={(e) =>
-            setCondition(e.target.value as SiteReturn['condition'])
+      <WorkflowSteps compact step={step} onStep={advance} />
+      <div className="min-h-0 space-y-5 overflow-auto px-5 py-4">
+        <section
+          aria-label="Исходная выдача"
+          className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-[minmax(0,1fr)_auto]"
+        >
+          <div className="min-w-0">
+            <p className="break-words text-sm font-medium leading-5 text-slate-900">
+              {name}
+            </p>
+            <p className="mt-1.5 break-words text-xs leading-5 text-slate-500">
+              {issue.document || 'Выдача без номера'} · {dateLabel(issue.date)}{' '}
+              · {issue.receiver || 'Получатель не указан'}
+            </p>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-blue-50 px-3 py-2 sm:block sm:min-w-36">
+            <p className="text-xs text-blue-700">Осталось у площадки</p>
+            <p className="text-lg font-semibold tabular-nums text-blue-950 sm:mt-1">
+              {fmt(available)}{' '}
+              <span className="text-sm font-normal">{unit}</span>
+            </p>
+          </div>
+        </section>
+        <div
+          className={
+            step === 0
+              ? 'grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)]'
+              : 'hidden'
           }
         >
-          <option value="good">Без повреждений</option>
-          <option value="quarantine">Требует проверки / повреждён</option>
-        </select>
-      </label>
-      <p className="text-sm text-slate-500">
-        {condition === 'good'
-          ? 'Повторная выдача доступна только в пределах подписанных АВК.'
-          : 'Материал вернётся на склад заблокированным для выдачи.'}
-      </p>
-      <label>
-        Документ возврата (необязательно)
-        <Input value={document} onChange={(e) => setDocument(e.target.value)} />
-      </label>
-      <label>
-        Примечание
-        <Input value={note} onChange={(e) => setNote(e.target.value)} />
-      </label>
-      {error && (
-        <p role="alert" className="text-red-700">
-          {error}
-        </p>
-      )}
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onClose}>
-          Отмена
-        </Button>
-        <Button type="submit">Сохранить возврат с площадки</Button>
+          <label className="grid gap-1.5 text-sm text-slate-600">
+            Дата возврата
+            <DateInput
+              aria-label="Дата возврата с площадки"
+              min={issue.date}
+              value={date}
+              onValueChange={(value) => {
+                setDate(value)
+                setError('')
+              }}
+            />
+          </label>
+          <label className="grid min-w-0 gap-1.5 text-sm text-slate-600">
+            Документ возврата (необязательно)
+            <Input
+              value={document}
+              onChange={(e) => setDocument(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm text-slate-600 sm:col-span-2">
+            Примечание
+            <textarea
+              rows={2}
+              className="min-h-20 w-full resize-y rounded-md border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className={step === 1 ? 'space-y-3' : 'hidden'}>
+          <div className="grid gap-4 sm:grid-cols-[12rem_minmax(0,1fr)]">
+            <div className="grid gap-1.5 text-sm text-slate-600">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor={quantityId}>Вернуть, {unit}</label>
+                <button
+                  type="button"
+                  className="text-xs text-blue-700 hover:text-blue-900"
+                  onClick={() => {
+                    setQuantity(String(available))
+                    setError('')
+                  }}
+                >
+                  Всё
+                </button>
+              </div>
+              <Input
+                id={quantityId}
+                aria-label="Количество возврата с площадки"
+                aria-invalid={
+                  (Boolean(quantity.trim()) && !validQuantity) || undefined
+                }
+                inputMode="decimal"
+                placeholder="0"
+                className="text-right tabular-nums aria-invalid:border-red-500"
+                value={quantity}
+                onChange={(e) => {
+                  setQuantity(e.target.value)
+                  setError('')
+                }}
+              />
+            </div>
+            <label className="grid min-w-0 gap-1.5 text-sm text-slate-600">
+              Состояние материала
+              <SelectField
+                aria-label="Состояние материала"
+                value={condition}
+                onChange={(e) =>
+                  setCondition(e.target.value as SiteReturn['condition'])
+                }
+              >
+                <option value="good">Без повреждений</option>
+                <option value="quarantine">Требует проверки / повреждён</option>
+              </SelectField>
+            </label>
+          </div>
+          <p
+            className={`rounded-md px-3 py-2 text-xs leading-5 ${condition === 'quarantine' ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-500'}`}
+          >
+            {conditionHint}
+          </p>
+        </div>
+        {step === 2 && (
+          <section
+            aria-label="Проверка возврата с площадки"
+            className="space-y-4"
+          >
+            <div className="grid grid-cols-2 gap-3 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
+              <div>
+                <p className="text-xs text-blue-700">Вернётся на склад</p>
+                <p className="mt-1 text-xl font-semibold tabular-nums text-blue-950">
+                  {fmt(amount)}{' '}
+                  <span className="text-sm font-normal">{unit}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Останется у площадки</p>
+                <p className="mt-1 text-xl font-semibold tabular-nums text-slate-900">
+                  {fmt(Number((available - amount).toPrecision(15)))}{' '}
+                  <span className="text-sm font-normal">{unit}</span>
+                </p>
+              </div>
+            </div>
+            <dl className="grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-xs text-slate-500">Дата возврата</dt>
+                <dd className="mt-1 text-slate-900">{dateLabel(date)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Документ возврата</dt>
+                <dd className="mt-1 break-words text-slate-900">
+                  {document.trim() || 'Не указан'}
+                </dd>
+              </div>
+              <div className="sm:col-span-2">
+                <dt className="text-xs text-slate-500">Состояние материала</dt>
+                <dd
+                  className={`mt-1 ${condition === 'quarantine' ? 'text-amber-800' : 'text-slate-900'}`}
+                >
+                  {conditionLabel}
+                </dd>
+              </div>
+              {note.trim() && (
+                <div className="sm:col-span-2">
+                  <dt className="text-xs text-slate-500">Примечание</dt>
+                  <dd className="mt-1 whitespace-pre-wrap break-words text-slate-900">
+                    {note.trim()}
+                  </dd>
+                </div>
+              )}
+            </dl>
+            {condition === 'quarantine' && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+                {conditionHint}
+              </p>
+            )}
+          </section>
+        )}
+        {error && (
+          <p
+            role="alert"
+            className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {error}
+          </p>
+        )}
       </div>
+      <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50/50 px-5 py-4">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => (step ? advance(step - 1) : onClose())}
+        >
+          {step ? 'Назад' : 'Отмена'}
+        </Button>
+        <Button
+          type="submit"
+          aria-label={step === 2 ? 'Сохранить возврат с площадки' : undefined}
+        >
+          {step < 2 ? 'Далее' : 'Сохранить возврат'}
+        </Button>
+      </footer>
     </form>
   )
 }
@@ -190,7 +369,10 @@ export function SiteReturnsWorkspace({
         line,
         name: receipt?.actualName || line?.projectMaterialName || 'Материал',
         unit: issue.projectUnit || receipt?.projectUnit || '',
-        ...operationMaterial(line, requestById.get(receipt?.requestId || '')),
+        ...operationMaterial(line, {
+          ...requestById.get(receipt?.requestId || ''),
+          ...(line ? { cipher: line.cipher } : {}),
+        }),
       }
     })
     .filter(
@@ -258,6 +440,7 @@ export function SiteReturnsWorkspace({
           columns={[
             {
               id: 'date',
+              date: true,
               title: 'Дата возврата',
               value: ({ item }) => item.date,
               render: ({ item }) => dateLabel(item.date),
@@ -327,6 +510,7 @@ export function SiteReturnsWorkspace({
           columns={[
             {
               id: 'date',
+              date: true,
               title: 'Дата выдачи',
               value: ({ issue }) => issue.date,
               render: ({ issue }) => dateLabel(issue.date),
@@ -371,11 +555,15 @@ export function SiteReturnsWorkspace({
               title: 'Действия',
               value: () => '',
               actions: true,
-              width: 170,
+              width: 96,
               render: ({ issue }) => (
-                <Button variant="outline" onClick={() => onReturn(issue)}>
-                  Принять возврат
-                </Button>
+                <RowActionButton
+                  iconOnly
+                  aria-label="Принять возврат"
+                  onClick={() => onReturn(issue)}
+                >
+                  <Undo2 size={14} aria-hidden="true" />
+                </RowActionButton>
               ),
             },
           ]}

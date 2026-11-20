@@ -1,3 +1,4 @@
+import { SelectField } from '#/components/ui/select-field'
 import { useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
@@ -58,7 +59,7 @@ export function DocumentNumberingSettings({
     >
       <label className="grid gap-2 text-sm">
         Документ
-        <select
+        <SelectField
           className="h-10 rounded-md border bg-white px-3"
           value={kind}
           onChange={(event) => {
@@ -71,7 +72,7 @@ export function DocumentNumberingSettings({
               {documentLabels[item]}
             </option>
           ))}
-        </select>
+        </SelectField>
       </label>
       <label className="grid gap-2 text-sm">
         Шаблон номера

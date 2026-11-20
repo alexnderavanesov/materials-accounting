@@ -25,8 +25,7 @@ export function groupReceiptDeliveries<T extends DeliveryReceipt>(
     const key = JSON.stringify([
       receipt.date,
       receipt.appDocumentId || '',
-      receipt.m15DocumentId || '',
-      receipt.appDocumentId || receipt.m15DocumentId ? '' : receipt.id,
+      receipt.appDocumentId ? '' : receipt.id,
     ])
     const group = groups.get(key)
     if (group) group.entries.push(receipt)

@@ -3,6 +3,7 @@ import {
   emptyQualityWorkflow,
   localToday,
   newInspection,
+  qualityWithM15,
   createAcceptedInspectionAct,
   signInspection,
 } from './quality-workflow'
@@ -125,22 +126,57 @@ export function documentInspectionFixture(kind: 'app' | 'm15' = 'app') {
   const workspace = inspectionFixture()
   workspace.qualityWorkflow.cases = []
   workspace.qualityWorkflow.receiptDocuments = [
-    { id: 'source', kind, number: '42', date: localToday() },
+    { id: 'source', kind: 'app', number: '42', date: localToday() },
   ]
   Object.assign(workspace.materialReceipts[0]!, {
     quantity: 4,
     altQuantity: 10,
-    appDocumentId: kind === 'app' ? 'source' : '',
+    appDocumentId: 'source',
     m15DocumentId: kind === 'm15' ? 'source' : '',
   })
   workspace.materialRequests = [
     {
       id: 'request',
       number: 'ЗП-42-Материалы',
+      projectLineId: 'line',
+      cipher: 'ТКМ5',
       quantity: 4,
       date: localToday(),
     },
   ]
+  if (kind === 'm15') {
+    workspace.m15Reconciliations = [
+      {
+        id: 'source',
+        mode: 'linked',
+        cipher: 'ТКМ5',
+        lines: [
+          {
+            id: 'composition',
+            projectLineId: 'line',
+            name: 'Клапан',
+            unit: 'шт',
+            quantity: 4,
+            position: '',
+          },
+        ],
+        allocations: [
+          {
+            lineId: 'composition',
+            receiptId: 'receipt',
+            quantity: 4,
+            documentQuantity: 4,
+            receiptQuantity: 4,
+            receiptUnit: 'шт',
+          },
+        ],
+      },
+    ]
+    workspace.qualityWorkflow = qualityWithM15(
+      workspace.qualityWorkflow,
+      workspace.m15Reconciliations,
+    )!
+  }
   const entry = newInspection(
     workspace.qualityWorkflow,
     [{ receiptId: 'receipt', quantity: 4 }],
@@ -151,6 +187,17 @@ export function documentInspectionFixture(kind: 'app' | 'm15' = 'app') {
     'source',
     [{ id: 'request', number: 'ЗП-42-Материалы' }],
   )
+  if (kind === 'm15') {
+    workspace.qualityWorkflow.receiptDocuments![0]!.kind = 'm15'
+    workspace.qualityWorkflow.receiptDocuments!.push({
+      id: 'historical-app',
+      kind: 'app',
+      number: 'Исторический АПП',
+      date: localToday(),
+    })
+    workspace.materialReceipts[0]!.appDocumentId = 'historical-app'
+    entry.basis = { ...entry.basis, kind: 'm15' }
+  }
   const revision = currentInspection(entry)
   Object.assign(revision.zni.rows[0]!, {
     accepted: 3,
@@ -161,5 +208,55 @@ export function documentInspectionFixture(kind: 'app' | 'm15' = 'app') {
   currentInspection(entry).avk = createAcceptedInspectionAct(entry)
   currentInspection(entry).avk!.number = 'АВК-42'
   workspace.qualityWorkflow.cases = [entry]
+  delete workspace.qualityWorkflow.m15Reconciliations
   return workspace
+}
+
+export function coverFixtureM15(
+  workspace: ReturnType<typeof inspectionFixture>,
+  documentId: string,
+) {
+  const receipt = workspace.materialReceipts[0]!
+  const quantity = Number(receipt.quantity)
+  workspace.materialRequests = [
+    {
+      id: String(receipt.requestId),
+      projectLineId: String(receipt.projectLineId),
+      cipher: 'ТКМ5',
+      number: 'ЗП-42-Материалы',
+      quantity,
+      date: localToday(),
+    },
+  ]
+  workspace.m15Reconciliations = [
+    {
+      id: documentId,
+      mode: 'linked',
+      cipher: 'ТКМ5',
+      lines: [
+        {
+          id: 'composition',
+          projectLineId: String(receipt.projectLineId),
+          name: 'Клапан',
+          unit: 'шт',
+          quantity,
+          position: '',
+        },
+      ],
+      allocations: [
+        {
+          lineId: 'composition',
+          receiptId: String(receipt.id),
+          quantity,
+          documentQuantity: quantity,
+          receiptQuantity: quantity,
+          receiptUnit: 'шт',
+        },
+      ],
+    },
+  ]
+  workspace.qualityWorkflow = qualityWithM15(
+    workspace.qualityWorkflow,
+    workspace.m15Reconciliations,
+  )!
 }

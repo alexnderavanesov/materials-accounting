@@ -1,5 +1,14 @@
+import { formatCalendarDate } from './calendar-date'
+import { DateInput } from '#/components/ui/date-input'
+import { Undo2 } from 'lucide-react'
+import { RowActionButton } from '#/components/ui/row-action'
+import { WorkflowDialog } from './workflow-dialog'
+import type { ProjectReturnTarget } from './project-changes-ui'
+import type { StockTransfer } from './project-change-types'
+import { stockAssignmentKey } from './project-change-types'
+import { stockAssignments } from './stock-assignments'
 import { useDocumentNumber } from './document-numbering-context'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { CustomerReturnModal } from './customer-return-modal'
@@ -11,6 +20,7 @@ import {
   receiptDocumentLabel,
 } from './receipt-documents'
 import { receiptBalances } from './receipt-balances'
+import { assignedOperationIndicators } from './operation-overview-indicators'
 import type { OperationIndicatorIndex } from './operation-overview-indicators'
 import {
   emptyOperationListView,
@@ -57,9 +67,12 @@ type Receipt = {
 }
 const fmt = (quantity: number) =>
   new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 12 }).format(quantity)
-const displayDate = (value: string) => value.split('-').reverse().join('.')
+const displayDate = (value: string) => formatCalendarDate(value)
 
 export function ReturnsWorkspace({
+  projectReturnTarget,
+  onClearProjectReturnTarget,
+  stockTransfers,
   indicatorIndex,
   search = '',
   listView = emptyOperationListView,
@@ -72,6 +85,9 @@ export function ReturnsWorkspace({
   lines,
   onChange,
 }: {
+  projectReturnTarget?: ProjectReturnTarget | null
+  onClearProjectReturnTarget?: () => void
+  stockTransfers?: StockTransfer[]
   indicatorIndex?: OperationIndicatorIndex
   search?: string
   listView?: OperationListView
@@ -100,8 +116,20 @@ export function ReturnsWorkspace({
   )
   const [returnCaseId, setReturnCaseId] = useState<string | null>(null)
   const [surplusReceiptId, setSurplusReceiptId] = useState<string | null>(null)
+  const [surplusLineId, setSurplusLineId] = useState<string | null>(null)
+  useEffect(() => {
+    if (projectReturnTarget) setMode('stock')
+  }, [projectReturnTarget, setMode])
   const entry = workflow.cases.find((item) => item.id === returnCaseId)
-  const surplusReceipt = receipts.find((item) => item.id === surplusReceiptId)
+  const originalSurplusReceipt = receipts.find(
+    (item) => item.id === surplusReceiptId,
+  )
+  const surplusReceipt = originalSurplusReceipt
+    ? {
+        ...originalSurplusReceipt,
+        projectLineId: surplusLineId ?? originalSurplusReceipt.projectLineId,
+      }
+    : undefined
   const { pending, stock, history, describe, available } = useMemo(() => {
     const balances = receiptBalances(receipts, workflow, controls, issues)
     const availableByReceipt = new Map<string, number>()
@@ -129,7 +157,10 @@ export function ReturnsWorkspace({
       return {
         name: receipt?.actualName || line?.projectMaterialName || 'Материал',
         request: receipt ? (request?.number ?? 'Заявка удалена') : '',
-        ...operationMaterial(line, request),
+        ...operationMaterial(
+          line,
+          line ? { ...request, cipher: line.cipher } : request,
+        ),
         normativeDocument: line?.normativeDocument ?? '',
         alloy: line?.material ?? '',
         documents: receipt
@@ -153,16 +184,68 @@ export function ReturnsWorkspace({
         }),
       ),
     )
-    const stockRows = receipts.map((receipt) => ({
-      receipt,
-      ...describeReceipt(receipt),
-      balance: balances.get(receipt.id)!,
-      available: availableByReceipt.get(receipt.id) ?? 0,
-    }))
+    const assignments = stockAssignments({
+      materialReceipts: receipts,
+      materialIssues: issues,
+      qualityWorkflow: workflow,
+      stockTransfers,
+    })
+    const ownersByReceipt = new Map<
+      string,
+      Array<typeof assignments extends Map<string, infer V> ? V : never>
+    >()
+    for (const owner of assignments.values()) {
+      const owners = ownersByReceipt.get(owner.receiptId) ?? []
+      owners.push(owner)
+      ownersByReceipt.set(owner.receiptId, owners)
+    }
+    const transferredReceipts = new Set(
+      stockTransfers?.map((item) => item.receiptId),
+    )
+    const ownerAvailable = new Map<string, number>()
+    const stockRows = receipts.flatMap((original) => {
+      const owners = transferredReceipts.has(original.id)
+        ? (ownersByReceipt.get(original.id) ?? [])
+        : []
+      return (
+        owners.length
+          ? owners.map((owner) => ({
+              receipt: { ...original, projectLineId: owner.projectLineId },
+              owner,
+            }))
+          : [{ receipt: original, owner: undefined }]
+      ).map(({ receipt, owner }) => {
+        const key = stockAssignmentKey(receipt.id, receipt.projectLineId)
+        const amount = Math.max(
+          0,
+          Math.min(
+            availableByReceipt.get(receipt.id) ?? 0,
+            owner ? owner.stock - owner.quarantined : Infinity,
+          ),
+        )
+        ownerAvailable.set(key, amount)
+        return {
+          key: owner ? key : receipt.id,
+          receipt,
+          ...describeReceipt(receipt),
+          balance: {
+            ...balances.get(receipt.id)!,
+            ...(owner ? { stock: owner.stock } : {}),
+          },
+          available: amount,
+        }
+      })
+    })
     const historyRows = [...(workflow.customerReturns ?? [])]
       .reverse()
       .map((item) => {
-        const receipt = receiptById.get(item.receiptId)
+        const original = receiptById.get(item.receiptId)
+        const receipt = original
+          ? {
+              ...original,
+              projectLineId: item.projectLineId ?? original.projectLineId,
+            }
+          : undefined
         const line = receipt
           ? materialById.get(receipt.projectLineId)
           : undefined
@@ -202,9 +285,9 @@ export function ReturnsWorkspace({
       ),
       history: sortOperationsNewestFirst(historyRows, ({ item }) => item.date),
       describe: describeReceipt,
-      available: availableByReceipt,
+      available: ownerAvailable,
     }
-  }, [workflow, receipts, requests, controls, issues, lines])
+  }, [workflow, receipts, requests, controls, issues, lines, stockTransfers])
   const matches = (values: Array<unknown>) =>
     values
       .join(' ')
@@ -225,6 +308,8 @@ export function ReturnsWorkspace({
   )
   const visibleStock = stock.filter(
     (row) =>
+      (!projectReturnTarget ||
+        row.receipt.projectLineId === projectReturnTarget.projectLineId) &&
       matches([
         row.name,
         row.request,
@@ -235,7 +320,8 @@ export function ReturnsWorkspace({
         row.alloy,
         row.receipt.date,
         displayDate(row.receipt.date),
-      ]) && matchesOperationMaterial(row, listView),
+      ]) &&
+      matchesOperationMaterial(row, listView),
   )
   const visibleHistory = history.filter(
     (row) =>
@@ -257,10 +343,20 @@ export function ReturnsWorkspace({
   )
   return (
     <section className="min-w-0 p-4" aria-label="Возврат заказчику">
-      <p className="mt-1 text-sm text-slate-600">
-        Фактический возврат непринятого по ЗНИ или АВК восстанавливает остаток к
-        получению по заявке. Возврат лишнего уменьшает только складской остаток.
-      </p>
+      {projectReturnTarget && (
+        <div className="mb-3 flex items-center justify-between rounded bg-slate-50 p-3 text-sm">
+          <span>
+            Возврат излишка по ИЗМ · {fmt(projectReturnTarget.quantity)}.
+            Выберите исходную партию.
+          </span>
+          <Button
+            variant="ghost"
+            onClick={() => onClearProjectReturnTarget?.()}
+          >
+            Показать все возвраты
+          </Button>
+        </div>
+      )}
       <div className="my-4 flex flex-wrap gap-2">
         <Button
           variant={mode === 'rejected' ? 'default' : 'outline'}
@@ -335,15 +431,15 @@ export function ReturnsWorkspace({
                 title: 'Действия',
                 value: () => '',
                 actions: true,
-                width: 200,
+                width: 96,
                 render: (row) => (
-                  <Button
-                    size="sm"
-                    variant="outline"
+                  <RowActionButton
+                    iconOnly
+                    aria-label="Оформить возврат"
                     onClick={() => setReturnCaseId(row.entry.id)}
                   >
-                    Оформить возврат
-                  </Button>
+                    <Undo2 size={14} aria-hidden="true" />
+                  </RowActionButton>
                 ),
               },
             ]}
@@ -352,7 +448,7 @@ export function ReturnsWorkspace({
           <p className="rounded-lg border border-dashed p-8 text-center text-slate-500">
             {search || listView.cipher || listView.materialType
               ? 'Материалы по запросу не найдены.'
-              : 'Непринятых материалов к возврату нет. Они появляются после подписания ЗНИ или отклонения материала по АВК.'}
+              : 'Непринятых материалов к возврату нет.'}
           </p>
         ))}
       {mode === 'stock' && (
@@ -368,7 +464,12 @@ export function ReturnsWorkspace({
               id="returns-stock"
               indicators={
                 indicatorIndex && {
-                  values: (row) => indicatorIndex.byReceipt.get(row.receipt.id),
+                  values: (row) =>
+                    assignedOperationIndicators(
+                      indicatorIndex,
+                      row.receipt.id,
+                      row.receipt.projectLineId,
+                    ),
                   unit: (row) => row.receipt.projectUnit,
                   existing: {
                     received: 'received',
@@ -386,7 +487,7 @@ export function ReturnsWorkspace({
               }
               label="Полученные материалы для возврата"
               rows={visibleStock}
-              rowId={(row) => row.receipt.id}
+              rowId={(row) => row.key}
               columns={[
                 {
                   id: 'name',
@@ -408,8 +509,9 @@ export function ReturnsWorkspace({
                 },
                 {
                   id: 'date',
+                  date: true,
                   title: 'Дата получения',
-                  value: (row) => displayDate(row.receipt.date),
+                  value: (row) => row.receipt.date,
                 },
                 {
                   id: 'received',
@@ -438,7 +540,11 @@ export function ReturnsWorkspace({
                 {
                   id: 'available',
                   title: 'Можно вернуть как лишнее',
-                  value: (row) => row.available,
+                  value: (row) =>
+                    Math.min(
+                      row.available,
+                      projectReturnTarget?.quantity ?? Infinity,
+                    ),
                   numeric: true,
                 },
                 {
@@ -451,16 +557,19 @@ export function ReturnsWorkspace({
                   title: 'Действия',
                   value: () => '',
                   actions: true,
-                  width: 200,
+                  width: 96,
                   render: (row) => (
-                    <Button
-                      size="sm"
-                      variant="outline"
+                    <RowActionButton
+                      iconOnly
+                      aria-label="Вернуть лишнее"
                       disabled={row.available <= 0}
-                      onClick={() => setSurplusReceiptId(row.receipt.id)}
+                      onClick={() => {
+                        setSurplusReceiptId(row.receipt.id)
+                        setSurplusLineId(row.receipt.projectLineId)
+                      }}
                     >
-                      Вернуть лишнее
-                    </Button>
+                      <Undo2 size={14} aria-hidden="true" />
+                    </RowActionButton>
                   ),
                 },
               ]}
@@ -481,7 +590,11 @@ export function ReturnsWorkspace({
             indicators={
               indicatorIndex && {
                 values: (row) =>
-                  indicatorIndex.byReceipt.get(row.item.receiptId),
+                  assignedOperationIndicators(
+                    indicatorIndex,
+                    row.item.receiptId,
+                    row.item.projectLineId,
+                  ),
                 unit: (row) => row.unit,
                 existing: { returned: 'quantity' },
               }
@@ -499,8 +612,9 @@ export function ReturnsWorkspace({
             columns={[
               {
                 id: 'date',
+                date: true,
                 title: 'Дата возврата',
-                value: (row) => displayDate(row.item.date),
+                value: (row) => row.item.date,
               },
               {
                 id: 'name',
@@ -587,22 +701,75 @@ export function ReturnsWorkspace({
           key={surplusReceipt.id}
           receipt={surplusReceipt}
           name={describe(surplusReceipt).name}
-          available={available.get(surplusReceipt.id) ?? 0}
+          available={Math.min(
+            available.get(
+              stockAssignmentKey(
+                surplusReceipt.id,
+                surplusReceipt.projectLineId,
+              ),
+            ) ?? 0,
+            projectReturnTarget?.projectLineId === surplusReceipt.projectLineId
+              ? projectReturnTarget.quantity
+              : Infinity,
+          )}
           line={findInspectionMaterial(lines, surplusReceipt.projectLineId)}
           onClose={() => setSurplusReceiptId(null)}
           onSave={(quantity, date, documentNumber, note) => {
-            onChange(
-              recordSurplusReturn(
-                workflow,
-                receipts,
-                issues,
-                [{ receiptId: surplusReceipt.id, quantity }],
-                date,
-                documentNumber,
-                note,
-              ),
+            const limit =
+              available.get(
+                stockAssignmentKey(
+                  surplusReceipt.id,
+                  surplusReceipt.projectLineId,
+                ),
+              ) ?? 0
+            if (
+              quantity > limit ||
+              (projectReturnTarget &&
+                (surplusReceipt.projectLineId !==
+                  projectReturnTarget.projectLineId ||
+                  quantity > projectReturnTarget.quantity))
             )
+              throw new Error(
+                'Количество превышает доступный излишек этого шифра.',
+              )
+            const next = recordSurplusReturn(
+              workflow,
+              receipts,
+              issues,
+              [
+                {
+                  receiptId: surplusReceipt.id,
+                  quantity,
+                  approvedOnly:
+                    receipts.find((item) => item.id === surplusReceipt.id)
+                      ?.projectLineId !== surplusReceipt.projectLineId,
+                },
+              ],
+              date,
+              documentNumber,
+              note,
+            )
+            const existing = new Set(
+              workflow.customerReturns?.map((item) => item.id),
+            )
+            next.customerReturns = next.customerReturns?.map((item) =>
+              existing.has(item.id)
+                ? item
+                : {
+                    ...item,
+                    projectLineId: surplusReceipt.projectLineId,
+                    ...(projectReturnTarget
+                      ? {
+                          projectChangeId: projectReturnTarget.projectChangeId,
+                          projectChangeItemId:
+                            projectReturnTarget.projectChangeItemId,
+                        }
+                      : {}),
+                  },
+            )
+            onChange(next)
             setSurplusReceiptId(null)
+            onClearProjectReturnTarget?.()
           }}
         />
       )}
@@ -630,6 +797,7 @@ function SurplusReturnModal({
     note: string,
   ) => void
 }) {
+  const [step, setStep] = useState(0)
   const [quantity, setQuantity] = useState('')
   const [date, setDate] = useState(localToday())
   const suggestNumber = useDocumentNumber()
@@ -650,15 +818,74 @@ function SurplusReturnModal({
     getOperationConversion(line, receipt.projectUnit, receipt),
     receipt,
   )
-  return (
-    <div className="fixed inset-0 z-[80] grid place-items-center overflow-auto bg-black/40 p-4">
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-label="Возврат лишнего материала"
-        className="grid max-h-[90vh] w-full max-w-xl gap-4 overflow-auto rounded-xl bg-white p-6 shadow-xl"
+  function advance(next: number) {
+    if (next <= step) {
+      setStep(next)
+      setError('')
+      return
+    }
+    if (!date) {
+      setError('Укажите дату возврата.')
+      return
+    }
+    if (
+      next > 1 &&
+      (!Number.isFinite(amount) ||
+        amount <= 0 ||
+        amount > available ||
+        alternative.error)
+    ) {
+      setError(
+        alternative.error ||
+          `Укажите положительное количество не больше ${fmt(available)} ${receipt.projectUnit}.`,
+      )
+      return
+    }
+    setError('')
+    setStep(Math.min(next, step + 1))
+  }
+  const footer = (
+    <div className="flex justify-end gap-2">
+      <Button
+        variant="outline"
+        onClick={() => (step ? setStep(step - 1) : onClose())}
       >
-        <h2 className="text-xl font-semibold">Возврат лишнего материала</h2>
+        {step ? 'Назад' : 'Отмена'}
+      </Button>
+      <Button
+        onClick={() => {
+          if (step < 2) {
+            advance(step + 1)
+            return
+          }
+          if (saving.current) return
+          saving.current = true
+          try {
+            if (alternative.error) throw new Error(alternative.error)
+            onSave(amount, date, documentNumber, note)
+          } catch (cause) {
+            saving.current = false
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : 'Не удалось сохранить возврат.',
+            )
+          }
+        }}
+      >
+        {step < 2 ? 'Далее' : 'Сохранить фактический возврат'}
+      </Button>
+    </div>
+  )
+  return (
+    <WorkflowDialog
+      title="Возврат лишнего материала"
+      onClose={onClose}
+      step={step}
+      onStep={advance}
+      footer={footer}
+    >
+      <div className="grid gap-4">
         <p>
           {name} · доступно {fmt(available)} {receipt.projectUnit}
         </p>
@@ -666,18 +893,15 @@ function SurplusReturnModal({
           После сохранения складской остаток уменьшится. Остаток к получению по
           заявке не изменится.
         </p>
-        <label>
+        <label hidden={step !== 0}>
           Дата возврата
-          <Input
-            type="date"
-            value={date}
-            onChange={(event) => setDate(event.target.value)}
-          />
+          <DateInput value={date} onValueChange={(value) => setDate(value)} />
         </label>
-        <label>
+        <label hidden={step === 0}>
           Возвращаемое количество
           <Input
             inputMode="decimal"
+            readOnly={step === 2}
             value={quantity}
             onChange={(event) => setQuantity(event.target.value)}
           />
@@ -687,14 +911,14 @@ function SurplusReturnModal({
             {fmt(alternative.altQuantity)} {alternative.altUnit}
           </p>
         )}
-        <label>
+        <label hidden={step !== 0}>
           Номер документа (необязательно)
           <Input
             value={documentNumber}
             onChange={(event) => setDocumentNumber(event.target.value)}
           />
         </label>
-        <label>
+        <label hidden={step !== 0}>
           Примечание
           <textarea
             className="w-full rounded-lg border p-2"
@@ -707,31 +931,7 @@ function SurplusReturnModal({
             {error}
           </p>
         )}
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button
-            onClick={() => {
-              if (saving.current) return
-              saving.current = true
-              try {
-                if (alternative.error) throw new Error(alternative.error)
-                onSave(amount, date, documentNumber, note)
-              } catch (cause) {
-                saving.current = false
-                setError(
-                  cause instanceof Error
-                    ? cause.message
-                    : 'Не удалось сохранить возврат.',
-                )
-              }
-            }}
-          >
-            Сохранить фактический возврат
-          </Button>
-        </div>
-      </section>
-    </div>
+      </div>
+    </WorkflowDialog>
   )
 }

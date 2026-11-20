@@ -1,3 +1,5 @@
+import { m15Fixture } from './m15-reconciliation.fixtures'
+import { withM15Document } from './m15-document'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createCollaborativeSaver } from './workspace-collaboration'
 import {
@@ -97,6 +99,34 @@ function setup(
 }
 afterEach(() => {
   savers.splice(0).forEach((saver) => saver.dispose())
+})
+it('saves a new M-15 and its composition in one patch without inventing receipts', async () => {
+  const { saver, save } = setup(emptyWorkspace())
+  const next = withM15Document(emptyWorkspace(), {
+    id: 'new',
+    kind: 'm15',
+    number: '15-NEW',
+    date: '2026-11-18',
+  })
+  next.m15Reconciliations = [
+    {
+      id: 'new',
+      mode: 'automatic',
+      allocations: [],
+      lines: [
+        { id: 'pipe', position: '', name: 'Труба', unit: 'м', quantity: 100 },
+      ],
+    },
+  ]
+  saver.update(next)
+  await saver.waitUntilSaved()
+  expect(save).toHaveBeenCalledOnce()
+  expect(
+    save.mock.calls[0]![0].changes.map((change) => change.collection)
+      .filter((collection) => collection !== 'settings')
+      .sort(),
+  ).toEqual(['m15Reconciliations', 'receiptDocuments'])
+  expect(saver.getLatest().materialReceipts).toEqual([])
 })
 
 describe('collaborative outbox', () => {
@@ -356,4 +386,196 @@ describe('collaborative outbox', () => {
     expect(app.changes.mock.calls[1]![0]).toBe('pg:1')
     expect(app.state().lines[0]!.plannedQuantity).toBe(35)
   })
+})
+
+it('saves M-15 as one versioned entity and synchronizes it without mutating receipts or signed cases', async () => {
+  const { workspace, value } = m15Fixture()
+  const { saver, save, changes, state } = setup(workspace)
+  saver.update({ ...workspace, m15Reconciliations: [value] })
+  await saver.waitUntilSaved()
+  expect(save.mock.calls[0]![0].changes).toHaveLength(1)
+  expect(save.mock.calls[0]![0].changes[0]).toMatchObject({
+    collection: 'm15Reconciliations',
+    id: 'm15',
+    expectedVersion: null,
+    value,
+  })
+  const edited = { ...value, lines: [{ ...value.lines[0]!, quantity: 12 }] }
+  changes.mockResolvedValueOnce({
+    revision: 'pg:3',
+    records: [
+      {
+        collection: 'm15Reconciliations',
+        id: 'm15',
+        value: edited,
+        version: 3,
+        position: 0,
+      },
+    ],
+    groups: {},
+    hasMore: false,
+  })
+  await saver.waitUntilSaved()
+  expect(state().m15Reconciliations).toEqual([edited])
+  expect(state().materialReceipts).toBe(workspace.materialReceipts)
+  expect(state().qualityWorkflow).toBe(workspace.qualityWorkflow)
+})
+
+it('cannot bypass an unresolved M-15 version conflict through retry', async () => {
+  const { workspace, value } = m15Fixture()
+  const { saver, save } = setup({ ...workspace, m15Reconciliations: [value] })
+  const key = 'm15Reconciliations/m15'
+  save.mockResolvedValueOnce({
+    status: 'conflict',
+    message: 'Конфликт М-15',
+    conflicts: [
+      {
+        key,
+        current: {
+          collection: 'm15Reconciliations',
+          id: 'm15',
+          position: 0,
+          version: 2,
+          value: { ...value, lines: [{ ...value.lines[0]!, quantity: 15 }] },
+        },
+      },
+    ],
+  })
+  saver.update({
+    ...workspace,
+    m15Reconciliations: [
+      { ...value, lines: [{ ...value.lines[0]!, quantity: 12 }] },
+    ],
+  })
+  await expect(saver.waitUntilSaved()).rejects.toThrow('Конфликт М-15')
+  await saver.retry()
+  expect(save).toHaveBeenCalledTimes(1)
+})
+
+it('exposes pending M-15 records so restored rejected saves can be corrected without opening the document catalog', async () => {
+  const { workspace, value } = m15Fixture()
+  const { saver, save } = setup(workspace)
+  save.mockResolvedValueOnce({
+    status: 'rejected',
+    message: 'Получение изменилось',
+  })
+  saver.update({ ...workspace, m15Reconciliations: [value] })
+  await expect(saver.waitUntilSaved()).rejects.toThrow('Получение изменилось')
+  expect(saver.hasPendingRecord('m15Reconciliations', 'm15')).toBe(true)
+  expect(saver.hasPendingRecord('materialReceipts', 'receipt')).toBe(false)
+  saver.update({
+    ...workspace,
+    m15Reconciliations: [{ ...value, allocations: [] }],
+  })
+  await saver.waitUntilSaved()
+  expect(saver.hasPendingRecord('m15Reconciliations', 'm15')).toBe(false)
+})
+
+it('discards the entire project batch on server resolution, keeping unrelated pending settings', async () => {
+  const { projectChangeFixture } = await import('./project-changes.fixtures')
+  const { prepareProjectDraft } = await import('./project-edit-draft')
+  const { cipherKey } = await import('./project-changes')
+  const { localToday } = await import('./quality-workflow')
+  const { toWorkspaceSnapshot } = await import('./workspace-snapshot')
+  const baseline = projectChangeFixture()
+  baseline.qualityWorkflow!.cases = []
+  baseline.materialReceipts[0]!.quantity = 6
+  const snapshot = toWorkspaceSnapshot(baseline),
+    app = setup(snapshot)
+  const next = prepareProjectDraft(
+    {
+      baseline,
+      lines: [
+        { ...baseline.lines[0]!, plannedQuantity: 8 },
+        {
+          ...baseline.lines[0]!,
+          id: 'new-cipher',
+          cipher: 'ТКМ6',
+          plannedQuantity: 2,
+        },
+      ],
+    },
+    {
+      kind: 'revision',
+      date: localToday(),
+      reason: 'Изменение',
+      author: 'Тест',
+      numbers: {
+        [cipherKey('Объект', 'ТКМ5')]: '2',
+        [cipherKey('Объект', 'ТКМ6')]: '2',
+      },
+      replacements: {},
+    },
+  )
+  const current = {
+    collection: 'lines' as const,
+    id: 'line',
+    value: { ...snapshot.lines[0]!, plannedQuantity: 12 },
+    version: 2,
+    position: 0,
+  }
+  app.save.mockResolvedValueOnce({
+    status: 'conflict',
+    message: 'Нужен новый предпросмотр',
+    conflicts: [{ key: 'lines/line', current }],
+  })
+  app.saver.update({
+    ...snapshot,
+    ...toWorkspaceSnapshot(next),
+    configuredUnits: ['шт', 'м'],
+  })
+  await app.saver.flush()
+  expect(
+    app.onStatus.mock.lastCall?.[2].map((item: { key: string }) => item.key),
+  ).toEqual(
+    expect.arrayContaining([
+      'lines/line',
+      'lines/new-cipher',
+      'materialRequests/request',
+    ]),
+  )
+  app.changes.mockResolvedValueOnce({
+    revision: 'pg:2',
+    records: [current],
+    groups: {},
+    hasMore: false,
+  })
+  await app.saver.resolve('server')
+  expect(app.state().lines).toHaveLength(1)
+  expect(app.state().lines[0]?.plannedQuantity).toBe(12)
+  expect(app.state().projectChanges ?? []).toEqual([])
+  expect(app.state().materialRequests).toEqual(snapshot.materialRequests)
+  expect(app.state().configuredUnits).toEqual(['шт', 'м'])
+  expect(
+    app.save.mock.calls[1]![0].changes.every(
+      (change) => change.collection === 'settings',
+    ),
+  ).toBe(true)
+})
+
+it('rejects a recovered journal from the previous accounting generation before applying or replaying it', async () => {
+  const save = vi.fn()
+  const saver = createCollaborativeSaver({
+    initial: initial(),
+    revision: 'pg:100',
+    accountingGeneration: 'new-generation',
+    versions: {},
+    groups: {},
+    save,
+    changes: async (revision) => ({
+      revision,
+      accountingGeneration: 'new-generation',
+      records: [],
+      groups: {},
+      hasMore: false,
+    }),
+    onWorkspace: vi.fn(),
+    onStatus: vi.fn(),
+  })
+  savers.push(saver)
+  await expect(
+    saver.restore({ changes: [], groups: {}, before: {}, request: null }),
+  ).rejects.toThrow('Учёт начат заново')
+  expect(save).not.toHaveBeenCalled()
+  expect(saver.getLatest()).toEqual(initial())
 })

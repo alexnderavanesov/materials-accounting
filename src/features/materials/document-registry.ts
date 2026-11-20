@@ -1,7 +1,13 @@
+import { formatCalendarDate } from './calendar-date'
+import type { WorkspaceSearch } from './workspace-navigation'
 import type { SiteReturn } from './material-issues'
 import { getMaterialIdentityKey } from './project-material-data'
 import { documentNumberLabel } from './document-number'
-import { receiptDocumentLabel } from './receipt-documents'
+import {
+  documentsForReceipt,
+  indexReceiptDocuments,
+  receiptDocumentLabel,
+} from './receipt-documents'
 import { normalizeOperationSearch } from './operation-list-view'
 import {
   receiptQualityDocument,
@@ -42,9 +48,13 @@ export type RegistryDocument = {
   label: string
   date: string
   materialIds: string[]
+  operation?: WorkspaceSearch
   target?: DocumentTarget
+  receiptDocumentId?: string
 }
 export type DocumentFile = {
+  blobId?: string
+  sha256?: string
   id: string
   documentId: string
   name: string
@@ -83,8 +93,7 @@ export type DocumentRegistry = {
 const text = (record: Record<string, unknown>, key: string) =>
   typeof record[key] === 'string' ? record[key] : ''
 const key = (...parts: (string | number)[]) => JSON.stringify(parts)
-export const documentDateText = (date: string) =>
-  /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.split('-').reverse().join('.') : date
+export const documentDateText = (date: string) => formatCalendarDate(date, '')
 const datedLabel = (label: string, date: string) =>
   `${label}${date ? ` от ${documentDateText(date)}` : ''}`
 
@@ -156,7 +165,7 @@ export function buildDocumentRegistry(
     doc: Omit<RegistryDocument, 'materialIds'>,
     rows: DocumentMaterial[],
   ) => {
-    if (!rows.length) return
+    if (!rows.length && doc.kind !== 'm15') return
     if (!documents.has(doc.id)) {
       documents.set(doc.id, { ...doc, materialIds: [] })
       links.set(doc.id, new Set())
@@ -182,6 +191,7 @@ export function buildDocumentRegistry(
         label: datedLabel(number || 'Заявка', date),
         date,
         target: { kind: 'request', entryId: text(entry, 'id') },
+        operation: { section: 'operations', tab: 'requests', focus: number },
       },
       [row],
     )
@@ -201,6 +211,33 @@ export function buildDocumentRegistry(
   const receiptDocs = new Map(
     workspace.qualityWorkflow?.receiptDocuments?.map((doc) => [doc.id, doc]),
   )
+  // M-15 composition may be entered before receipts; its scan uses the same stable ID.
+  const composedM15 = new Map(
+    workspace.m15Reconciliations?.map((value) => [value.id, value]),
+  )
+  for (const doc of receiptDocs.values()) {
+    if (doc.kind === 'm15')
+      add(
+        {
+          id: key('receipt-document', doc.id),
+          kind: doc.kind,
+          label: receiptDocumentLabel(doc),
+          date: doc.date,
+          receiptDocumentId: doc.id,
+          operation: { section: 'm15', focus: doc.id },
+        },
+        (composedM15.get(doc.id)?.lines ?? []).flatMap((line) =>
+          line.projectLineId && byLine.has(line.projectLineId)
+            ? [byLine.get(line.projectLineId)!]
+            : [],
+        ),
+      )
+  }
+  const linkedWorkflow = workspace.qualityWorkflow && {
+    ...workspace.qualityWorkflow,
+    m15Reconciliations: workspace.m15Reconciliations,
+  }
+  const documentIndex = indexReceiptDocuments(linkedWorkflow)
   for (const receipt of workspace.materialReceipts) {
     const row =
       requests.get(text(receipt, 'requestId')) ??
@@ -228,18 +265,33 @@ export function buildDocumentRegistry(
       if (existing) existing.replacement ||= replacement
       else names.set(normalized, { name: actualName, replacement })
     }
-    for (const field of ['appDocumentId', 'm15DocumentId']) {
-      const doc = receiptDocs.get(text(receipt, field))
-      if (doc)
-        add(
-          {
-            id: key('receipt-document', doc.id),
-            kind: doc.kind,
-            label: receiptDocumentLabel(doc),
-            date: doc.date,
-          },
-          [row],
-        )
+    for (const doc of documentsForReceipt(
+      {
+        id: String(receipt.id),
+        appDocumentId: text(receipt, 'appDocumentId'),
+        m15DocumentId: text(receipt, 'm15DocumentId'),
+      },
+      linkedWorkflow,
+      documentIndex,
+    )) {
+      add(
+        {
+          id: key('receipt-document', doc.id),
+          kind: doc.kind,
+          label: receiptDocumentLabel(doc),
+          date: doc.date,
+          receiptDocumentId: doc.id,
+          operation:
+            doc.kind === 'm15'
+              ? { section: 'm15', focus: doc.id }
+              : {
+                  section: 'operations',
+                  tab: 'receipts',
+                  focus: String(receipt.id),
+                },
+        },
+        [row],
+      )
     }
     for (const [field, kind, prefix] of [
       ['certificate', 'quality', 'Паспорт / сертификат'],
@@ -293,6 +345,12 @@ export function buildDocumentRegistry(
             label: `${datedLabel(documentNumberLabel(kind === 'zni' ? 'ЗНИ' : 'АВК', doc.number), doc.date)} · рев. ${revision.revision}${kind === 'avk' && isPartiallyRejectedAct(revision) ? ' · принято частично' : ''}${kind === 'avk' && isBlockedInspectionAct(revision) ? ' · отклонён' : doc.signedOn ? ' · подписан' : ' · в работе'}`,
             date: doc.date,
             target: { kind, caseId: entry.id, revision: revision.revision },
+            operation: {
+              section: 'operations',
+              tab: 'quality',
+              inspection: kind,
+              focus: `inspection:${entry.id}:${revision.revision}`,
+            },
           },
           rows,
         )
@@ -338,6 +396,11 @@ export function buildDocumentRegistry(
         id: key('issue', number || text(issue, 'id'), date),
         kind: 'issue',
         label: datedLabel(`Выдача ${number}`, date),
+        operation: {
+          section: 'operations',
+          tab: 'issues',
+          focus: String(issue.id),
+        },
         date,
       },
       [row],

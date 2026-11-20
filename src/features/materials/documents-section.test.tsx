@@ -1,3 +1,4 @@
+import { changeField } from './workflow-test-support'
 // @vitest-environment jsdom
 import { StrictMode } from 'react'
 import {
@@ -399,7 +400,7 @@ it('adds multiple dropped and picked files, removes individual entries and uploa
   render(<DocumentsSection prepare={async () => 'saved'} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Труба 108х3' }))
   fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }))
-  fireEvent.change(screen.getByPlaceholderText('Например: Паспорт №221'), {
+  changeField(screen.getByPlaceholderText('Например: Паспорт №221'), {
     target: { value: 'Паспорт №221' },
   })
   const first = new File(['%PDF-first'], 'Паспорт.pdf')
@@ -411,7 +412,7 @@ it('adds multiple dropped and picked files, removes individual entries and uploa
   const third = new File(['%PDF-other'], 'Приложение.pdf')
   const input = screen.getByLabelText('Файлы оригиналов')
   expect(input).toHaveProperty('multiple', true)
-  fireEvent.change(input, { target: { files: [second, third] } })
+  changeField(input, { target: { files: [second, third] } })
   expect(screen.getByText(/Выбрано файлов: 3/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Убрать файл: Фото.png' }))
   expect(screen.queryByText('Фото.png')).toBeNull()
@@ -486,7 +487,7 @@ it('retains the batch after a failed upload so it can be retried against the sam
   fireEvent.click(await screen.findByRole('button', { name: 'Труба 108х3' }))
   fireEvent.click(screen.getByRole('button', { name: 'Скачать архив · 1' }))
   fireEvent.click(screen.getByRole('button', { name: 'Прикрепить: АПП №1' }))
-  fireEvent.change(screen.getByLabelText('Файлы оригиналов'), {
+  changeField(screen.getByLabelText('Файлы оригиналов'), {
     target: {
       files: [new File(['a'], 'Фото1.png'), new File(['b'], 'Фото2.png')],
     },
@@ -510,7 +511,7 @@ it('keeps the upload form and selected file when the native picker is cancelled,
   fireEvent.click(await screen.findByRole('button', { name: 'Труба 108х3' }))
   fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }))
   const name = screen.getByPlaceholderText('Например: Паспорт №221')
-  fireEvent.change(name, { target: { value: 'Паспорт №221' } })
+  changeField(name, { target: { value: 'Паспорт №221' } })
   const input = screen.getByLabelText('Файлы оригиналов')
   fireEvent(input, new Event('cancel', { bubbles: true }))
   expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true)
@@ -519,7 +520,7 @@ it('keeps the upload form and selected file when the native picker is cancelled,
     screen.getByRole('button', { name: 'Выбрать файлы оригиналов' }),
   ).toBeTruthy()
 
-  fireEvent.change(input, {
+  changeField(input, {
     target: { files: [new File(['%PDF-test'], 'Паспорт.pdf')] },
   })
   fireEvent(input, new Event('cancel', { bubbles: true }))
@@ -534,3 +535,168 @@ it('keeps the upload form and selected file when the native picker is cancelled,
   )
   expect(screen.queryByRole('dialog')).toBeNull()
 })
+
+it('keeps M-15 documents as scans without reconciliation controls', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        ...data,
+        materials: [{ ...data.materials[0]!, documentIds: ['source'] }],
+        documents: [
+          {
+            id: 'source',
+            kind: 'm15',
+            receiptDocumentId: 'm15',
+            label: 'М-15 №15-1',
+            date: '2026-11-18',
+            materialIds: ['pipe'],
+          },
+        ],
+        manifest: {
+          revision: 'files',
+          documents: [],
+          files: [
+            {
+              id: 'scan',
+              documentId: 'source',
+              name: 'Скан М-15.pdf',
+              size: 10,
+              uploadedAt: '',
+            },
+          ],
+        },
+      }),
+    ),
+  )
+  render(<DocumentsSection prepare={async () => 'saved'} />)
+  await screen.findByRole('button', { name: 'Труба 108х3' })
+  fireEvent.click(
+    within(screen.getByRole('group', { name: 'Вид документов' })).getByRole(
+      'button',
+      { name: 'М-15' },
+    ),
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Труба 108х3' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Скачать архив · 1' }))
+  expect(screen.getByText('М-15 №15-1')).toBeTruthy()
+  expect(
+    screen.queryByRole('button', { name: 'Сверка с получениями' }),
+  ).toBeNull()
+  expect(screen.queryByText('Количества по М-15 не введены')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Другие файлы · 1' }))
+  expect(
+    screen.getByRole('button', { name: 'Просмотр файла: Скан М-15.pdf' }),
+  ).toBeTruthy()
+})
+it('opens scans for M-15 entered before any receipts or project material links', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        ...data,
+        materials: [],
+        documents: [
+          {
+            id: 'source',
+            kind: 'm15',
+            receiptDocumentId: 'new',
+            label: 'М-15 №NEW',
+            date: '2026-11-18',
+            materialIds: [],
+          },
+        ],
+        manifest: {
+          revision: 'files',
+          documents: [],
+          files: [
+            {
+              id: 'scan',
+              documentId: 'source',
+              name: 'М-15.pdf',
+              size: 10,
+              uploadedAt: '',
+            },
+          ],
+        },
+      }),
+    ),
+  )
+  render(<DocumentsSection prepare={async () => 'saved'} />)
+  await waitFor(() =>
+    expect(
+      screen
+        .getByRole('button', { name: 'Обновить реестр' })
+        .hasAttribute('disabled'),
+    ).toBe(false),
+  )
+  fireEvent.click(
+    within(screen.getByRole('group', { name: 'Вид документов' })).getByRole(
+      'button',
+      { name: 'М-15' },
+    ),
+  )
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: 'Нет привязки к проектной позиции',
+    }),
+  )
+  expect(
+    screen.getByRole('button', { name: 'Прикрепить' }).hasAttribute('disabled'),
+  ).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Скачать архив · 1' }))
+  expect(screen.getByText('М-15 №NEW')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Другие файлы · 1' }))
+  expect(
+    screen.getByRole('button', { name: 'Просмотр файла: М-15.pdf' }),
+  ).toBeTruthy()
+})
+
+it.each(['Заменить', 'Оставить несколько'])(
+  'asks how to handle existing originals in the registry: %s',
+  async (choice) => {
+    const old = {
+      id: '10000000-0000-4000-8000-000000000001',
+      documentId: 'app',
+      name: 'Old.pdf',
+      size: 10,
+      uploadedAt: '',
+    }
+    const posts: Record<string, unknown>[] = []
+    vi.mocked(fileBase64).mockResolvedValue('JVBERi0=')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, options?: RequestInit) => {
+        if (options?.method === 'POST')
+          posts.push(JSON.parse(String(options.body)))
+        return Response.json({
+          ...data,
+          manifest: { ...data.manifest, files: [old] },
+        })
+      }),
+    )
+    render(<DocumentsSection prepare={async () => 'saved'} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Труба 108х3' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Скачать архив · 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Прикрепить: АПП №1' }))
+    expect(
+      screen.getByRole('button', { name: 'Посмотреть: Old.pdf' }),
+    ).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Файлы оригиналов'), {
+      target: { files: [new File(['%PDF-new'], 'New.pdf')] },
+    })
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Прикрепить (1)' })
+        .disabled,
+    ).toBe(true)
+    expect(posts).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: choice }))
+    fireEvent.click(screen.getByRole('button', { name: 'Прикрепить (1)' }))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({
+      documentId: 'app',
+      expectedFileIds: [old.id],
+      replaceFileIds: choice === 'Заменить' ? [old.id] : [],
+    })
+  },
+)

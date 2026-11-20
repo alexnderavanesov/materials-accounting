@@ -5,8 +5,37 @@ import {
   qualityDocumentCategory,
 } from './document-registry'
 import { buildQualityPrintData } from './quality-print-data'
+import { withM15Document } from './m15-document'
 
 describe('material document registry', () => {
+  it('exposes a composed M-15 before receipts and preserves its scan ID when receipts arrive', () => {
+    const workspace = withM15Document(documentRegistryFixture(), {
+      id: 'new-m15',
+      kind: 'm15',
+      number: '15-NEW',
+      date: '2026-11-18',
+    })
+    workspace.m15Reconciliations = [
+      {
+        id: 'new-m15',
+        mode: 'automatic',
+        allocations: [],
+        lines: [
+          { id: 'pipe', name: 'Труба', unit: 'м', position: '', quantity: 100 },
+        ],
+      },
+    ]
+    const before = buildDocumentRegistry(workspace).documents.find(
+      (doc) => doc.receiptDocumentId === 'new-m15',
+    )!
+    expect(before.materialIds).toEqual([])
+    workspace.materialReceipts[0]!.m15DocumentId = 'new-m15'
+    const after = buildDocumentRegistry(workspace).documents.find(
+      (doc) => doc.receiptDocumentId === 'new-m15',
+    )!
+    expect(after.id).toBe(before.id)
+    expect(after.materialIds).toEqual([])
+  })
   it('collects distinct receipt names across ciphers and marks only substitutions without changing document links', () => {
     const workspace = documentRegistryFixture()
     const projectName =
@@ -93,16 +122,18 @@ describe('material document registry', () => {
         lineIds: ['deleted-line'],
       },
     ])
-    expect(registry.documents).toHaveLength(1)
+    expect(registry.documents).toHaveLength(2)
+    expect(registry.documents.some((doc) => doc.kind === 'm15')).toBe(true)
     expect(registry.materials).toHaveLength(1)
     expect(registry.materials[0]).toMatchObject({
       name: 'Удалённый материал',
       lineIds: ['deleted-line'],
       documentIds: ['manual:retained-original'],
     })
-    expect(registry.documents[0]!.materialIds).toEqual([
-      registry.materials[0]!.id,
-    ])
+    expect(
+      registry.documents.find((doc) => doc.id === 'manual:retained-original')!
+        .materialIds,
+    ).toEqual([registry.materials[0]!.id])
   })
   it('groups one material across ciphers, links every document type and deduplicates shared APP', () => {
     const workspace = documentRegistryFixture(),
@@ -207,7 +238,7 @@ describe('material document registry', () => {
     const start = performance.now(),
       registry = buildDocumentRegistry(workspace)
     expect(registry.materials).toHaveLength(10000)
-    expect(registry.documents).toHaveLength(10000)
+    expect(registry.documents).toHaveLength(10001)
     expect(performance.now() - start).toBeLessThan(4000)
   })
 })

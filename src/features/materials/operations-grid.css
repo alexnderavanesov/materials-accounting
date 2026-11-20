@@ -20,6 +20,10 @@
   justify-content: center;
   text-align: center;
 }
+.operations-grid .operations-grid-header-centered .ag-header-cell-label {
+  justify-content: center;
+  text-align: center;
+}
 .operations-grid .operations-grid-deleted {
   background-color: #fffbeb;
 }
@@ -36,6 +40,17 @@
 .operations-grid .ag-cell-inline-editing {
   padding-top: 0;
   padding-bottom: 0;
+}
+
+.operations-grid-fill {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.operations-grid-fill > :first-child {
+  flex-shrink: 0;
 }
 
 /* Translate within this table's bounds; the header keeps its filters and horizontal scroll. */

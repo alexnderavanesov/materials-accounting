@@ -1,3 +1,4 @@
+import { formatCalendarDate } from './calendar-date'
 import { useEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, X } from 'lucide-react'
@@ -80,7 +81,7 @@ export function ReceiptReferencesDialog({
       >
         <span className="grid min-w-0 gap-1 text-sm">
           <span className="font-medium text-blue-700">
-            Получение от {receipt.date}
+            Получение от {formatCalendarDate(receipt.date)}
           </span>
           <span className="break-words text-xs text-slate-500">
             {receipt.request}
@@ -159,14 +160,15 @@ export function ReceiptReferencesDialog({
               >
                 <span className="grid min-w-0 gap-1 text-sm">
                   <span className="font-medium text-blue-700">
-                    Возврат от {item.date}
+                    Возврат от {formatCalendarDate(item.date)}
                   </span>
                   <span className="break-words text-slate-700">
                     {item.reason}
                     {item.zni && ` · ЗНИ ${item.zni}`}
                   </span>
                   <span className="break-words text-xs text-slate-500">
-                    {item.request} · Получение от {item.receiptDate}
+                    {item.request} · Получение от{' '}
+                    {formatCalendarDate(item.receiptDate)}
                   </span>
                   {item.documentNumber && (
                     <span className="break-words text-xs text-slate-500">

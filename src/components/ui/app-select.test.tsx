@@ -103,3 +103,52 @@ it('prevents changes when disabled and closes a menu if its document becomes rea
   expect(screen.queryByRole('listbox')).toBeNull()
   expect(change).not.toHaveBeenCalled()
 })
+
+it('windows 50,000 options while searching the complete set', () => {
+  const change = vi.fn()
+  render(
+    <AppSelect
+      label="Материал"
+      options={Array.from({ length: 50000 }, (_, index) => ({
+        value: String(index),
+        label: `Материал ${index}`,
+      }))}
+      value="0"
+      onChange={change}
+    />,
+  )
+  fireEvent.click(screen.getByRole('combobox', { name: 'Материал' }))
+  expect(screen.getAllByRole('option')).toHaveLength(100)
+  const search = screen.getByRole('combobox', { name: 'Поиск: Материал' })
+  fireEvent.keyDown(search, { key: 'End' })
+  expect(screen.getByRole('option', { name: 'Материал 49999' })).toBeTruthy()
+  fireEvent.change(search, { target: { value: 'Материал 49999' } })
+  expect(screen.getAllByRole('option')).toHaveLength(1)
+  fireEvent.keyDown(search, { key: 'Enter' })
+  expect(change).toHaveBeenCalledExactlyOnceWith('49999')
+})
+it('keeps multi-selection across searches and closes on Escape', () => {
+  const toggle = vi.fn()
+  render(
+    <AppSelect
+      label="Типы"
+      options={options}
+      value=""
+      onChange={() => {}}
+      multiple={['ТКМ-1']}
+      onToggle={toggle}
+    />,
+  )
+  const trigger = screen.getByRole('combobox', { name: 'Типы' })
+  fireEvent.click(trigger)
+  expect(
+    screen.getByRole('option', { name: 'ТКМ-1' }).getAttribute('aria-selected'),
+  ).toBe('true')
+  fireEvent.click(screen.getByRole('option', { name: 'ТКМ-2' }))
+  expect(toggle).toHaveBeenCalledExactlyOnceWith('ТКМ-2', true)
+  expect(screen.getByRole('listbox')).toBeTruthy()
+  fireEvent.keyDown(screen.getByRole('combobox', { name: 'Поиск: Типы' }), {
+    key: 'Escape',
+  })
+  expect(document.activeElement).toBe(trigger)
+})

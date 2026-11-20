@@ -8,7 +8,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { Ellipsis } from 'lucide-react'
-import { Button } from '#/components/ui/button'
+import { RowActionButton } from '#/components/ui/row-action'
 
 export type InspectionAction = {
   label: string
@@ -68,10 +68,9 @@ export function InspectionActionsMenu({
   }, [position])
   return (
     <>
-      <Button
+      <RowActionButton
         ref={trigger}
-        variant="ghost"
-        size="icon"
+        iconOnly
         aria-label={`Действия ${kind} ${number}`}
         aria-haspopup="menu"
         aria-expanded={!!position}
@@ -96,7 +95,7 @@ export function InspectionActionsMenu({
         }}
       >
         <Ellipsis size={20} />
-      </Button>
+      </RowActionButton>
       {position &&
         createPortal(
           <div

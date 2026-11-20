@@ -63,6 +63,7 @@ export function HoverTooltip({
         aria-describedby={visible ? id : undefined}
         onPointerEnter={() => setOpen(Boolean(text))}
         onPointerLeave={() => setOpen(false)}
+        onPointerDown={() => setOpen(false)}
         onFocus={() => setOpen(Boolean(text))}
         onBlur={() => setOpen(false)}
       >

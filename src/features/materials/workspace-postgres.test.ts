@@ -1,3 +1,6 @@
+import { m15Fixture, linkedM15Fixture } from './m15-reconciliation.fixtures'
+import { calculateM15, m15ReceiptIndex } from './m15-reconciliation'
+import { automaticM15, calculateAutomaticM15 } from './m15-automatic'
 import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { writeFileSync } from 'node:fs'
@@ -5,7 +8,10 @@ import postgres from 'postgres'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createPostgresWorkspaceStore } from './workspace-postgres.server'
 import { scaledWorkspace } from './scalability.fixtures'
-import { acceptFixture } from './quality-workflow.fixtures'
+import {
+  acceptFixture,
+  documentInspectionFixture,
+} from './quality-workflow.fixtures'
 import {
   correctInspectionAct,
   currentInspection,
@@ -14,6 +20,7 @@ import {
   recordCustomerReturn,
   signInspection,
   inspectionApprovals,
+  createAcceptedInspectionAct,
 } from './quality-workflow'
 import {
   entityGroups,
@@ -102,6 +109,209 @@ describe.skipIf(!enabled)(
         ],
       }
     }
+    it('serializes coverage of one receipt across different M15 documents and safely retries the same mutation', async () => {
+      const { workspace, value } = linkedM15Fixture()
+      workspace.qualityWorkflow.cases = []
+      const second = { ...structuredClone(value), id: 'm15-second' }
+      value.allocations = []
+      second.allocations = []
+      workspace.m15Reconciliations = [value, second]
+      workspace.qualityWorkflow.receiptDocuments!.push({
+        id: second.id,
+        kind: 'm15',
+        number: '15-2',
+        date: localToday(),
+      })
+      await store.importWorkspace(workspace)
+      const loaded = await store.load()
+      const link = {
+        lineId: 'row1',
+        receiptId: 'receipt',
+        quantity: 8,
+        documentQuantity: 8,
+        receiptQuantity: 10,
+        receiptUnit: 'шт',
+      }
+      const mutations = [value, second].map((record) =>
+        patch(loaded, 'm15Reconciliations', record.id, {
+          ...record,
+          allocations: [link],
+        }),
+      )
+      const outcomes = await Promise.all(
+        mutations.map((mutation) => store.patch(mutation, 'test')),
+      )
+      expect(outcomes.map((result) => result.status).sort()).toEqual([
+        'conflict',
+        'saved',
+      ])
+      const winner = outcomes.findIndex((result) => result.status === 'saved')
+      expect(await store.patch(mutations[winner]!, 'test')).toMatchObject({
+        status: 'saved',
+      })
+      const current = await store.load()
+      expect(current.workspace!.materialReceipts).toEqual(
+        workspace.materialReceipts,
+      )
+      expect(
+        current.workspace!.m15Reconciliations!.flatMap(
+          (record) => record.allocations,
+        ),
+      ).toHaveLength(1)
+      const losing = [value, second][1 - winner]!
+      expect(
+        await store.patch(
+          patch(current, 'm15Reconciliations', losing.id, {
+            ...losing,
+            allocations: [link],
+          }),
+          'test',
+        ),
+      ).toMatchObject({
+        status: 'rejected',
+        message: expect.stringContaining('другой М-15'),
+      })
+      expect(
+        await store.patch(
+          patch(current, 'materialReceipts', 'receipt', null),
+          'test',
+        ),
+      ).toMatchObject({ status: 'rejected' })
+    })
+    it('persists M-15 independently of signed documents and detects simultaneous edits', async () => {
+      const { workspace, value } = m15Fixture()
+      workspace.qualityWorkflow.cases[0]!.basis = {
+        ...workspace.qualityWorkflow.receiptDocuments!.find(
+          (doc) => doc.id === 'm15',
+        )!,
+      }
+      await store.importWorkspace(workspace)
+      const loaded = await store.load()
+      const results = await Promise.all(
+        [10, 12].map((quantity) =>
+          store.patch(
+            patch(loaded, 'm15Reconciliations', value.id, {
+              ...automaticM15(value.id, value),
+              lines: [{ ...value.lines[0]!, quantity }],
+            }),
+            'test',
+          ),
+        ),
+      )
+      expect(
+        results.filter((result) => result.status === 'saved'),
+      ).toHaveLength(1)
+      expect(
+        results.filter((result) => result.status === 'conflict'),
+      ).toHaveLength(1)
+      const saved = await store.load()
+      expect(saved.workspace!.m15Reconciliations).toHaveLength(1)
+      expect(saved.workspace!.qualityWorkflow).toEqual(
+        workspace.qualityWorkflow,
+      )
+      expect(saved.workspace!.materialReceipts).toEqual(
+        workspace.materialReceipts,
+      )
+      expect(
+        saved.versions!['cases/' + workspace.qualityWorkflow.cases[0]!.id],
+      ).toEqual(
+        loaded.versions!['cases/' + workspace.qualityWorkflow.cases[0]!.id],
+      )
+      expect(
+        await store.patch(
+          patch(saved, 'm15Reconciliations', value.id, {
+            ...value,
+            allocations: [{ ...value.allocations[0]!, quantity: 11 }],
+          }),
+          'test',
+        ),
+      ).toMatchObject({
+        status: 'rejected',
+        message: expect.stringContaining('превышает'),
+      })
+      const changedCase = structuredClone(workspace.qualityWorkflow.cases[0]!)
+      changedCase.revisions[0]!.zni.rows[0]!.accepted = 7
+      expect(
+        await store.patch(
+          patch(saved, 'cases', changedCase.id, changedCase),
+          'test',
+        ),
+      ).toMatchObject({ status: 'rejected' })
+    })
+    it('automatically recalculates M-15 after receipt correction and deletion without changing the reconciliation version', async () => {
+      const { workspace, value } = m15Fixture()
+      workspace.qualityWorkflow.cases = []
+      const record = automaticM15('m15', value)
+      await store.importWorkspace({
+        ...workspace,
+        m15Reconciliations: [record],
+      })
+      const old = await store.load()
+      expect(
+        await store.patch(
+          patch(old, 'materialReceipts', 'receipt', {
+            ...workspace.materialReceipts[0]!,
+            quantity: 9,
+            altQuantity: 22.5,
+          }),
+          'test',
+        ),
+      ).toMatchObject({ status: 'saved' })
+      const saved = await store.load()
+      expect(saved.workspace!.m15Reconciliations).toEqual([record])
+      expect(saved.versions!['m15Reconciliations/m15']).toEqual(
+        old.versions!['m15Reconciliations/m15'],
+      )
+      expect(
+        calculateAutomaticM15(record, m15ReceiptIndex(saved.workspace!))
+          .rows[0],
+      ).toMatchObject({ received: 9, delta: -1, status: 'difference' })
+      // A documentary quantity can still be edited; there are no stale receipt snapshots.
+      expect(
+        await store.patch(
+          patch(saved, 'm15Reconciliations', 'm15', {
+            ...record,
+            lines: [{ ...record.lines[0]!, quantity: 12 }],
+          }),
+          'test',
+        ),
+      ).toMatchObject({ status: 'saved' })
+      const edited = await store.load()
+      expect(
+        await store.patch(
+          patch(edited, 'materialReceipts', 'receipt', null),
+          'test',
+        ),
+      ).toMatchObject({ status: 'saved' })
+      const next = await store.load()
+      expect(
+        calculateAutomaticM15(
+          next.workspace!.m15Reconciliations![0]!,
+          m15ReceiptIndex(next.workspace!),
+        ).rows[0],
+      ).toMatchObject({ received: 0, delta: -12 })
+    })
+
+    it('leaves an allocation visibly stale when an otherwise unreferenced receipt is deleted', async () => {
+      const { workspace, value } = m15Fixture()
+      workspace.qualityWorkflow.cases = []
+      await store.importWorkspace({ ...workspace, m15Reconciliations: [value] })
+      const loaded = await store.load()
+      expect(
+        await store.patch(
+          patch(loaded, 'materialReceipts', 'receipt', null),
+          'test',
+        ),
+      ).toMatchObject({ status: 'saved' })
+      const next = await store.load()
+      expect(
+        calculateM15(
+          next.workspace!.m15Reconciliations![0]!,
+          m15ReceiptIndex(next.workspace!),
+        ).rows[0]!.status,
+      ).toBe('stale')
+    })
+
     it('persists site returns and rejects conflicting returns and over-issue in the same receipt', async () => {
       const source = acceptFixture(10)
       source.materialIssues = [
@@ -219,7 +429,7 @@ describe.skipIf(!enabled)(
         results.filter((result) => result.status === 'saved'),
       ).toHaveLength(1)
       expect(
-        results.filter((result) => result.status === 'rejected'),
+        results.filter((result) => result.status === 'conflict'),
       ).toHaveLength(1)
       const restored = (await store.load()).workspace!
       expect(restored.materialIssues).toHaveLength(1)
@@ -305,8 +515,13 @@ describe.skipIf(!enabled)(
         'уже содержит',
       )
     })
-    it('saves all ten independent edits from the same initial revision', async () => {
-      const loaded = await fixture(10)
+    it('saves all ten independent cipher edits from the same initial revision', async () => {
+      const source = scaledWorkspace(10)
+      source.lines.forEach((line, index) => {
+        line.cipher = `ТКМ-${index}`
+      })
+      await store.importWorkspace(source)
+      const loaded = await store.load()
       const results = await Promise.all(
         loaded.workspace!.lines.map((line) =>
           store.patch(
@@ -372,7 +587,7 @@ describe.skipIf(!enabled)(
         ),
       )
       expect(results.map((result) => result.status).sort()).toEqual([
-        'rejected',
+        'conflict',
         'saved',
       ])
       const reloaded = (await store.load()).workspace!
@@ -496,7 +711,7 @@ describe.skipIf(!enabled)(
         results.filter((result) => result.status === 'saved'),
       ).toHaveLength(1)
       expect(
-        results.filter((result) => result.status === 'rejected'),
+        results.filter((result) => result.status === 'conflict'),
       ).toHaveLength(1)
       expect(
         (await store.load()).workspace!.materialIssues.reduce(
@@ -548,6 +763,9 @@ describe.skipIf(!enabled)(
           quantity: 999,
         }).changes,
       )
+      for (const change of input.changes)
+        for (const group of entityGroups(change))
+          input.groups[group] = loaded.groups?.[group] ?? null
       expect((await store.patch(input, 'test')).status).toBe('rejected')
       expect((await store.load()).workspace!.lines[0]!.plannedQuantity).toBe(
         line.plannedQuantity,
@@ -556,6 +774,53 @@ describe.skipIf(!enabled)(
         (await sql`select count(*)::int as count from workspace_commits`)[0]!
           .count,
       ).toBe(0)
+    })
+    it('rejects regular issues with a foreign project position or unit atomically', async () => {
+      const loaded = await fixture(2)
+      const source = loaded.workspace!.materialIssues[0]!
+      for (const [field, value] of [
+        ['projectLineId', String(loaded.workspace!.lines[1]!.id)],
+        ['projectUnit', 'м'],
+      ]) {
+        const issue = {
+          ...source,
+          id: `wrong-${field}`,
+          quantity: 1,
+          [field!]: value!,
+        }
+        const result = await store.patch(
+          patch(loaded, 'materialIssues', issue.id, issue),
+          'audit',
+        )
+        expect(result.status).toBe('rejected')
+        if (result.status === 'rejected')
+          expect(result.message).toMatch(/соответств.*поступлению/)
+      }
+      expect((await store.load()).workspace!.materialIssues).toEqual(
+        loaded.workspace!.materialIssues,
+      )
+    })
+    it('continues AVK for a signed historical M15 basis without manufacturing quantitative links', async () => {
+      const source = documentInspectionFixture('m15')
+      source.m15Reconciliations = []
+      const entry = source.qualityWorkflow.cases[0]!
+      currentInspection(entry).avk = null
+      // Import represents an existing historical record with its old single reference.
+      await store.importWorkspace(source)
+      const loaded = await store.load()
+      const next = structuredClone(entry)
+      currentInspection(next).avk = createAcceptedInspectionAct(next)
+      currentInspection(next).avk!.number = 'Historical AVK'
+      expect(
+        (await store.patch(patch(loaded, 'cases', next.id, next), 'audit'))
+          .status,
+      ).toBe('saved')
+      const after = (await store.load()).workspace!
+      expect(after.qualityWorkflow!.cases[0]!.revisions[0]!.zni).toEqual(
+        entry.revisions[0]!.zni,
+      )
+      expect(after.m15Reconciliations ?? []).toEqual([])
+      expect(after.materialReceipts).toEqual(source.materialReceipts)
     })
     it('preserves signed inspection history and rejects missing references', async () => {
       const loaded = await fixture(1)
@@ -663,9 +928,11 @@ describe.skipIf(!enabled)(
         const started = performance.now()
         await store.importWorkspace(source)
         const importedMs = performance.now() - started
+        console.log('Scale import ms:', importedMs)
         const loadStarted = performance.now(),
           loaded = await store.load(),
           loadMs = performance.now() - loadStarted
+        console.log('Scale load ms:', loadMs)
         const inputs = loaded.workspace!.lines.slice(0, 10).map((line) =>
           patch(loaded, 'lines', String(line.id), {
             ...line,
@@ -681,10 +948,30 @@ describe.skipIf(!enabled)(
             return result.status
           }),
         )
-        expect(results).toEqual(Array(10).fill('saved'))
+        // All positions share one cipher. The project aggregate protects concurrent
+        // edits with one winner; other writers must refresh before retrying.
+        expect(results.filter((status) => status === 'saved')).toHaveLength(1)
+        expect(results.filter((status) => status === 'conflict')).toHaveLength(
+          9,
+        )
+        const retryIndex = results.findIndex((status) => status === 'conflict')
+        const fresh = await store.load()
+        const retryLine = fresh.workspace!.lines[retryIndex]!
+        expect(
+          (
+            await store.patch(
+              patch(fresh, 'lines', String(retryLine.id), {
+                ...retryLine,
+                plannedQuantity: 78,
+              }),
+              'scale-retry',
+            )
+          ).status,
+        ).toBe('saved')
         const report = {
           positions: 50000,
           writers: 10,
+          conflicts: results.filter((status) => status === 'conflict').length,
           importedMs: Math.round(importedMs),
           loadMs: Math.round(loadMs),
           saveMs: times.map(Math.round),

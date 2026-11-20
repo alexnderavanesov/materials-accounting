@@ -28,6 +28,7 @@ export type EditConflict = {
   theirs: Json | null
 }
 export type EditJournal = {
+  accountingGeneration?: string
   changes: WorkspacePatch['changes']
   groups: WorkspacePatch['groups']
   before: Record<string, Json | null>
@@ -36,6 +37,7 @@ export type EditJournal = {
 }
 const editJournalSchema = z
   .object({
+    accountingGeneration: z.string().optional(),
     changes: z.array(workspacePatchSchema.shape.changes.element).max(100000),
     groups: workspacePatchSchema.shape.groups,
     before: z.record(z.string(), z.json()),
@@ -44,6 +46,7 @@ const editJournalSchema = z
   })
   .strict()
 type Options = {
+  accountingGeneration?: string
   initial: WorkspaceSnapshot
   revision: string
   versions: EntityVersions
@@ -237,6 +240,7 @@ export function createCollaborativeSaver(options: Options) {
       options.writeJournal?.(
         changes.length || inFlight
           ? {
+              accountingGeneration: options.accountingGeneration,
               changes,
               groups: groupExpectations(changes),
               request: inFlight,
@@ -265,6 +269,62 @@ export function createCollaborativeSaver(options: Options) {
       })),
     )
   }
+  // A project batch is one accounting operation. Resolving one conflicted row
+  // must not leave its history, request cancellations or another cipher queued.
+  function expandProjectConflicts(changes: WorkspacePatch['changes']) {
+    if (!conflicts.size) return
+    const lineIds = new Set<string>()
+    const markers = changes.filter(
+      (change) =>
+        change.collection === 'projectChanges' ||
+        change.collection === 'stockTransfers',
+    )
+    if (!markers.length) return
+    for (const change of markers) {
+      const value = change.value
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      if (change.collection === 'projectChanges' && Array.isArray(value.items))
+        for (const item of value.items) {
+          if (item && typeof item === 'object' && !Array.isArray(item)) {
+            const after = item.after
+            if (
+              after &&
+              typeof after === 'object' &&
+              !Array.isArray(after) &&
+              typeof after.id === 'string'
+            )
+              lineIds.add(after.id)
+          }
+        }
+      for (const field of ['fromProjectLineId', 'toProjectLineId'])
+        if (typeof value[field] === 'string') lineIds.add(value[field])
+    }
+    for (const change of changes) {
+      const value = change.value
+      const requestLine =
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? value.projectLineId
+          : null
+      if (
+        !markers.includes(change) &&
+        !(change.collection === 'lines' && lineIds.has(change.id)) &&
+        !(
+          change.collection === 'materialRequests' &&
+          typeof requestLine === 'string' &&
+          lineIds.has(requestLine)
+        )
+      )
+        continue
+      const key = recordKey(change)
+      if (!conflicts.has(key))
+        conflicts.set(key, {
+          key,
+          before: entityValue(base, key),
+          mine: entityValue(local, key),
+          theirs: entityValue(base, key),
+        })
+    }
+  }
   function setBase(record: StoredEntity, preferredValue?: Json) {
     const key = recordKey(record)
     if ((versions[key]?.version ?? 0) > record.version) return
@@ -278,6 +338,14 @@ export function createCollaborativeSaver(options: Options) {
     markDirty(key)
   }
   function applyRemote(result: WorkspaceChanges) {
+    if (result.accountingGeneration !== options.accountingGeneration) {
+      blocked = 'rejected'
+      status(
+        'error',
+        'Учёт начат заново. Обновите страницу; старые правки не будут восстановлены.',
+      )
+      throw new Error('Учёт начат заново. Обновите страницу.')
+    }
     const updates: StoredEntity[] = []
     const dirty = dirtyChanges()
     const changedGroups = new Set(
@@ -311,6 +379,7 @@ export function createCollaborativeSaver(options: Options) {
         }
       }
     }
+    expandProjectConflicts(dirty)
     for (const [key, version] of Object.entries(result.groups))
       groups[key] = Math.max(groups[key] ?? 0, version)
     cursor = result.revision
@@ -355,6 +424,7 @@ export function createCollaborativeSaver(options: Options) {
       if (!inFlight) {
         const expectedGroups = groupExpectations(changes)
         inFlight = {
+          accountingGeneration: options.accountingGeneration,
           mutationId: crypto.randomUUID(),
           changes,
           groups: expectedGroups,
@@ -377,6 +447,7 @@ export function createCollaborativeSaver(options: Options) {
               theirs: conflict.current?.value ?? null,
             })
           }
+          expandProjectConflicts(sent.changes)
           inFlight = null
           blocked = 'conflict'
           journal()
@@ -453,6 +524,10 @@ export function createCollaborativeSaver(options: Options) {
           'Копия правок вкладки повреждена. Исходная копия сохранена в браузере; автоматическое восстановление остановлено.',
         )
       saved = parsed.data
+      if (saved.accountingGeneration !== options.accountingGeneration)
+        throw new Error(
+          'Учёт начат заново. Старые правки сохранены отдельно и не восстанавливаются в новую базу.',
+        )
       for (const key of saved.creatingGroups ?? []) creatingGroups.add(key)
       // Replaying the exact stored UUID safely discovers whether a response was lost.
       let acknowledged: PatchResult | null = null
@@ -506,6 +581,7 @@ export function createCollaborativeSaver(options: Options) {
           blocked = 'conflict'
         }
       }
+      expandProjectConflicts(saved.changes)
       if (saved.request && !acknowledged) {
         inFlight = saved.request
         blocked = 'network'
@@ -519,6 +595,7 @@ export function createCollaborativeSaver(options: Options) {
         )
       else await flush()
     },
+    refresh: () => refresh(),
     async poll() {
       if (running || inFlight || blocked || timer) return
       try {
@@ -558,6 +635,7 @@ export function createCollaborativeSaver(options: Options) {
       }
     },
     retry() {
+      if (conflicts.size) return Promise.resolve()
       blocked = null
       return flush()
     },
@@ -578,6 +656,13 @@ export function createCollaborativeSaver(options: Options) {
       return cursor
     },
     hasPending,
+    hasPendingRecord: (collection: Collection, id: string) => {
+      const key = recordKey({ collection, id })
+      return (
+        dirtyKeys.has(key) ||
+        Boolean(inFlight?.changes.some((change) => recordKey(change) === key))
+      )
+    },
     getLatest: () => latest,
     dispose() {
       if (timer) clearTimeout(timer)

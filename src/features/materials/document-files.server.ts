@@ -19,6 +19,14 @@ const manifestSchema = z
       z
         .object({
           id: z.uuid(),
+          blobId: z
+            .string()
+            .regex(/^(?:[a-f0-9]{64}|[a-f0-9-]{36})$/)
+            .optional(),
+          sha256: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
           documentId: z.string(),
           name: z.string(),
           size: z.number().int().positive(),
@@ -131,6 +139,7 @@ export function createDocumentFileStore(directory: string) {
     files: { name: string; bytes: Buffer }[]
     expectedRevision: string
     document?: ManualDocument
+    replaceFileIds?: string[]
   }) {
     if (!input.files.length || input.files.length > maxDocumentUploadFiles)
       throw new PrintError(`Выберите от 1 до ${maxDocumentUploadFiles} файлов.`)
@@ -144,26 +153,89 @@ export function createDocumentFileStore(directory: string) {
     return queued(async () => {
       const current = await load()
       checkRevision(current, input.expectedRevision)
-      const files = input.files.map((file) => ({
-        id: randomUUID(),
-        documentId: input.documentId,
-        name: safeDocumentFilename(file.name),
-        size: file.bytes.length,
-        uploadedAt: new Date().toISOString(),
-      }))
-      await mkdir(folder, { recursive: true, mode: 0o700 })
+      const replaced = new Set(input.replaceFileIds ?? [])
+      if (
+        [...replaced].some(
+          (id) =>
+            !current.files.some(
+              (file) => file.id === id && file.documentId === input.documentId,
+            ),
+        )
+      )
+        throw new PrintError(
+          'Заменяемый файл больше не принадлежит этому документу. Обновите список.',
+          409,
+        )
+      const sizes = new Set(input.files.map((file) => file.bytes.length))
+      const known = await Promise.all(
+        current.files.map(async (file) => ({
+          ...file,
+          ...(file.sha256 || !sizes.has(file.size)
+            ? {}
+            : {
+                sha256: createHash('sha256')
+                  .update(
+                    await readFile(
+                      join(folder, `${file.blobId ?? file.id}.bin`),
+                    ),
+                  )
+                  .digest('hex'),
+              }),
+        })),
+      )
+      const blobs = new Map(
+        known
+          .filter((file) => file.sha256)
+          .map((file) => [file.sha256!, file.blobId ?? file.id]),
+      )
+      const retained = known.filter((file) => !replaced.has(file.id))
+      const targetHashes = new Set(
+        retained
+          .filter((file) => file.documentId === input.documentId)
+          .map((file) => file.sha256),
+      )
+      const files: typeof current.files = []
       const paths: string[] = []
+      await mkdir(folder, { recursive: true, mode: 0o700 })
       try {
-        for (const [index, file] of files.entries()) {
-          const path = join(folder, `${file.id}.bin`)
-          paths.push(path)
-          await writeFile(path, input.files[index]!.bytes, {
-            flag: 'wx',
-            mode: 0o600,
+        for (const incoming of input.files) {
+          const hash = createHash('sha256').update(incoming.bytes).digest('hex')
+          if (targetHashes.has(hash)) continue
+          targetHashes.add(hash)
+          const existing = known.find(
+            (file) =>
+              file.documentId === input.documentId && file.sha256 === hash,
+          )
+          if (existing) {
+            files.push(existing)
+            continue
+          }
+          const blobId = blobs.get(hash) ?? hash
+          if (!blobs.has(hash)) {
+            const path = join(folder, `${blobId}.bin`)
+            try {
+              await writeFile(path, incoming.bytes, { flag: 'wx', mode: 0o600 })
+              paths.push(path)
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'EEXIST')
+                throw error
+              if (!incoming.bytes.equals(await readFile(path)))
+                throw new PrintError('Сохранённый оригинал повреждён.', 500)
+            }
+            blobs.set(hash, blobId)
+          }
+          files.push({
+            id: randomUUID(),
+            documentId: input.documentId,
+            name: safeDocumentFilename(incoming.name),
+            size: incoming.bytes.length,
+            uploadedAt: new Date().toISOString(),
+            blobId,
+            sha256: hash,
           })
         }
         await write({
-          files: [...current.files, ...files],
+          files: [...retained, ...files],
           documents:
             input.document &&
             !current.documents.some((doc) => doc.id === input.document!.id)
@@ -174,6 +246,22 @@ export function createDocumentFileStore(directory: string) {
         await Promise.all(paths.map((path) => rm(path, { force: true })))
         throw error
       }
+      // The manifest is the commit point. Cleanup must never report a failed upload
+      // after the new files have already been published (a retry would duplicate them).
+      const usedBlobs = new Set(
+        [...retained, ...files].map((file) => file.blobId ?? file.id),
+      )
+      await Promise.allSettled(
+        [
+          ...new Set(
+            known
+              .filter((file) => replaced.has(file.id))
+              .map((file) => file.blobId ?? file.id),
+          ),
+        ]
+          .filter((id) => !usedBlobs.has(id))
+          .map((id) => rm(join(folder, `${id}.bin`), { force: true })),
+      )
       return load()
     })
   }
@@ -184,7 +272,10 @@ export function createDocumentFileStore(directory: string) {
       const current = await load()
       const file = current.files.find((entry) => entry.id === id)
       if (!file) throw new PrintError('Файл не найден.', 404)
-      return { file, bytes: await readFile(join(folder, `${file.id}.bin`)) }
+      return {
+        file,
+        bytes: await readFile(join(folder, `${file.blobId ?? file.id}.bin`)),
+      }
     },
     async add(input: {
       documentId: string
@@ -211,7 +302,9 @@ export function createDocumentFileStore(directory: string) {
             files.some((entry) => entry.documentId === doc.id),
           ),
         })
-        await rm(join(folder, `${file.id}.bin`), { force: true })
+        const blobId = file.blobId ?? file.id
+        if (!files.some((entry) => (entry.blobId ?? entry.id) === blobId))
+          await rm(join(folder, `${blobId}.bin`), { force: true })
         return load()
       })
     },

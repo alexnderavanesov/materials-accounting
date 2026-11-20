@@ -139,7 +139,7 @@ export function cellRange(range: string) {
 export const samplePrintData: PrintData = {
   headers: {
     number: 'ЗП-2026-0001',
-    date: '16.10.2026',
+    date: '16-10-26',
     requester: 'Иванов И.И.',
     requestNote: 'Для линии 2',
     cipher: 'ТК1',

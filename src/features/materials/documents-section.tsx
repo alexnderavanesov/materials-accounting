@@ -1,3 +1,6 @@
+import { RowActionButton } from '#/components/ui/row-action'
+import type { WorkspaceSearch } from './workspace-navigation'
+import { SelectField } from '#/components/ui/select-field'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -5,6 +8,7 @@ import type { ColDef, GridApi, ICellRendererParams } from 'ag-grid-community'
 import {
   Download,
   FileText,
+  FolderOpen,
   Images,
   LoaderCircle,
   Paperclip,
@@ -15,6 +19,10 @@ import {
 } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
+import {
+  ExistingScanFiles,
+  ScanReplacementChoice,
+} from './document-scan-picker'
 import { DocumentFileInput } from './document-file-input'
 import { documentFileSelectionError } from './document-file-limits'
 import { DocumentAttachments } from './document-attachments'
@@ -143,9 +151,11 @@ function DocumentDialog({
 }
 
 export function DocumentsSection({
+  onOpenOperation,
   prepare,
 }: {
   prepare: () => Promise<string>
+  onOpenOperation?: (target: WorkspaceSearch) => void
 }) {
   const prepareRef = useRef(prepare)
   prepareRef.current = prepare
@@ -168,6 +178,9 @@ export function DocumentsSection({
   >(null)
   const [uploadKind, setUploadKind] = useState<DocumentCategory>('passport')
   const [uploadLabel, setUploadLabel] = useState('')
+  const [uploadChoice, setUploadChoice] = useState<'replace' | 'keep' | null>(
+    null,
+  )
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
   const [bundle, setBundle] = useState<PrintBundle | null>(null)
   const [attachmentGroup, setAttachmentGroup] = useState<{
@@ -259,6 +272,17 @@ export function DocumentsSection({
     }
     return result
   }, [catalog])
+  const uploadStored =
+    uploadDocument && uploadDocument !== 'new'
+      ? (filesByDocument.get(uploadDocument.id) ?? [])
+      : []
+  const uploadSignature = uploadStored
+    .map((file) => file.id)
+    .sort()
+    .join(',')
+  useEffect(() => {
+    setUploadChoice(null)
+  }, [uploadSignature])
   const attachmentDocument = attachmentGroup
     ? documentsById.get(attachmentGroup.documentId)
     : undefined
@@ -291,8 +315,9 @@ export function DocumentsSection({
             .filter(
               (doc) =>
                 (!category || doc.kind === category) &&
-                (!documents || documents.has(doc.id)) &&
-                doc.materialIds.some((id) => ids.has(id)),
+                (documents
+                  ? documents.has(doc.id)
+                  : doc.materialIds.some((id) => ids.has(id))),
             )
             .map((doc) => doc.id),
         ),
@@ -421,7 +446,7 @@ export function DocumentsSection({
             : row.documentIds.length > 0,
         )
         .map((row) => ({ ...row, materialId: row.id }))
-    return materials.flatMap((row) =>
+    const linked = materials.flatMap((row) =>
       docsForRow(row, view).map((document) => ({
         ...row,
         id: JSON.stringify([row.id, document.id]),
@@ -430,6 +455,22 @@ export function DocumentsSection({
         documentIds: [document.id],
       })),
     )
+    const unlinked = (catalog?.documents ?? [])
+      .filter((doc) => doc.kind === view && !doc.materialIds.length)
+      .map((document) => ({
+        id: document.id,
+        materialId: document.id,
+        name: 'Нет привязки к проектной позиции',
+        receivedNames: [],
+        type: '',
+        cipher: '',
+        standard: '',
+        unit: '',
+        lineIds: [],
+        documentIds: [document.id],
+        document,
+      }))
+    return [...linked, ...unlinked]
   }, [catalog, onlyWithoutDocuments, view, docsForRow])
   // Keep the material/document pair visible first, including on narrow screens.
   const displayedColumns = useMemo(
@@ -453,8 +494,9 @@ export function DocumentsSection({
     return (catalog?.documents ?? []).filter(
       (doc) =>
         (!selection.category || selection.category === doc.kind) &&
-        (!documents || documents.has(doc.id)) &&
-        doc.materialIds.some((id) => ids.has(id)),
+        (documents
+          ? documents.has(doc.id)
+          : doc.materialIds.some((id) => ids.has(id))),
     )
   }, [catalog, selection])
   const selectedRows = useMemo(() => {
@@ -472,6 +514,7 @@ export function DocumentsSection({
   function startUpload(doc: RegistryDocument | 'new') {
     setNotice('')
     setUploadDocument(doc)
+    setUploadChoice(null)
     setUploadFiles([])
     setUploadLabel('')
     setUploadKind(
@@ -483,6 +526,8 @@ export function DocumentsSection({
   }
   async function upload() {
     if (!uploadFiles.length || !uploadDocument) return
+    if (uploadStored.length && !uploadChoice)
+      throw new Error('Выберите: заменить файлы или оставить несколько.')
     const selectionError = documentFileSelectionError(uploadFiles)
     if (selectionError) throw new Error(selectionError)
     const files: { name: string; base64: string }[] = []
@@ -503,7 +548,14 @@ export function DocumentsSection({
               lineIds: [...new Set(selectedRows.flatMap((row) => row.lineIds))],
             },
           }
-        : { documentId: uploadDocument.id }),
+        : {
+            documentId: uploadDocument.id,
+            expectedFileIds: uploadStored.map((file) => file.id),
+            replaceFileIds:
+              uploadChoice === 'replace'
+                ? uploadStored.map((file) => file.id)
+                : [],
+          }),
     })
     if (uploadDocument === 'new' && selection?.documentIds) {
       setSelection({ materialIds: selection.materialIds, category: uploadKind })
@@ -622,7 +674,9 @@ export function DocumentsSection({
         )}
         <Button
           variant="outline"
-          disabled={!selectedMaterials.length || Boolean(busy)}
+          disabled={
+            !selectedRows.some((row) => row.lineIds.length > 0) || Boolean(busy)
+          }
           onClick={() => {
             openDocuments(selectedMaterials)
             startUpload('new')
@@ -749,7 +803,9 @@ export function DocumentsSection({
             <p className="text-sm text-slate-500">
               {selectedRows.length === 1
                 ? selectedRows[0]!.name
-                : `Материалов: ${selectedRows.length}`}
+                : !selectedRows.length && selection.category === 'm15'
+                  ? 'М-15 пока не связана с получениями.'
+                  : `Материалов: ${selectedRows.length}`}
             </p>
             {uploadDocument ? (
               <>
@@ -757,7 +813,7 @@ export function DocumentsSection({
                   <>
                     <label className="grid gap-1 text-sm">
                       Тип документа
-                      <select
+                      <SelectField
                         disabled={Boolean(busy)}
                         className="rounded-md border border-slate-200 bg-white p-2"
                         value={uploadKind}
@@ -770,7 +826,7 @@ export function DocumentsSection({
                             {documentCategories[kind]}
                           </option>
                         ))}
-                      </select>
+                      </SelectField>
                     </label>
                     <label className="grid gap-1 text-sm">
                       Наименование и номер
@@ -785,11 +841,19 @@ export function DocumentsSection({
                 ) : (
                   <p>{uploadDocument.label}</p>
                 )}
+                <ExistingScanFiles files={uploadStored} />
                 <DocumentFileInput
                   files={uploadFiles}
                   onChange={setUploadFiles}
                   disabled={Boolean(busy)}
                 />
+                {!!uploadStored.length && !!uploadFiles.length && (
+                  <ScanReplacementChoice
+                    value={uploadChoice}
+                    onChange={setUploadChoice}
+                    disabled={Boolean(busy)}
+                  />
+                )}
               </>
             ) : (
               <>
@@ -816,7 +880,10 @@ export function DocumentsSection({
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={Boolean(busy)}
+                    disabled={
+                      Boolean(busy) ||
+                      !selectedRows.some((row) => row.lineIds.length > 0)
+                    }
                     onClick={() => startUpload('new')}
                   >
                     <Paperclip size={14} />
@@ -839,8 +906,8 @@ export function DocumentsSection({
                       key={doc.id}
                       className="grid gap-2 rounded-lg border border-slate-200 p-3"
                     >
-                      <div className="flex items-start gap-3">
-                        <label className="flex min-w-0 flex-1 items-start gap-3">
+                      <div className="flex flex-wrap items-start gap-2">
+                        <label className="flex min-w-0 flex-1 basis-48 items-start gap-3">
                           <input
                             className="mt-1"
                             type="checkbox"
@@ -858,10 +925,17 @@ export function DocumentsSection({
                             {doc.label}
                           </span>
                         </label>
+                        {doc.operation && onOpenOperation && (
+                          <RowActionButton
+                            onClick={() => onOpenOperation(doc.operation!)}
+                          >
+                            <FolderOpen size={14} aria-hidden="true" /> Открыть
+                            карточку
+                          </RowActionButton>
+                        )}
                         {doc.target && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
+                          <RowActionButton
+                            iconOnly
                             title="Предпросмотр PDF и Excel"
                             aria-label={`Просмотр: ${doc.label}`}
                             disabled={Boolean(busy)}
@@ -878,18 +952,26 @@ export function DocumentsSection({
                             }
                           >
                             <Printer size={16} />
-                          </Button>
+                          </RowActionButton>
                         )}
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          title="Прикрепить оригинал"
+                        <RowActionButton
+                          iconOnly
+                          title={
+                            files.length
+                              ? `Загружено файлов: ${files.length}. Посмотреть или прикрепить ещё`
+                              : 'Прикрепить оригинал'
+                          }
+                          className={
+                            files.length
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800'
+                              : 'text-slate-400'
+                          }
                           aria-label={`Прикрепить: ${doc.label}`}
                           disabled={Boolean(busy)}
                           onClick={() => startUpload(doc)}
                         >
                           <Paperclip size={16} />
-                        </Button>
+                        </RowActionButton>
                       </div>
                       {files.length > 0 ? (
                         <div className="flex flex-wrap gap-2 pl-7">
@@ -947,6 +1029,7 @@ export function DocumentsSection({
                   disabled={
                     Boolean(busy) ||
                     !uploadFiles.length ||
+                    (!!uploadStored.length && !uploadChoice) ||
                     Boolean(documentFileSelectionError(uploadFiles)) ||
                     (uploadDocument === 'new' && !uploadLabel.trim())
                   }
@@ -958,9 +1041,6 @@ export function DocumentsSection({
               </>
             ) : (
               <>
-                <span className="mr-auto text-xs text-slate-500">
-                  PDF и Excel формируются при скачивании. Все вложения включены.
-                </span>
                 <Button
                   disabled={
                     Boolean(busy) ||

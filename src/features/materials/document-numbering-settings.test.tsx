@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { changeField } from './workflow-test-support'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DocumentNumberingSettings } from './document-numbering-settings'
 import { emptyNumberHistory, initialNumbering } from './document-numbering'
 
 afterEach(cleanup)
+HTMLElement.prototype.scrollIntoView = vi.fn()
 it('edits and resets AVK numbering only after Save, allows discarding drafts', () => {
   const history = emptyNumberHistory(),
     value = initialNumbering(history),
@@ -17,10 +19,10 @@ it('edits and resets AVK numbering only after Save, allows discarding drafts', (
       onSave={onSave}
     />,
   )
-  fireEvent.change(screen.getByLabelText('Документ'), {
+  changeField(screen.getByLabelText('Документ'), {
     target: { value: 'avk' },
   })
-  fireEvent.change(screen.getByLabelText('Шаблон номера'), {
+  changeField(screen.getByLabelText('Шаблон номера'), {
     target: { value: 'АВК/{шифр}/{номер}' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Обнулить' }))
@@ -30,10 +32,10 @@ it('edits and resets AVK numbering only after Save, allows discarding drafts', (
   expect(
     screen.getByLabelText<HTMLInputElement>('Текущее значение счётчика').value,
   ).toBe('25')
-  fireEvent.change(screen.getByLabelText('Шаблон номера'), {
+  changeField(screen.getByLabelText('Шаблон номера'), {
     target: { value: 'АКТ-{номер}' },
   })
-  fireEvent.change(screen.getByLabelText('Текущее значение счётчика'), {
+  changeField(screen.getByLabelText('Текущее значение счётчика'), {
     target: { value: '10' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))

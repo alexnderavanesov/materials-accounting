@@ -1,5 +1,6 @@
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
+import type { StockTransfer } from './project-change-types'
 import { z } from 'zod'
-import { normalizeCalendarDate } from './calendar-date'
 
 const calendarDate = z
   .string()
@@ -60,6 +61,7 @@ export function issueApprovalConsumption(issue: IssueMovement) {
 
 type RecordValue = Record<string, unknown>
 type MovementWorkspace = {
+  stockTransfers?: StockTransfer[]
   materialIssues: RecordValue[]
   materialReceipts: RecordValue[]
   qualityWorkflow?: {
@@ -93,17 +95,25 @@ export function validateIssueMovements(
     const receipt = receipts.get(String(issue.receiptId))
     if (!receipt) fail('Получение для выдачи не найдено.')
     if (
+      ((issue.projectLineId !== undefined ||
+        issue.beforeInspection !== undefined ||
+        issue.siteReturns !== undefined) &&
+        issue.projectLineId !== receipt!.projectLineId &&
+        !next.stockTransfers?.some(
+          (item) =>
+            item.receiptId === issue.receiptId &&
+            item.toProjectLineId === issue.projectLineId,
+        )) ||
+      (issue.projectUnit !== undefined &&
+        issue.projectUnit !== receipt!.projectUnit)
+    )
+      fail('Материал и единица выдачи должны соответствовать поступлению.')
+    if (
       issue.beforeInspection !== undefined ||
       issue.siteReturns !== undefined
     ) {
       if (!calendarDate.safeParse(issue.date).success)
         fail('Укажите корректную дату выдачи.')
-      if (
-        issue.projectLineId !== receipt!.projectLineId ||
-        (issue.projectUnit !== undefined &&
-          issue.projectUnit !== receipt!.projectUnit)
-      )
-        fail('Материал и единица выдачи должны соответствовать поступлению.')
       if (Number(issue.quantity) > Number(receipt!.quantity))
         fail('Выдача превышает количество поступления.')
     }
@@ -221,7 +231,7 @@ export function validateIssueMovements(
     )
     if (remaining < 0)
       fail(
-        `На ${movement.date.split('-').reverse().join('.')} недостаточно материала на складе с учётом выдач и возвратов.`,
+        `На ${formatCalendarDate(movement.date)} недостаточно материала на складе с учётом выдач и возвратов.`,
       )
     stock.set(movement.receiptId, remaining)
   }

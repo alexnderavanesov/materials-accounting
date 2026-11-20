@@ -1,3 +1,4 @@
+import { useOperationDisplay } from './operation-display'
 import {
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
 import type { ReactNode } from 'react'
 import type {
   ColDef,
+  FilterModel,
   GridApi,
   ICellRendererParams,
   ICellEditorParams,
@@ -29,16 +31,21 @@ import { materialsColumnFilter } from './materials-column-filter'
 import { withOperationIndicatorColumns } from './operation-indicator-columns'
 import type { OperationGridIndicators } from './operation-indicator-columns'
 import { usePageGridHeader } from './use-page-grid-header'
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
 
 export type DataColumn<T> = {
   id: string
   title: string
   value: (row: T) => string | number | null | undefined
   render?: (row: T) => ReactNode
+  /** Preserve meaningful status labels when switching to the plain table view. */
+  renderInTable?: boolean
   width?: number
+  minWidth?: number
   flex?: number
   multiline?: boolean
   numeric?: boolean
+  date?: boolean
   centered?: boolean
   actions?: boolean
   onEdit?: (row: T, value: string) => void
@@ -72,7 +79,7 @@ function OperationCellRenderer<T>({
 
 /** Read-only by default; draft forms can opt specific columns into editing. */
 export function OperationsGrid<T>({
-  id,
+  id: baseId,
   label,
   rows,
   columns: baseColumns,
@@ -85,8 +92,13 @@ export function OperationsGrid<T>({
   priorityRow,
   onReady,
   firstColumnId,
+  initialColumnOrder,
+  initialFilterModel,
+  onFilterModelChange,
   indicators,
   pageScroll = false,
+  fillHeight = false,
+  centerHeaders = false,
 }: {
   id: string
   label: string
@@ -102,19 +114,41 @@ export function OperationsGrid<T>({
   onReady?: (api: GridApi<T>) => void
   /** Keep this column first when restoring an older saved layout. */
   firstColumnId?: string
+  /** Use this order instead of the saved order, preserving other view settings. */
+  initialColumnOrder?: Array<string>
+  /** Override stored filters; null starts without filters. */
+  initialFilterModel?: FilterModel | null
+  onFilterModelChange?: (model: FilterModel) => void
   indicators?: OperationGridIndicators<T>
   /** Expanded tables use page scrolling; large documents retain pagination. */
   pageScroll?: boolean
+  /** Main section table fills the available viewport with virtual row scrolling. */
+  fillHeight?: boolean
+  centerHeaders?: boolean
 }) {
-  const pagination = requestedPagination || (pageScroll && rows.length > 100)
+  const { mode } = useOperationDisplay()
+  const plain = mode === 'table' && !baseColumns.some((column) => column.onEdit)
+  const id = plain ? `${baseId}:table` : baseId
+  const pagination =
+    !plain &&
+    !fillHeight &&
+    (requestedPagination || (pageScroll && rows.length > 100))
+  const scrollWithPage = pageScroll && !plain && !fillHeight
   const columns = useMemo(
-    () => withOperationIndicatorColumns(baseColumns, indicators),
-    [baseColumns, indicators],
+    () =>
+      plain
+        ? baseColumns.map((column) =>
+            column.actions || column.renderInTable
+              ? column
+              : { ...column, render: undefined },
+          )
+        : withOperationIndicatorColumns(baseColumns, indicators),
+    [baseColumns, indicators, plain],
   )
   const api = useRef<GridApi<T> | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
-  usePageGridHeader(container, pageScroll && ready)
+  usePageGridHeader(container, scrollWithPage && ready)
   const [filtered, setFiltered] = useState(false)
   const postSortRows = useCallback(
     ({ nodes }: PostSortRowsParams<T>) => {
@@ -133,19 +167,23 @@ export function OperationsGrid<T>({
   )
   const [initialState] = useState(() => {
     const saved = readDataGridState(id)
+    const orderedColIds = initialColumnOrder ?? saved.columnOrder?.orderedColIds
     return {
       ...saved,
-      columnOrder:
-        firstColumnId && saved.columnOrder
-          ? {
-              orderedColIds: [
-                firstColumnId,
-                ...saved.columnOrder.orderedColIds.filter(
-                  (colId) => colId !== firstColumnId,
-                ),
-              ],
-            }
-          : saved.columnOrder,
+      filter:
+        initialFilterModel === undefined
+          ? saved.filter
+          : { filterModel: initialFilterModel ?? {} },
+      columnOrder: orderedColIds
+        ? {
+            orderedColIds: firstColumnId
+              ? [
+                  firstColumnId,
+                  ...orderedColIds.filter((colId) => colId !== firstColumnId),
+                ]
+              : orderedColIds,
+          }
+        : undefined,
       columnVisibility:
         firstColumnId && saved.columnVisibility
           ? {
@@ -171,11 +209,28 @@ export function OperationsGrid<T>({
       columns.map((column) => ({
         colId: column.id,
         headerName: column.title,
+        headerClass: centerHeaders
+          ? 'operations-grid-header-centered'
+          : undefined,
         initialWidth: column.width ?? (column.numeric ? 165 : 210),
-        initialFlex: column.flex,
+        minWidth: column.actions
+          ? (column.width ?? 210)
+          : (column.minWidth ?? defaults.minWidth),
+        maxWidth: column.actions ? (column.width ?? 210) : undefined,
+        resizable: !column.actions,
+        suppressSizeToFit: column.actions,
+        initialFlex: column.actions ? undefined : column.flex,
         initialPinned: column.actions ? 'right' : undefined,
         filter: column.actions ? false : materialsColumnFilter,
         sortable: !column.actions,
+        comparator: column.date
+          ? (a, b) =>
+              (
+                normalizeCalendarDate(String(a ?? '')) ?? String(a ?? '')
+              ).localeCompare(
+                normalizeCalendarDate(String(b ?? '')) ?? String(b ?? ''),
+              )
+          : undefined,
         suppressColumnsToolPanel: column.actions,
         lockVisible: column.actions,
         editable: Boolean(column.onEdit && !column.actions),
@@ -184,14 +239,19 @@ export function OperationsGrid<T>({
           : 'agTextCellEditor',
         cellEditorPopup: column.multiline,
         cellEditorParams: {
+          useFormatter: Boolean(column.date),
           getValidationErrors: ({ value }) => {
             const error = column.validateEdit?.(String(value ?? ''))
             return error ? [error] : null
           },
-        } satisfies Partial<ICellEditorParams<T>>,
+        } satisfies Partial<ICellEditorParams<T>> & { useFormatter: boolean },
+        useValueFormatterForExport: Boolean(column.date),
         valueGetter: ({ data }) => (data ? (column.value(data) ?? null) : null),
         valueSetter: ({ data, newValue }) => {
-          const value = String(newValue ?? '')
+          const text = String(newValue ?? '')
+          const value = column.date
+            ? (normalizeCalendarDate(text) ?? text)
+            : text
           if (!column.validateEdit?.(value)) column.onEdit?.(data, value)
           // Keep row data immutable; React supplies the validated draft.
           // A setter is synchronous, unlike cellEditRequest, so Apply sees
@@ -201,9 +261,11 @@ export function OperationsGrid<T>({
         valueFormatter: ({ value }) =>
           value == null || value === ''
             ? '—'
-            : typeof value === 'number'
-              ? numberFormat.format(value)
-              : String(value),
+            : column.date
+              ? formatCalendarDate(String(value))
+              : typeof value === 'number'
+                ? numberFormat.format(value)
+                : String(value),
         // Keep the renderer type stable when workspace data refreshes, so local
         // UI state (for example an open document dialog) is not remounted.
         cellRenderer: column.render ? OperationCellRenderer : undefined,
@@ -217,13 +279,16 @@ export function OperationsGrid<T>({
             ? ['operations-grid-readonly']
             : []),
         ],
-        tooltipValueGetter: column.onEdit
-          ? () => 'Дважды нажмите для редактирования'
-          : column.render
-            ? undefined
-            : ({ value }) => (value == null ? '' : String(value)),
+        tooltipValueGetter: column.render
+          ? undefined
+          : ({ value }) =>
+              value == null
+                ? ''
+                : column.date
+                  ? formatCalendarDate(String(value))
+                  : String(value),
       })),
-    [columns, hasEditableColumns],
+    [columns, hasEditableColumns, centerHeaders],
   )
   useLayoutEffect(
     () => () => {
@@ -262,7 +327,7 @@ export function OperationsGrid<T>({
   return (
     <div
       ref={container}
-      className={`operations-grid min-w-0 max-w-full${pageScroll ? ' operations-grid-page-scroll' : ''}`}
+      className={`operations-grid min-w-0 max-w-full${scrollWithPage ? ' operations-grid-page-scroll' : ''}${fillHeight ? ' operations-grid-fill' : ''}`}
       aria-label={label}
     >
       <div className="flex flex-wrap items-center justify-end gap-2 bg-white px-3 py-1">
@@ -302,8 +367,9 @@ export function OperationsGrid<T>({
         </Button>
       </div>
       <div
+        className={fillHeight ? 'min-h-0 flex-1' : undefined}
         style={
-          pageScroll
+          scrollWithPage || fillHeight
             ? undefined
             : {
                 height: Math.min(
@@ -318,7 +384,7 @@ export function OperationsGrid<T>({
       >
         <MaterialsGridView<T>
           gridId={id}
-          domLayout={pageScroll ? 'autoHeight' : 'normal'}
+          domLayout={scrollWithPage ? 'autoHeight' : 'normal'}
           theme={materialsGridTheme}
           localeText={projectGridLocale}
           rowData={rows}
@@ -326,6 +392,7 @@ export function OperationsGrid<T>({
           pinnedBottomRowData={totals}
           getRowId={({ data }) => rowId(data)}
           columnDefs={definitions}
+          maintainColumnOrder={initialColumnOrder !== undefined}
           defaultColDef={defaults}
           initialState={initialState}
           pagination={pagination}
@@ -337,6 +404,7 @@ export function OperationsGrid<T>({
           stopEditingWhenCellsLoseFocus
           rowHeight={64}
           suppressScrollOnNewData
+          suppressRowVirtualisation={fillHeight ? false : undefined}
           rowClassRules={{
             'operations-grid-deleted': ({ data }) =>
               Boolean(data && isDeleted?.(data)),
@@ -352,9 +420,10 @@ export function OperationsGrid<T>({
           onFirstDataRendered={({ api: grid }) =>
             setFiltered(grid.isAnyFilterPresent())
           }
-          onFilterChanged={({ api: grid }) =>
+          onFilterChanged={({ api: grid }) => {
             setFiltered(grid.isAnyFilterPresent())
-          }
+            onFilterModelChange?.(grid.getFilterModel())
+          }}
           onGridPreDestroyed={({ state }) => saveDataGridState(id, state)}
         />
       </div>

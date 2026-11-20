@@ -34,6 +34,9 @@ const status = () => screen.getByRole('status', { name: 'Сводка выдел
 const expectStatus = async (text: string) => {
   await waitFor(() => expect(status().textContent).toContain(text))
 }
+const expectEmptyStatus = async () => {
+  await waitFor(() => expect(status().textContent).toBe(''))
+}
 
 beforeEach(() => sessionStorage.clear())
 afterEach(cleanup)
@@ -42,7 +45,7 @@ it('summarizes overlapping and reversed selections, includes zero and resets on 
   const before = structuredClone(rows)
   render(<OperationsGrid {...props} />)
   const api = await operationGridApi(props.id)
-  await expectStatus('Выделите ячейки для сводки')
+  await expectEmptyStatus()
   act(() => {
     api.addCellRange({
       rowStartIndex: 2,
@@ -72,7 +75,7 @@ it('summarizes overlapping and reversed selections, includes zero and resets on 
   })
   expect(rows).toEqual(before)
   act(() => api.clearCellSelection())
-  await expectStatus('Выделите ячейки для сводки')
+  await expectEmptyStatus()
   expect(status().textContent).not.toContain('Сумма:')
 })
 
@@ -82,7 +85,7 @@ it('uses calendar order for ISO and Russian dates and keeps numbers, dates and t
   act(() =>
     api.addCellRange({ rowStartIndex: 0, rowEndIndex: 3, columns: ['date'] }),
   )
-  await expectStatus('Даты: 31.10.2026 — 05.11.2026')
+  await expectStatus('Даты: 31-10-26 — 05-11-26')
   expect(status().textContent).toContain('Дат: 3')
   expect(status().textContent).not.toContain('Сумма:')
   act(() =>
@@ -137,7 +140,7 @@ it('recalculates the selected displayed cells after sorting, filtering and immut
   )
   await expectStatus('Сумма: 2,6')
   act(() => api.setColumnsVisible(['quantity'], false))
-  await expectStatus('Выделите ячейки для сводки')
+  await expectEmptyStatus()
 })
 
 it('includes only selected pinned cells and updates totals without double counting overlaps', async () => {

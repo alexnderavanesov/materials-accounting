@@ -83,11 +83,11 @@ describe('operation calendar chronology', () => {
     const w = structuredClone(previous)
     w.materialReceipts[0]!.date = '2026-10-23'
     expect(() => validateQualityWorkspace(w, previous)).toThrow(
-      /Получение.*раньше заявки.*23.10.2026.*25.10.2026/,
+      /Получение.*раньше заявки.*23-10-26.*25-10-26/,
     )
     expect(
       receiptChronologyError(w.materialRequests[0]!, '23.10.2026'),
-    ).toContain('25.10.2026')
+    ).toContain('25-10-26')
     w.materialReceipts[0]!.date = '2026-10-26'
     w.materialRequests[0]!.date = '2026-10-27'
     expect(() => validateQualityWorkspace(w, previous)).toThrow(/раньше заявки/)
@@ -213,7 +213,7 @@ describe('operation calendar chronology', () => {
     issue(w, '2026-10-29', 4)
     issue(w, '2026-10-29', 1, 'issue-2')
     expect(() => validateQualityWorkspace(w)).toThrow(
-      /на 29.10.2026.*по подписанным АВК 0/,
+      /на 29-10-26.*по подписанным АВК 0/,
     )
     w.materialIssues[1]!.date = '2026-10-30'
     expect(() => validateQualityWorkspace(w)).not.toThrow()

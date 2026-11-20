@@ -1,0 +1,81 @@
+.request-materials-grid {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.request-materials-grid-body {
+  min-height: 0;
+  flex: 1;
+}
+.request-materials-grid .ag-root-wrapper {
+  border: 0;
+}
+.request-materials-grid .ag-cell {
+  display: flex;
+  align-items: center;
+  line-height: 1.4;
+}
+.request-materials-grid .ag-cell-wrapper,
+.request-materials-grid .ag-cell-value {
+  width: 100%;
+}
+.request-materials-grid .request-material-name {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+.request-materials-grid .request-material-choose {
+  text-align: left;
+  color: #1d4ed8;
+  cursor: pointer;
+}
+.request-materials-grid .request-material-input {
+  height: 34px;
+  min-width: 0;
+  width: 100%;
+  background: #fff;
+  font-size: 13px;
+}
+.request-materials-grid [col-id='quantity'] input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.request-materials-grid .request-material-number {
+  justify-content: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.request-materials-grid .request-material-editable {
+  background: #fafcff;
+}
+.request-materials-grid .request-material-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 48px;
+  overflow: hidden;
+  white-space: normal;
+  color: #64748b;
+  font-size: 11px;
+}
+.request-materials-grid .request-material-warning {
+  background: #fffbeb;
+}
+.request-materials-grid .request-material-deleted {
+  color: #64748b;
+}
+.request-materials-grid-filter-bar {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: right;
+  font-size: 12px;
+}
+.request-materials-grid-filter-bar button {
+  cursor: pointer;
+  color: #475569;
+}

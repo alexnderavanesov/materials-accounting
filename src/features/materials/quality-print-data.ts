@@ -1,3 +1,4 @@
+import { formatCalendarDate } from './calendar-date'
 import {
   receiptDocumentLabel,
   receiptDocumentNumberLabel,
@@ -17,8 +18,7 @@ import {
   resultLabels,
 } from './quality-workflow'
 
-const dateText = (value: string | null) =>
-  value ? value.split('-').reverse().join('.') : ''
+const dateText = (value: string | null) => formatCalendarDate(value, '')
 export function buildQualityPrintData(
   workspace: WorkspaceSnapshot,
   caseId: string,
@@ -225,16 +225,16 @@ ${materialDescription}`,
 }
 export const sampleQualityPrintData: QualityPrintData = {
   fields: {
-    signatureLine: 'Москва, 19.10.2026',
-    signedOn: '20.10.2026',
+    signatureLine: 'Москва, 19-10-26',
+    signedOn: '20-10-26',
     zniNumber: 'ЗНИ-0001',
-    zniDate: '19.10.2026',
-    zniSignedOn: '20.10.2026',
-    basisLabel: 'АПП № 12 от 18.10.2026',
+    zniDate: '19-10-26',
+    zniSignedOn: '20-10-26',
+    basisLabel: 'АПП № 12 от 18-10-26',
     basisNumber: '12',
-    basisDate: '18.10.2026',
+    basisDate: '18-10-26',
     appNumber: '12',
-    appDate: '18.10.2026',
+    appDate: '18-10-26',
     issuerRole: 'Инженер',
     issuerName: 'Иванов И.И.',
     customerRepresentative: 'Петров П.П.',
@@ -261,7 +261,7 @@ export const sampleQualityPrintData: QualityPrintData = {
       ]),
     ),
     number: '1',
-    date: '19.10.2026',
+    date: '19-10-26',
     day: 19,
     month: 'октября',
     year: 2026,
@@ -270,7 +270,7 @@ export const sampleQualityPrintData: QualityPrintData = {
     ciphers: 'ТКМ5',
     revision: 'РЕВИЗИЯ 1',
     location: 'Площадка строительства',
-    inspectionDate: '20.10.2026',
+    inspectionDate: '20-10-26',
     inspectionTime: '11:00',
     remarks: 'Примерные данные. Рабочая база не изменяется.',
     contractor: 'Подрядчик',
@@ -288,7 +288,7 @@ export const sampleQualityPrintData: QualityPrintData = {
       altAccepted: 12.5,
       altUnit: 'кг',
       receiptDocument: 'АПП № 12',
-      receiptDocumentDate: '18.10.2026',
+      receiptDocumentDate: '18-10-26',
       document: 'ГОСТ 33259-2015',
       alloy: '15ХМ',
       remarks: 'Без замечаний',
@@ -299,7 +299,7 @@ export const sampleQualityPrintData: QualityPrintData = {
       quantity: 2,
       unit: 'шт',
       appNumber: '12',
-      appDate: '18.10.2026',
+      appDate: '18-10-26',
     },
   ],
   documents: [
@@ -307,7 +307,7 @@ export const sampleQualityPrintData: QualityPrintData = {
       index: 1,
       name: 'Паспорт изделия',
       number: 'ПС-125',
-      date: '15.10.2026',
+      date: '15-10-26',
       orderNumber: '32',
     },
   ],

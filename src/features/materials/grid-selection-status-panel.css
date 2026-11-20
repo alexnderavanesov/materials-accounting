@@ -2,6 +2,9 @@
   padding: 0 12px;
   background: #f8fafc;
 }
+.ag-status-bar:has(.materials-selection-summary:empty) {
+  display: none;
+}
 .ag-status-bar-right:has(.materials-selection-summary) {
   min-width: 0;
   width: 100%;
@@ -31,7 +34,4 @@
 .materials-selection-summary strong {
   color: #334155;
   font-weight: 600;
-}
-.materials-selection-hint {
-  color: #64748b;
 }

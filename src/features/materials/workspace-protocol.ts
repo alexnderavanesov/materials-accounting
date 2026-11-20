@@ -1,14 +1,18 @@
+import { orderProjectChanges } from './project-change-types'
 import { z } from 'zod'
 import { documentKinds } from './document-numbering'
 import { emptyQualityWorkflow } from './quality-workflow'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 
 export const collections = [
+  'projectChanges',
+  'stockTransfers',
   'lines',
   'materialTypeSettings',
   'materialRequests',
   'materialReceipts',
   'materialIssues',
+  'm15Reconciliations',
   'cases',
   'receiptDocuments',
   'customerReturns',
@@ -32,6 +36,7 @@ export type EntityVersions = Record<
   { version: number; position: number }
 >
 export type WorkspaceSync = {
+  accountingGeneration?: string
   storage: 'postgres'
   versions: EntityVersions
   groups: Record<string, number>
@@ -52,6 +57,7 @@ const entityChangeSchema = z
   .strict()
 export const workspacePatchSchema = z
   .object({
+    accountingGeneration: z.uuid().optional(),
     mutationId: z.uuid(),
     changes: z.array(entityChangeSchema).min(1).max(100000),
     groups: z.record(z.string(), z.number().int().positive().nullable()),
@@ -70,6 +76,7 @@ export type PatchResult =
   | { status: 'conflict'; conflicts: WorkspaceConflict[]; message: string }
   | { status: 'rejected'; message: string }
 export type WorkspaceChanges = {
+  accountingGeneration?: string
   revision: string
   records: StoredEntity[]
   groups: Record<string, number>
@@ -107,14 +114,17 @@ export function workspaceEntities(
     result.set(key, { collection, id, value, position })
   }
   for (const collection of [
+    'projectChanges',
+    'stockTransfers',
     'lines',
     'materialTypeSettings',
     'materialRequests',
     'materialReceipts',
     'materialIssues',
+    'm15Reconciliations',
   ] as const) {
     if (only && !only.has(collection)) continue
-    workspace[collection].forEach((value, index) => {
+    workspace[collection]?.forEach((value, index) => {
       if (typeof value.id !== 'string' || !value.id)
         throw new Error(`Не указан ID: ${collection}`)
       put(collection, value.id, value, index)
@@ -200,7 +210,7 @@ export function applyWorkspaceEntities(
         collection === 'customerReturns'
       const source = quality
         ? (next.qualityWorkflow?.[collection] ?? [])
-        : next[collection]
+        : (next[collection] ?? [])
       const byId = new Map(updates.map((item) => [item.id, item]))
       const rows: Json[] = []
       for (const row of source) {
@@ -231,6 +241,12 @@ export function applyWorkspaceEntities(
       else Object.assign(next, { [collection]: rows })
     }
   }
+  if (records.some((row) => row.collection === 'projectChanges'))
+    next.projectChanges = orderProjectChanges(next.projectChanges ?? [])
+  if (records.some((row) => row.collection === 'stockTransfers'))
+    next.stockTransfers = [...(next.stockTransfers ?? [])].sort(
+      (a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id),
+    )
   return next
 }
 
@@ -284,6 +300,12 @@ export function entityGroups(
     Array.isArray(entity.value)
   )
     return []
+  if (entity.collection === 'projectChanges' || entity.collection === 'lines') {
+    const { project, cipher } = entity.value
+    return typeof project === 'string' && typeof cipher === 'string'
+      ? [`project:${JSON.stringify([project, cipher])}`]
+      : []
+  }
   const field =
     entity.collection === 'materialRequests'
       ? 'number'
@@ -291,7 +313,39 @@ export function entityGroups(
         ? 'document'
         : null
   const number = field && entity.value[field]
-  return typeof number === 'string' && number.trim()
-    ? [`${entity.collection}:${number.trim()}`]
-    : []
+  const groups =
+    typeof number === 'string' && number.trim()
+      ? [`${entity.collection}:${number.trim()}`]
+      : []
+  const receiptIds: string[] = []
+  if (
+    entity.collection === 'materialReceipts' &&
+    typeof entity.value.id === 'string'
+  )
+    receiptIds.push(entity.value.id)
+  if (
+    ['materialIssues', 'customerReturns', 'stockTransfers'].includes(
+      entity.collection,
+    ) &&
+    typeof entity.value.receiptId === 'string'
+  )
+    receiptIds.push(entity.value.receiptId)
+  if (entity.collection === 'm15Reconciliations') {
+    const record = entity.value as unknown as {
+      id: string
+      mode?: string
+      allocations: Array<{ receiptId: string }>
+    }
+    groups.push(`m15:${record.id}`)
+    if (record.mode === 'linked')
+      receiptIds.push(...record.allocations.map((link) => link.receiptId))
+  }
+  if (entity.collection === 'cases') {
+    const item = entity.value as unknown as {
+      revisions?: Array<{ zni: { rows: Array<{ receiptId: string }> } }>
+    }
+    for (const revision of item.revisions ?? [])
+      for (const row of revision.zni.rows) receiptIds.push(row.receiptId)
+  }
+  return [...groups, ...new Set(receiptIds.map((id) => `stock:${id}`))]
 }

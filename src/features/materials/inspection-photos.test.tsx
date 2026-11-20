@@ -10,6 +10,7 @@ import {
   within,
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { reviewWorkflow } from './workflow-test-support'
 import { InspectionWorkspace } from './quality-workflow-ui'
 import { acceptFixture } from './quality-workflow.fixtures'
 import { currentInspection, validateQualityWorkspace } from './quality-workflow'
@@ -112,6 +113,7 @@ function mount({ newAct = false, signed = false } = {}) {
     }, [workspace])
     return (
       <InspectionWorkspace
+        kind="avk"
         value={workspace.qualityWorkflow}
         receipts={
           workspace.materialReceipts as unknown as Parameters<
@@ -131,7 +133,6 @@ function mount({ newAct = false, signed = false } = {}) {
     )
   }
   render(<Harness />)
-  fireEvent.click(screen.getByRole('tab', { name: /^АВК/ }))
   if (newAct) {
     fireEvent.click(screen.getByRole('button', { name: 'Создать АВК' }))
     fireEvent.click(
@@ -202,6 +203,7 @@ it('queues photos until a new AVK is saved, waits for persistence, and attaches 
     screen.getByRole('button', { name: 'Продолжить редактирование' }),
   )
   expect(screen.getByText(/Выбрано: 2/)).toBeTruthy()
+  reviewWorkflow()
   const button = screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ })
   fireEvent.click(button)
   fireEvent.click(button)
@@ -262,6 +264,7 @@ it('keeps pending photos after an upload error and allows one successful retry',
   const f = mount()
   f.failUpload(true)
   await selectPhotos()
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   await waitFor(() =>
     expect(
@@ -271,6 +274,7 @@ it('keeps pending photos after an upload error and allows one successful retry',
   expect(f.files()).toHaveLength(0)
   expect(screen.getByText(/Выбрано: 2/)).toBeTruthy()
   f.failUpload(false)
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(f.files()).toHaveLength(2)
@@ -280,6 +284,7 @@ it('does not upload when saving the AVK fails', async () => {
   const f = mount()
   f.prepare.mockRejectedValueOnce(new Error('Конфликт сохранения'))
   await selectPhotos()
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   await waitFor(() =>
     expect(
@@ -308,6 +313,7 @@ it('clears unsaved photos when choosing No and leaves stored attachments intact'
     screen.getByRole('combobox', { name: 'Фотоматериалы приложены' }),
   )
   fireEvent.click(screen.getByRole('option', { name: 'Нет' }))
+  reviewWorkflow()
   fireEvent.click(screen.getByRole('button', { name: /^Сохранить (ЗНИ|АВК)$/ }))
   expect(
     currentInspection(f.save.mock.calls[0]![0].qualityWorkflow.cases[0]).avk!

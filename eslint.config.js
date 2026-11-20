@@ -16,6 +16,7 @@ export default [
   },
   {
     ignores: [
+      '.materials-workspace/**',
       '.nitro/**',
       '.output/**',
       'eslint.config.js',

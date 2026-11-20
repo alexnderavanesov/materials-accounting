@@ -1,3 +1,11 @@
+import { formatCalendarDate, normalizeCalendarDate } from './calendar-date'
+import type { M15Reconciliation } from './m15-reconciliation'
+import { effectiveRequestQuantity } from './project-change-types'
+import {
+  receiptOverageApprovalSchema,
+  receiptQuantityWithinRequest,
+} from './receipt-overage'
+import type { RequestCancellation, StockTransfer } from './project-change-types'
 import {
   issueApprovalConsumption,
   netIssued,
@@ -6,7 +14,6 @@ import {
 import type { IssueMovement } from './material-issues'
 import { validateIssueAllocation } from './issue-allocation'
 import { z } from 'zod'
-import { normalizeCalendarDate } from './calendar-date'
 import { validateProjectUnitChanges } from './project-unit-guard'
 import {
   validateInspectionChronology,
@@ -14,6 +21,7 @@ import {
 } from './operation-chronology'
 import {
   documentsForReceipt,
+  quantityForReceiptDocument,
   indexReceiptDocuments,
   receiptDocuments,
   receiptDocumentSchema,
@@ -100,6 +108,7 @@ const zniSchema = z
   .object({
     number: text,
     date,
+    createdAt: z.string().datetime().optional(),
     inspectionDate: date,
     inspectionTime: text,
     signedOn: date.nullable(),
@@ -125,6 +134,7 @@ const avkSchema = z
   .object({
     number: text,
     date,
+    createdAt: z.string().datetime().optional(),
     signedOn: date.nullable(),
     buyer: text,
     supplier: text,
@@ -168,6 +178,9 @@ export const customerReturnSchema = z
   .object({
     id,
     kind: z.enum(['rejected', 'surplus']),
+    projectLineId: id.optional(),
+    projectChangeId: id.optional(),
+    projectChangeItemId: id.optional(),
     rejectedAt: z.enum(['zni', 'avk']).optional(),
     source: z.enum(['uninspected', 'accepted']).optional(),
     caseId: id.optional(),
@@ -189,7 +202,26 @@ export const qualityWorkflowSchema = z
     customerReturns: z.array(customerReturnSchema).optional(),
   })
   .strict()
-export type QualityWorkflow = z.infer<typeof qualityWorkflowSchema>
+export type QualityWorkflow = z.infer<typeof qualityWorkflowSchema> & {
+  /** Derived read context, never serialized into qualityWorkflow. */
+  m15Reconciliations?: M15Reconciliation[]
+}
+export function storedQualityWorkflow(value: QualityWorkflow | undefined) {
+  if (!value) return undefined
+  const { m15Reconciliations: _context, ...stored } = value
+  return stored
+}
+export function qualityWithM15(
+  value: QualityWorkflow | undefined,
+  records?: readonly M15Reconciliation[],
+): QualityWorkflow | undefined {
+  return value
+    ? {
+        ...value,
+        m15Reconciliations: records ? [...records] : value.m15Reconciliations,
+      }
+    : undefined
+}
 export type QualityDefaults = z.infer<typeof qualityDefaultsSchema>
 export type InspectionCase = z.infer<typeof caseSchema>
 export type InspectionRevision = z.infer<typeof revisionSchema>
@@ -256,7 +288,8 @@ export function customerReturnReason(
   entry?: InspectionCase,
   allocation?: { zni: number; avk: number },
 ) {
-  if (item.kind === 'surplus') return 'Лишний материал'
+  if (item.kind === 'surplus')
+    return item.projectChangeId ? 'Излишек по ИЗМ' : 'Лишний материал'
   if (allocation)
     return allocation.zni && allocation.avk
       ? 'Не принято по ЗНИ / АВК'
@@ -365,9 +398,7 @@ export function inspectionMatches(entry: InspectionCase, search: string) {
   return values.some((value) =>
     [
       value,
-      /^\d{4}-\d{2}-\d{2}$/.test(value)
-        ? value.split('-').reverse().join('.')
-        : '',
+      /^\d{4}-\d{2}-\d{2}$/.test(value) ? formatCalendarDate(value) : '',
     ].some((candidate) => candidate.toLocaleLowerCase('ru').includes(query)),
   )
 }
@@ -466,6 +497,31 @@ export function inspectionAvailableQuantities(
   return available
 }
 
+export function inspectionDocumentAvailability(workflow: QualityWorkflow) {
+  const index = indexReceiptDocuments(workflow)
+  const used = new Map<string, number>()
+  for (const entry of workflow.cases)
+    for (const row of currentInspection(entry).zni.rows) {
+      const key = JSON.stringify([entry.basis.id, row.receiptId])
+      used.set(key, precise((used.get(key) ?? 0) + row.presented))
+    }
+  return (receipt: Receipt, documentId: string) =>
+    Math.max(
+      0,
+      precise(
+        quantityForReceiptDocument(receipt, documentId, workflow, index) -
+          (used.get(JSON.stringify([documentId, receipt.id])) ?? 0),
+      ),
+    )
+}
+export function inspectionDocumentAvailable(
+  workflow: QualityWorkflow,
+  receipt: Receipt,
+  documentId: string,
+) {
+  return inspectionDocumentAvailability(workflow)(receipt, documentId)
+}
+
 export function newInspection(
   workflow: QualityWorkflow,
   selection: Array<InspectionSelection>,
@@ -476,6 +532,7 @@ export function newInspection(
 ): InspectionCase {
   const basis = receiptDocuments(workflow).find((doc) => doc.id === basisId)
   if (!basis) fail('Документ получения не найден.')
+  if (basis.kind !== 'app') fail('Новая ЗНИ оформляется только по АПП.')
   if (!selection.length) fail('Выберите хотя бы один полученный материал.')
   unique(
     selection.map((item) => item.receiptId),
@@ -490,16 +547,34 @@ export function newInspection(
   )
   let number = 1
   while (used.has(String(number))) number++
+  const documentIndex = indexReceiptDocuments(workflow)
+  const basisUsed = new Map<string, number>()
+  for (const entry of workflow.cases)
+    if (entry.basis.id === basisId)
+      for (const row of currentInspection(entry).zni.rows)
+        basisUsed.set(
+          row.receiptId,
+          (basisUsed.get(row.receiptId) ?? 0) + row.presented,
+        )
   const rows = selection.map(({ receiptId, quantity: presented }) => {
     const receipt = receiptById.get(receiptId)
     if (!receipt) fail('Получение материала не найдено.')
     if (
-      receipt.appDocumentId !== basis.id &&
-      receipt.m15DocumentId !== basis.id
+      !documentsForReceipt(receipt, workflow, documentIndex).some(
+        (doc) => doc.id === basis.id,
+      )
     )
-      fail('Все позиции ЗНИ должны относиться к выбранному АПП или М-15.')
+      fail('Все позиции ЗНИ должны относиться к выбранному АПП.')
     if (!Number.isFinite(presented) || presented <= 0)
       fail('Укажите положительное количество для инспекции.')
+    if (
+      presented >
+      quantityForReceiptDocument(receipt, basis.id, workflow, documentIndex) -
+        (basisUsed.get(receipt.id) ?? 0)
+    )
+      fail(
+        'Количество для ЗНИ превышает доступный остаток, подтверждённый документом-основанием.',
+      )
     if (presented > (available.get(receiptId) ?? 0))
       fail('Количество для инспекции превышает доступный остаток поступления.')
     const line = materialById.get(receipt.projectLineId)
@@ -1069,6 +1144,7 @@ export function surplusReturnSources(
   workflow: QualityWorkflow,
   receipts: Array<ReturnReceipt>,
   issues: Array<ReturnIssue>,
+  approvedOnly = false,
 ): Array<SurplusReturnSource> {
   const sources: Array<SurplusReturnSource> = []
   const free = new Map(
@@ -1147,6 +1223,7 @@ export function surplusReturnSources(
       precise((physical.get(issue.receiptId) ?? 0) - netIssued(issue)),
     )
   return [...uninspected, ...sources]
+    .filter((source) => !approvedOnly || source.approved)
     .map((source) => {
       let amount = Math.max(
         0,
@@ -1181,7 +1258,7 @@ export function recordSurplusReturn(
   workflow: QualityWorkflow,
   receipts: Array<ReturnReceipt>,
   issues: Array<ReturnIssue>,
-  selection: Array<InspectionSelection>,
+  selection: Array<InspectionSelection & { approvedOnly?: boolean }>,
   returnDate: string,
   documentNumber = '',
   note = '',
@@ -1192,12 +1269,15 @@ export function recordSurplusReturn(
     'позиции возврата',
   )
   const sources = surplusReturnSources(workflow, receipts, issues)
+  const approvedSources = selection.some((item) => item.approvedOnly)
+    ? surplusReturnSources(workflow, receipts, issues, true)
+    : []
   const additions: Array<CustomerReturn> = []
   for (const item of selection) {
     if (!Number.isFinite(item.quantity) || item.quantity <= 0)
       fail('Укажите положительное количество возврата.')
     let remaining = item.quantity
-    for (const source of sources.filter(
+    for (const source of (item.approvedOnly ? approvedSources : sources).filter(
       (candidate) =>
         candidate.receiptId === item.receiptId &&
         candidate.availableOn <= returnDate,
@@ -1351,11 +1431,13 @@ function validateRevision(rev: InspectionRevision) {
   }
 }
 type WorkspaceLike = {
+  m15Reconciliations?: M15Reconciliation[]
   lines?: Array<{ id?: unknown; unit?: unknown; projectMaterialName?: unknown }>
   qualityWorkflow?: QualityWorkflow
   materialReceipts: Array<Record<string, unknown>>
   materialIssues: Array<Record<string, unknown>>
   materialRequests?: Array<Record<string, unknown>>
+  stockTransfers?: StockTransfer[]
 }
 // Compare JSON content, not insertion order (schema parsing can reorder keys).
 const canonical = (value: unknown): unknown => {
@@ -1376,7 +1458,7 @@ export function validateQualityWorkspace(
 ) {
   validateIssueMovements(next, previous)
   validateProjectUnitChanges(next.lines, previous?.lines, next, previous)
-  const workflow = next.qualityWorkflow
+  const workflow = qualityWithM15(next.qualityWorkflow, next.m15Reconciliations)
   const documents = receiptDocuments(workflow)
   const documentById = indexReceiptDocuments(workflow)
   const previousReceipts = new Map(
@@ -1409,6 +1491,17 @@ export function validateQualityWorkspace(
     {
       if (!Number.isFinite(receipt.quantity) || Number(receipt.quantity) <= 0)
         fail('Укажите положительное количество поступления.')
+      if (receipt.overageApproval !== undefined) {
+        const approval = receiptOverageApprovalSchema.safeParse(
+          receipt.overageApproval,
+        )
+        if (
+          !approval.success ||
+          approval.data.quantity !== receipt.quantity ||
+          approval.data.requestId !== receipt.requestId
+        )
+          fail('Согласуйте получение сверх заявки для текущего количества.')
+      }
       if (
         !documentsForReceipt(
           {
@@ -1420,7 +1513,7 @@ export function validateQualityWorkspace(
           documentById,
         ).length
       )
-        fail('Укажите АПП или М-15 для получения.')
+        fail('Укажите АПП для получения.')
     }
   }
   if (!workflow) {
@@ -1431,7 +1524,7 @@ export function validateQualityWorkspace(
     validateWorkspaceChronology(next, previous)
     return
   }
-  if (!qualityWorkflowSchema.safeParse(workflow).success)
+  if (!qualityWorkflowSchema.safeParse(storedQualityWorkflow(workflow)).success)
     fail(
       'Проверьте реквизиты: выберите хотя бы одно получение, укажите корректные даты и неотрицательные количества.',
     )
@@ -1491,6 +1584,7 @@ export function validateQualityWorkspace(
       receipt.appDocumentId,
       receipt.m15DocumentId,
     ]),
+    ...(workflow.m15Reconciliations ?? []).map((entry) => entry.id),
     ...workflow.cases.map((entry) => entry.basis.id),
   ])
   unique(
@@ -1520,6 +1614,46 @@ export function validateQualityWorkspace(
       fail(
         'Реквизиты связанного документа защищены: выберите или создайте другой документ.',
       )
+  }
+  const basisQuantities = new Map<string, number>()
+  for (const entry of workflow.cases)
+    for (const row of currentInspection(entry).zni.rows) {
+      const key = JSON.stringify([entry.basis.id, row.receiptId])
+      basisQuantities.set(key, (basisQuantities.get(key) ?? 0) + row.presented)
+    }
+  for (const entry of workflow.cases) {
+    if (same(previousCaseById.get(entry.id), entry)) continue
+    const basis = entry.basis
+    if (basis.kind !== 'm15') continue
+    const active = currentInspection(entry)
+    // Continuing AVK work must not reinterpret a signed historical ZNI as a
+    // new quantitative allocation. Its signed rows and basis remain immutable.
+    if (
+      active.zni.signedOn &&
+      previousCaseById
+        .get(entry.id)
+        ?.revisions.some((revision) => same(revision.zni, active.zni))
+    )
+      continue
+    for (const row of active.zni.rows) {
+      const raw = receipts.get(row.receiptId)
+      if (!raw) continue
+      const receipt = {
+        id: row.receiptId,
+        quantity: Number(raw.quantity),
+        appDocumentId: raw.appDocumentId as string | undefined,
+        m15DocumentId: raw.m15DocumentId as string | undefined,
+      }
+      const used =
+        basisQuantities.get(JSON.stringify([basis.id, row.receiptId])) ?? 0
+      if (
+        used >
+        quantityForReceiptDocument(receipt, basis.id, workflow, documentById)
+      )
+        fail(
+          'Количество ЗНИ превышает подтверждённое этой М-15 количество получения.',
+        )
+    }
   }
   const issuedByReceipt = new Map<string, number>()
   for (const issue of next.materialIssues) {
@@ -1565,6 +1699,8 @@ export function validateQualityWorkspace(
   const acceptedByReceipt = new Map<string, number>()
   for (const entry of workflow.cases) {
     const old = previousCaseById.get(entry.id)
+    if (!old && entry.basis.kind !== 'app')
+      fail('Новая ЗНИ оформляется только по АПП.')
     if (!same(documentById.get(entry.basis.id), entry.basis))
       fail('Проверьте основание ЗНИ: выберите АПП или М-15.')
     const firstRows = entry.revisions[0]!.zni.rows
@@ -1641,6 +1777,13 @@ export function validateQualityWorkspace(
         const receipt = receipts.get(row.receiptId)
         if (!receipt) fail('Нельзя удалить получение, связанное с ЗНИ.')
         if (
+          !(
+            entry.basis.kind === 'm15' &&
+            !!revision.zni.signedOn &&
+            previousCaseById
+              .get(entry.id)
+              ?.revisions.some((rev) => same(rev.zni, revision.zni))
+          ) &&
           !documentsForReceipt(
             {
               id: String(receipt.id),
@@ -1725,6 +1868,12 @@ export function validateQualityWorkspace(
       fail('Нельзя менять основание или удалять историю ЗНИ.')
     for (const [index, revision] of old.revisions.entries()) {
       const updated = current.revisions[index]!
+      for (const kind of ['zni', 'avk'] as const) {
+        const before = revision[kind]
+        const after = updated[kind]
+        if (before && after && before.createdAt !== after.createdAt)
+          fail('Нельзя менять время создания сохранённого документа.')
+      }
       const deletedAct =
         index === old.revisions.length - 1 &&
         current.revisions.length === old.revisions.length &&
@@ -1922,23 +2071,33 @@ export function validateQualityWorkspace(
         .filter((receipt) => !same(receipt, previousReceipts.get(receipt.id)))
         .map((receipt) => receipt.requestId),
     )
+    const rejectedReturns = customerReturnTotals(workflow, 'rejected')
     const totals = receivedByRequest(
       next.materialReceipts.map((receipt) => ({
         id: String(receipt.id),
         requestId: String(receipt.requestId),
-        quantity: Number(receipt.quantity),
+        quantity: receiptQuantityWithinRequest(
+          receipt,
+          rejectedReturns.get(String(receipt.id)),
+        ),
       })),
-      workflow,
     )
     for (const request of next.materialRequests) {
       const oldRequest = previousRequests.get(request.id)
       const changed =
         !oldRequest ||
         oldRequest.quantity !== request.quantity ||
+        !same(oldRequest.projectCancellations, request.projectCancellations) ||
         changedRequests.has(request.id)
       if (
         changed &&
-        (totals.get(String(request.id)) ?? 0) > Number(request.quantity)
+        (totals.get(String(request.id)) ?? 0) >
+          effectiveRequestQuantity({
+            quantity: Number(request.quantity),
+            projectCancellations: request.projectCancellations as
+              | RequestCancellation[]
+              | undefined,
+          })
       )
         fail('Поступления за вычетом возвратов превышают количество по заявке.')
     }

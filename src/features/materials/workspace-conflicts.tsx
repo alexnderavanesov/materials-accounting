@@ -3,6 +3,8 @@ import type { Json } from './workspace-protocol'
 import type { EditConflict } from './workspace-collaboration'
 
 const labels: Record<string, string> = {
+  lines: 'Строки М-15',
+  allocations: 'Сопоставления с поступлениями',
   quantity: 'Количество',
   plannedQuantity: 'По проекту',
   projectMaterialName: 'Материал',
