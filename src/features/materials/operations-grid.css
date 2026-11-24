@@ -14,9 +14,12 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.operations-grid .operations-grid-centered {
+.operations-grid .operations-grid-centered,
+.operations-grid .operations-grid-middle {
   display: flex;
   align-items: center;
+}
+.operations-grid .operations-grid-centered {
   justify-content: center;
   text-align: center;
 }

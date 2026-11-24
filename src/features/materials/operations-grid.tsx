@@ -47,6 +47,8 @@ export type DataColumn<T> = {
   numeric?: boolean
   date?: boolean
   centered?: boolean
+  headerCentered?: boolean
+  verticallyCentered?: boolean
   actions?: boolean
   onEdit?: (row: T, value: string) => void
   validateEdit?: (value: string) => string | null
@@ -98,7 +100,6 @@ export function OperationsGrid<T>({
   indicators,
   pageScroll = false,
   fillHeight = false,
-  centerHeaders = false,
 }: {
   id: string
   label: string
@@ -124,7 +125,6 @@ export function OperationsGrid<T>({
   pageScroll?: boolean
   /** Main section table fills the available viewport with virtual row scrolling. */
   fillHeight?: boolean
-  centerHeaders?: boolean
 }) {
   const { mode } = useOperationDisplay()
   const plain = mode === 'table' && !baseColumns.some((column) => column.onEdit)
@@ -209,7 +209,7 @@ export function OperationsGrid<T>({
       columns.map((column) => ({
         colId: column.id,
         headerName: column.title,
-        headerClass: centerHeaders
+        headerClass: column.headerCentered
           ? 'operations-grid-header-centered'
           : undefined,
         initialWidth: column.width ?? (column.numeric ? 165 : 210),
@@ -275,6 +275,7 @@ export function OperationsGrid<T>({
         cellClass: [
           ...(column.numeric ? ['operations-grid-number'] : []),
           ...(column.centered ? ['operations-grid-centered'] : []),
+          ...(column.verticallyCentered ? ['operations-grid-middle'] : []),
           ...(hasEditableColumns && !column.onEdit
             ? ['operations-grid-readonly']
             : []),
@@ -288,7 +289,7 @@ export function OperationsGrid<T>({
                   ? formatCalendarDate(String(value))
                   : String(value),
       })),
-    [columns, hasEditableColumns, centerHeaders],
+    [columns, hasEditableColumns],
   )
   useLayoutEffect(
     () => () => {

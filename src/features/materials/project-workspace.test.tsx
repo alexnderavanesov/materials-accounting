@@ -7270,7 +7270,9 @@ it('saves independent M15 alongside an APP receipt without changing physical or 
   mount(workspace)
   const before = structuredClone(workspace)
   fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
-  fireEvent.click(await screen.findByRole('button', { name: /^М-15 №15-1/ }))
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Редактировать М-15' }),
+  )
   const dialog = await screen.findByRole('dialog')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
   fireEvent.click(
@@ -7341,9 +7343,7 @@ it.each([false, true])(
     view.unmount()
     mount(saved)
     fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
-    expect(
-      await screen.findByRole('button', { name: /^М-15 №15-1/ }),
-    ).toBeTruthy()
+    expect(await screen.findByText('№15-1')).toBeTruthy()
     const grid = await operationGridApi('m15-register')
     expect(
       grid.getCellValue({

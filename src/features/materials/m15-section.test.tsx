@@ -7,6 +7,7 @@ import {
   screen,
   within,
   act,
+  waitFor,
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { M15Section } from './m15-section'
@@ -61,6 +62,7 @@ it('aggregates documents by material and cipher and searches without changing to
   ).toBe(1)
   expect(screen.queryByText('Состав заполнен')).toBeNull()
   expect(screen.queryByText('Состав не заполнен')).toBeNull()
+  expect(screen.queryByRole('button', { name: /^М-15 №15-2/ })).toBeNull()
   changeField(screen.getByLabelText('Поиск М-15'), {
     target: { value: '15-2' },
   })
@@ -144,7 +146,15 @@ it('keeps pending saves and remote feedback accessible in the independent editor
     />,
   )
   expect(await screen.findByText('Сохранение не подтверждено')).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: /^М-15 №15-2/ }))
+  changeField(screen.getByLabelText('Поиск М-15'), {
+    target: { value: '15-2' },
+  })
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole('button', { name: 'Редактировать М-15' }),
+    ).toHaveLength(1),
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Редактировать М-15' }))
   const dialog = await screen.findByRole('dialog')
   expect(within(dialog).getByText('Сервер временно недоступен')).toBeTruthy()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
@@ -316,5 +326,5 @@ it('removes the composition independently and retains the document and physical 
   await screen.findByText('Состав М-15 удалён.')
   expect(current.m15Reconciliations).toEqual([])
   expect(current.materialReceipts).toEqual(before)
-  expect(screen.getByRole('button', { name: /^М-15 №15-1/ })).toBeTruthy()
+  expect(screen.getByText('№15-1')).toBeTruthy()
 })

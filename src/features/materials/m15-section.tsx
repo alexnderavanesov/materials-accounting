@@ -392,7 +392,6 @@ function M15Register({
           id="m15-register"
           label="Накладные М-15"
           fillHeight
-          centerHeaders
           rows={rows}
           rowId={(row) => row.document.id}
           columns={[
@@ -400,18 +399,15 @@ function M15Register({
               id: 'document',
               title: 'Номер М-15',
               value: (row) => row.document.number,
+              verticallyCentered: true,
               width: 260,
               minWidth: 220,
               flex: 1,
               render: (row) => (
                 <div className="grid justify-items-start gap-1">
-                  <button
-                    className="max-w-full whitespace-normal break-words text-left font-medium text-blue-700 underline underline-offset-2"
-                    aria-label={receiptDocumentLabel(row.document)}
-                    onClick={() => open(row.document.id)}
-                  >
+                  <span className="max-w-full whitespace-normal break-words font-medium text-slate-800">
                     №{row.document.number}
-                  </button>
+                  </span>
                   <span className="text-xs text-slate-500">
                     от {formatCalendarDate(row.document.date)}
                   </span>
@@ -427,6 +423,7 @@ function M15Register({
               id: 'cipher',
               title: 'Шифр',
               value: (row) => row.cipher,
+              verticallyCentered: true,
               width: 420,
               minWidth: 240,
               flex: 2,
@@ -437,6 +434,7 @@ function M15Register({
               value: (row) => row.lines.length,
               numeric: true,
               centered: true,
+              headerCentered: true,
               width: 190,
               minWidth: 180,
             },
@@ -446,8 +444,10 @@ function M15Register({
               value: () => '',
               actions: true,
               width: 148,
+              centered: true,
+              headerCentered: true,
               render: (row) => (
-                <RowActions>
+                <RowActions className="w-full justify-center">
                   <RowActionButton
                     iconOnly
                     aria-label="Открыть М-15"
