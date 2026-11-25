@@ -1,3 +1,4 @@
+import type * as ReceiptScansModule from './receipt-scans'
 import { buildDocumentRegistry } from './document-registry'
 import { changeField, reviewWorkflow } from './workflow-test-support'
 // @vitest-environment jsdom
@@ -69,6 +70,20 @@ import { documentInspectionFixture } from './quality-workflow.fixtures'
 // End-to-end workspace scenarios mount several real, unvirtualized grids in jsdom.
 vi.setConfig({ testTimeout: 20000 })
 
+// Quantity/stock scenarios isolate file IO; the required-scan integration cases use the real hook.
+const scanIntegration = vi.hoisted(() => ({ enabled: false }))
+vi.mock('./receipt-scans', async (importOriginal) => {
+  const actual = await importOriginal<typeof ReceiptScansModule>()
+  return {
+    ...actual,
+    useReceiptScans: (...args: Parameters<typeof actual.useReceiptScans>) => {
+      const scans = actual.useReceiptScans(...args)
+      return scanIntegration.enabled
+        ? scans
+        : { ...scans, uploadRequired: async () => {} }
+    },
+  }
+})
 vi.mock('./functions', () => ({
   saveProjectWorkspaceSnapshot: vi.fn(),
   saveProjectWorkspaceChanges: vi.fn(),
@@ -958,7 +973,7 @@ it('keeps the delivery dialog open on a protected ZNI basis change and saves no 
       name: /Сохранить (изменения|получение)/,
     }),
   )
-  expect(within(dialog).getByRole('alert').textContent).toContain(
+  expect((await within(dialog).findByRole('alert')).textContent).toContain(
     'основанию ЗНИ',
   )
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
@@ -1648,6 +1663,7 @@ async function openReceipt() {
   return dialog
 }
 beforeEach(() => {
+  scanIntegration.enabled = false
   vi.mocked(saveProjectWorkspaceChanges).mockClear()
   localStorage.clear()
   // jsdom has no layout observer; real layout is checked in the browser.
@@ -6039,11 +6055,15 @@ describe('workspace user workflows', () => {
     expect(
       within(dialog).getByRole('button', { name: /^Заполненные\s*1$/ }),
     ).toBeTruthy()
+    // Escape resets all filters of this form, including “filled only”,
+    // while preserving the entered quantities and the form itself.
     expect(
-      within(dialog).getByLabelText<HTMLInputElement>('Количество по заявке, м')
-        .value,
-    ).toBe('1,5')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }))
+      within(dialog)
+        .getAllByLabelText<HTMLInputElement>('Количество по заявке, м')
+        .map((input) => input.value),
+    ).toEqual(['1,5', ''])
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   })
   it('creates a request, reloads it, cancels deletion, then confirms deletion without losing project lines', async () => {
@@ -7209,8 +7229,41 @@ it('opens the separate M-15 register from the sidebar without saving accounting 
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   expect(saveProjectWorkspaceChanges).not.toHaveBeenCalled()
 })
+function mockM15Originals(workspace: ReturnType<typeof base>) {
+  const files = (workspace.qualityWorkflow?.receiptDocuments ?? [])
+    .filter((doc) => doc.kind === 'm15')
+    .map((doc) => ({
+      id: `scan-${doc.id}`,
+      documentId: JSON.stringify(['receipt-document', doc.id]),
+      name: 'M15.pdf',
+      size: 100,
+      uploadedAt: '',
+    }))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        files.push({
+          id: 'new-scan',
+          documentId: body.documentId,
+          name: 'M15.pdf',
+          size: 100,
+          uploadedAt: '',
+        })
+        return Response.json({ revision: 'files-2', files, documents: [] })
+      }
+      return Response.json({
+        ...buildDocumentRegistry(workspace),
+        workspaceRevision: 'initial',
+        manifest: { revision: 'files-1', files, documents: [] },
+      })
+    }),
+  )
+}
 it('adds M-15 composition before receipts in one atomic save', async () => {
   const initial = base()
+  mockM15Originals(initial)
   mount(initial)
   const before = structuredClone(initial)
   fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
@@ -7228,9 +7281,22 @@ it('adds M-15 composition before receipts in one atomic save', async () => {
     target: { value: '100' },
   })
   reviewWorkflow(dialog)
+  await waitFor(() =>
+    expect(within(dialog).getByLabelText('Файлы оригиналов')).toHaveProperty(
+      'disabled',
+      false,
+    ),
+  )
+  fireEvent.change(within(dialog).getByLabelText('Файлы оригиналов'), {
+    target: { files: [new File(['%PDF-original'], 'M15.pdf')] },
+  })
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить М-15' }),
+  )
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Продолжить с превышением' }),
   )
   await screen.findByText('М-15 сохранена.')
   expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledOnce()
@@ -7267,6 +7333,7 @@ it('saves independent M15 alongside an APP receipt without changing physical or 
     altQuantity: 25,
     altUnitFactor: 2.5,
   })
+  mockM15Originals(workspace)
   mount(workspace)
   const before = structuredClone(workspace)
   fireEvent.click(screen.getByRole('button', { name: 'М-15' }))
@@ -7411,7 +7478,8 @@ it('provides independent flat tables in every operation section and preserves ta
   expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
 }, 60000)
 
-it('uploads receipt scans only after saving, links each original, and retries a partial failure without duplicating receipts or files', async () => {
+it('uploads the mandatory APP before saving, then other originals, and retries a partial failure without duplicating receipts or files', async () => {
+  scanIntegration.enabled = true
   const workspace = conversionWorkspace()
   HTMLDialogElement.prototype.showModal = function () {
     this.open = true
@@ -7429,12 +7497,19 @@ it('uploads receipt scans only after saving, links each original, and retries a 
   let persisted = false,
     failedQuality = false
   const uploads: { documentId: string; files: { name: string }[] }[] = []
+  const scanFiles: {
+    id: string
+    documentId: string
+    name: string
+    size: number
+    uploadedAt: string
+  }[] = []
   vi.stubGlobal(
     'fetch',
     vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
-        expect(persisted).toBe(true)
         const body = JSON.parse(String(init.body))
+        expect(persisted).toBe(body.documentId.includes('receipt-field'))
         uploads.push(body)
         if (body.documentId.includes('receipt-field') && !failedQuality) {
           failedQuality = true
@@ -7443,9 +7518,16 @@ it('uploads receipt scans only after saving, links each original, and retries a 
             { status: 503 },
           )
         }
+        scanFiles.push({
+          id: `file-${uploads.length}`,
+          documentId: body.documentId,
+          name: body.files[0].name,
+          size: 100,
+          uploadedAt: '',
+        })
         return Response.json({
           revision: String(uploads.length),
-          files: [],
+          files: scanFiles,
           documents: [],
         })
       }
@@ -7455,7 +7537,7 @@ it('uploads receipt scans only after saving, links each original, and retries a 
         workspaceRevision: persisted ? 'saved' : 'initial',
         manifest: {
           revision: String(uploads.length),
-          files: [],
+          files: scanFiles,
           documents: [],
         },
       })
@@ -7497,7 +7579,8 @@ it('uploads receipt scans only after saving, links each original, and retries a 
   await waitFor(() =>
     expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
   )
-  expect(uploads).toHaveLength(0)
+  expect(uploads).toHaveLength(1)
+  expect(uploads[0]!.files[0]!.name).toBe('APP.pdf')
   persisted = true
   await act(async () => releaseSave({ status: 'saved', revision: 'saved' }))
   await form.findByText(/Получение сохранено.*Тестовый сбой/)
@@ -7533,4 +7616,81 @@ it('uploads receipt scans only after saving, links each original, and retries a 
       registry.documents.find((doc) => doc.id === upload.documentId)
         ?.materialIds,
     ).toHaveLength(1)
+})
+
+it('does not save a receipt without its APP original or after a failed upload, and preserves the form for retry', async () => {
+  scanIntegration.enabled = true
+  const workspace = conversionWorkspace()
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+  }
+  let failUpload = true
+  const files: {
+    id: string
+    documentId: string
+    name: string
+    size: number
+    uploadedAt: string
+  }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        if (failUpload)
+          return Response.json({ error: 'Сбой загрузки АПП' }, { status: 503 })
+        const body = JSON.parse(String(init.body))
+        expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+        expect(body.draftDocument.kind).toBe('app')
+        expect(body.draftDocument.lineIds).toEqual(['line-0'])
+        files.push({
+          id: 'app-scan',
+          documentId: body.documentId,
+          name: 'APP.pdf',
+          size: 100,
+          uploadedAt: '',
+        })
+        return Response.json({ revision: 'files-2', files, documents: [] })
+      }
+      return Response.json({
+        ...buildDocumentRegistry(workspace),
+        workspaceRevision: 'initial',
+        manifest: { revision: 'files-1', files, documents: [] },
+      })
+    }),
+  )
+  mount(workspace)
+  const dialog = await openReceipt(),
+    form = within(dialog)
+  changeField(form.getByLabelText('Номер АПП'), {
+    target: { value: 'REQUIRED' },
+  })
+  changeField(form.getByLabelText('Поступило: Альфа, м'), {
+    target: { value: '2' },
+  })
+  reviewWorkflow(dialog)
+  fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+  await form.findByText(/Загрузите обязательный документ АПП/)
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  fireEvent.click(form.getByRole('button', { name: 'Назад' }))
+  fireEvent.click(form.getByRole('button', { name: /^Сканы: АПП/ }))
+  const picker = await screen.findByRole('dialog', { name: /^Сканы: АПП/ })
+  await waitFor(() => expect(within(picker).queryByRole('status')).toBeNull())
+  fireEvent.change(within(picker).getByLabelText('Файлы оригиналов'), {
+    target: { files: [new File(['%PDF-original'], 'APP.pdf')] },
+  })
+  fireEvent.click(
+    within(picker).getByRole('button', { name: 'Прикрепить (1)' }),
+  )
+  reviewWorkflow(dialog)
+  fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+  await form.findByText('Сбой загрузки АПП')
+  expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  expect(files).toHaveLength(0)
+  failUpload = false
+  fireEvent.click(form.getByRole('button', { name: 'Сохранить получение' }))
+  await waitFor(() =>
+    expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledOnce(),
+  )
+  expect(lastSaved().materialReceipts).toHaveLength(1)
+  expect(files).toHaveLength(1)
 })

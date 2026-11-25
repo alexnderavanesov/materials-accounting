@@ -107,18 +107,23 @@ it('stores identical bytes once across materials, retries and documents, retaini
       files: [
         { name: 'one.pdf', bytes },
         { name: 'copy.pdf', bytes },
+        { name: 'one.pdf', bytes },
       ],
       expectedRevision: (await store.load()).revision,
     })
-    expect(manifest.files).toHaveLength(1)
+    expect(manifest.files.map((file) => file.name)).toEqual([
+      'one.pdf',
+      'copy.pdf',
+    ])
     const first = manifest.files[0]!
+    const copy = manifest.files[1]!
     manifest = await store.add({
       documentId: 'm15',
-      name: 'renamed.pdf',
+      name: 'one.pdf',
       bytes,
       expectedRevision: manifest.revision,
     })
-    expect(manifest.files).toHaveLength(1)
+    expect(manifest.files).toHaveLength(2)
     expect(manifest.files[0]!.id).toBe(first.id)
     manifest = await store.add({
       documentId: 'another-document',
@@ -126,14 +131,18 @@ it('stores identical bytes once across materials, retries and documents, retaini
       bytes,
       expectedRevision: manifest.revision,
     })
-    expect(manifest.files).toHaveLength(2)
+    expect(manifest.files).toHaveLength(3)
     expect(
       (await readdir(join(directory, 'document-files'))).filter((name) =>
         name.endsWith('.bin'),
       ),
     ).toHaveLength(1)
-    const second = manifest.files.find((file) => file.id !== first.id)!
+    const second = manifest.files.find(
+      (file) => file.documentId === 'another-document',
+    )!
     manifest = await store.remove(first.id, manifest.revision)
+    expect((await store.read(copy.id)).bytes).toEqual(bytes)
+    manifest = await store.remove(copy.id, manifest.revision)
     expect((await store.read(second.id)).bytes).toEqual(bytes)
     await store.remove(second.id, manifest.revision)
     expect(

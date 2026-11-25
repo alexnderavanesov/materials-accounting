@@ -1,3 +1,4 @@
+import { EscapeLayer } from '#/components/ui/escape-layer'
 import { formatCalendarDate } from './calendar-date'
 import { DateInput } from '#/components/ui/date-input'
 import { SelectField } from '#/components/ui/select-field'
@@ -191,15 +192,9 @@ export function ProjectDialog({
   compact?: boolean
 }) {
   const container = useRef<HTMLDivElement>(null)
-  const closeRef = useRef(onClose)
-  closeRef.current = onClose
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        closeRef.current()
-      }
       if (event.key === 'Tab') {
         const items = [
           ...(container.current?.querySelectorAll<HTMLElement>(
@@ -225,24 +220,26 @@ export function ProjectDialog({
     }
   }, [])
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-3">
-      <div
-        ref={container}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`flex max-h-[92vh] w-full ${compact ? 'max-w-4xl' : 'max-w-6xl'} flex-col overflow-hidden rounded-xl bg-white shadow-xl outline-none`}
-      >
-        <div className="flex items-center justify-between border-b p-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <Button variant="ghost" onClick={onClose} aria-label="Закрыть">
-            ×
-          </Button>
+    <EscapeLayer onEscape={onClose}>
+      <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-3">
+        <div
+          ref={container}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          className={`flex max-h-[92vh] w-full ${compact ? 'max-w-4xl' : 'max-w-6xl'} flex-col overflow-hidden rounded-xl bg-white shadow-xl outline-none`}
+        >
+          <div className="flex items-center justify-between border-b p-4">
+            <h2 className="text-lg font-semibold">{title}</h2>
+            <Button variant="ghost" onClick={onClose} aria-label="Закрыть">
+              ×
+            </Button>
+          </div>
+          <div className="overflow-auto p-4">{children}</div>
         </div>
-        <div className="overflow-auto p-4">{children}</div>
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 function ProjectHistoryDialog({

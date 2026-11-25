@@ -9,6 +9,7 @@ import {
 import { createPortal } from 'react-dom'
 import { Ellipsis } from 'lucide-react'
 import { RowActionButton } from '#/components/ui/row-action'
+import { useEscapeAction } from '#/components/ui/escape-layer'
 
 export type InspectionAction = {
   label: string
@@ -37,6 +38,11 @@ export function InspectionActionsMenu({
     setPosition(null)
     if (restoreFocus) trigger.current?.focus()
   }
+  useEscapeAction({
+    kind: 'popup',
+    enabled: !!position,
+    onEscape: () => close(),
+  })
   useLayoutEffect(() => {
     if (!position || !menu.current) return
     const top = Math.max(
@@ -113,11 +119,6 @@ export function InspectionActionsMenu({
                 close(false)
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                event.stopPropagation()
-                close()
-              }
               const buttons = Array.from(
                 menu.current?.querySelectorAll<HTMLButtonElement>('button') ??
                   [],

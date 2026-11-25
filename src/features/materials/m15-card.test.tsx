@@ -6,6 +6,7 @@ import {
   render,
   screen,
   within,
+  waitFor,
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { changeField } from './workflow-test-support'
@@ -47,7 +48,7 @@ function mount(failUpload = false) {
       if (options?.method === 'POST') {
         const body = JSON.parse(String(options.body))
         uploads(body)
-        expect(committed.m15Reconciliations).toHaveLength(1)
+        expect(committed.m15Reconciliations).toHaveLength(0)
         expect(body.workspaceRevision).toBe('saved')
         if (failUpload) {
           failUpload = false
@@ -87,6 +88,7 @@ function mount(failUpload = false) {
           document?: ReceiptDocument,
           ids = [],
         ) => {
+          expect(manifest.files).toHaveLength(1)
           const next = {
             ...withM15Document(committed, document),
             m15Reconciliations: [value],
@@ -117,7 +119,12 @@ async function prepareCard() {
     target: { value: '12' },
   })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Далее' }))
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Сканы М-15' }))
+  await waitFor(() =>
+    expect(within(dialog).getByLabelText('Файлы оригиналов')).toHaveProperty(
+      'disabled',
+      false,
+    ),
+  )
   fireEvent.change(within(dialog).getByLabelText('Файлы оригиналов'), {
     target: {
       files: [
@@ -134,6 +141,9 @@ it('enters independent quantities and uploads a scan in one card while preservin
   expect(app.uploads).not.toHaveBeenCalled()
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить М-15' }),
+  )
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Продолжить с превышением' }),
   )
   await screen.findByText('М-15 сохранена.')
   expect(screen.queryByRole('dialog')).toBeNull()
@@ -159,12 +169,15 @@ it('retries a failed scan without repeating receipt or composition saves', async
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить М-15' }),
   )
-  await screen.findByText(/М-15 сохранена, сканы не загружены/)
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Продолжить с превышением' }),
+  )
+  await screen.findByText('Ошибка загрузки скана')
   expect(screen.getByRole('dialog')).toBe(dialog)
   expect(
     within(dialog).getByRole('contentinfo').contains(screen.getByRole('alert')),
   ).toBe(true)
-  expect(app.save).toHaveBeenCalledOnce()
+  expect(app.save).not.toHaveBeenCalled()
   expect(app.uploads).toHaveBeenCalledOnce()
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Сохранить М-15' }),

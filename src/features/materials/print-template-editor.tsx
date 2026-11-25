@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, MousePointer2, X } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
+import { useEscapeAction } from '#/components/ui/escape-layer'
 import { cellPosition, cellRange, columnName } from './request-print'
 import type { TemplateSheet } from './request-print'
 
@@ -38,6 +39,11 @@ export function PrintTemplateEditor({
   const [groupId, setGroupId] = useState(groups[0]!.id)
   const [fieldId, setFieldId] = useState('')
   const [query, setQuery] = useState('')
+  useEscapeAction({
+    kind: 'filters',
+    enabled: !!query,
+    onEscape: () => setQuery(''),
+  })
   const [selectingRow, setSelectingRow] = useState(false)
   const [selected, setSelected] = useState('')
   const [notice, setNotice] = useState('')

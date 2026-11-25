@@ -781,3 +781,99 @@ it('keeps or replaces scans using exact document IDs and rejects unseen concurre
       .materialIds,
   ).toEqual(app.materialIds)
 })
+
+it('stores required APP/M15 originals before the operation and reuses their stable ID after saving', async () => {
+  for (const kind of ['app', 'm15'] as const) {
+    const f = await fixture()
+    const draft = {
+      id: `draft-${kind}`,
+      kind,
+      number: 'DRAFT-1',
+      date: '2026-11-24',
+      lineIds: ['line'],
+    }
+    const documentId = JSON.stringify(['receipt-document', draft.id])
+    const body = {
+      action: 'upload-files',
+      documentId,
+      draftDocument: draft,
+      files: [{ name: `${kind}.pdf`, base64: pdf.toString('base64') }],
+      expectedFileIds: [],
+      replaceFileIds: [],
+    }
+    const response = await f.post(body)
+    expect(response.status).toBe(200)
+    const original = (await f.files.load()).files[0]!
+    expect(
+      f.workspace.qualityWorkflow.receiptDocuments?.some(
+        (doc) => doc.id === draft.id,
+      ),
+    ).toBe(false)
+    expect(
+      (await (await f.get()).json()).documents.some(
+        (doc: { id: string }) => doc.id === documentId,
+      ),
+    ).toBe(true)
+    f.workspace.qualityWorkflow.receiptDocuments!.push({
+      id: draft.id,
+      kind,
+      number: draft.number,
+      date: draft.date,
+    })
+    const catalog = await (await f.get()).json()
+    expect(
+      catalog.documents.filter((doc: { id: string }) => doc.id === documentId),
+    ).toHaveLength(1)
+    expect(catalog.manifest.files).toEqual([original])
+    expect(
+      (await f.post({ action: 'remove', fileId: original.id })).status,
+    ).toBe(400)
+    expect((await f.files.load()).files).toEqual([original])
+  }
+})
+
+it('enforces one genuine PDF for M15, rejects append and keeps the old file on an invalid replacement', async () => {
+  const f = await fixture()
+  const doc = buildDocumentRegistry(f.workspace).documents.find(
+    (item) => item.kind === 'm15',
+  )!
+  const upload = (files: { name: string; base64: string }[], extra = {}) =>
+    f.post({ action: 'upload-files', documentId: doc.id, files, ...extra })
+  const first = { name: 'first.pdf', base64: pdf.toString('base64') }
+  expect((await upload([first])).status).toBe(200)
+  const stored = (await f.files.load()).files
+  const replacement = {
+    expectedFileIds: stored.map((file) => file.id),
+    replaceFileIds: stored.map((file) => file.id),
+  }
+  expect((await upload([{ ...first, name: 'second.pdf' }])).status).toBe(400)
+  expect((await upload([first, first], replacement)).status).toBe(400)
+  expect(
+    (
+      await upload(
+        [{ name: 'scan.png', base64: pdf.toString('base64') }],
+        replacement,
+      )
+    ).status,
+  ).toBe(400)
+  expect(
+    (
+      await upload(
+        [
+          {
+            name: 'broken.pdf',
+            base64: Buffer.from('not pdf').toString('base64'),
+          },
+        ],
+        replacement,
+      )
+    ).status,
+  ).toBe(400)
+  expect((await f.files.load()).files).toEqual(stored)
+  expect(
+    (await upload([{ ...first, name: 'replaced.pdf' }], replacement)).status,
+  ).toBe(200)
+  expect((await f.files.load()).files.map((file) => file.name)).toEqual([
+    'replaced.pdf',
+  ])
+})

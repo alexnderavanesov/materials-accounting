@@ -27,6 +27,9 @@ export type M15MaterialRow = {
   requested: { quantity: number; unit: string }[]
   received: { quantity: number; unit: string }[]
   projectQuantity: number | null
+  documentedQuantity: number | null
+  cipherQuantity: number | null
+  cipherExcess: number | null
   projectUnit: string
   name: string
   invoiceName: string
@@ -78,36 +81,48 @@ function prioritizeRequestRows({ nodes }: PostSortRowsParams<M15MaterialRow>) {
 function QuantityCell({ data, actions, api, node, eGridCell }: Cell) {
   if (!data) return null
   return (
-    <Input
-      className="request-material-input"
-      aria-label={`Количество по М-15: ${data.invoiceName}, ${data.unit}`}
-      aria-invalid={parseProjectQuantity(data.quantity) === null || undefined}
-      inputMode="decimal"
-      placeholder="0"
-      value={data.quantity}
-      tabIndex={-1}
-      onChange={(event) => actions.current.onQuantity(data, event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key !== 'Tab' && event.key !== 'Enter') return
-        if (node.rowIndex === null) return
-        const next = node.rowIndex + (event.shiftKey ? -1 : 1)
-        if (!api.getDisplayedRowAtIndex(next)) return
-        event.preventDefault()
-        event.stopPropagation()
-        api.ensureIndexVisible(next)
-        api.ensureColumnVisible('quantity')
-        api.setFocusedCell(next, 'quantity')
-        const root = eGridCell.closest('.ag-root')
-        requestAnimationFrame(() => {
-          if (!root?.isConnected || api.isDestroyed()) return
-          root
-            .querySelector<HTMLInputElement>(
-              `.ag-row[row-index="${next}"] [col-id="quantity"] input`,
-            )
-            ?.focus({ preventScroll: true })
-        })
-      }}
-    />
+    <div className="grid gap-1">
+      <Input
+        className="request-material-input"
+        aria-label={`Количество по М-15: ${data.invoiceName}, ${data.unit}`}
+        aria-invalid={parseProjectQuantity(data.quantity) === null || undefined}
+        inputMode="decimal"
+        placeholder="0"
+        value={data.quantity}
+        tabIndex={-1}
+        onChange={(event) =>
+          actions.current.onQuantity(data, event.target.value)
+        }
+        onKeyDown={(event) => {
+          if (event.key !== 'Tab' && event.key !== 'Enter') return
+          if (node.rowIndex === null) return
+          const next = node.rowIndex + (event.shiftKey ? -1 : 1)
+          if (!api.getDisplayedRowAtIndex(next)) return
+          event.preventDefault()
+          event.stopPropagation()
+          api.ensureIndexVisible(next)
+          api.ensureColumnVisible('quantity')
+          api.setFocusedCell(next, 'quantity')
+          const root = eGridCell.closest('.ag-root')
+          requestAnimationFrame(() => {
+            if (!root?.isConnected || api.isDestroyed()) return
+            root
+              .querySelector<HTMLInputElement>(
+                `.ag-row[row-index="${next}"] [col-id="quantity"] input`,
+              )
+              ?.focus({ preventScroll: true })
+          })
+        }}
+      />
+      {(data.cipherExcess ?? 0) > 0 && (
+        <span
+          className="truncate text-[11px] leading-3 text-amber-800"
+          title={`Превышение по шифру: ${fmt(data.cipherExcess!)} ${data.projectUnit}`}
+        >
+          Превышение: {fmt(data.cipherExcess!)} {data.projectUnit}
+        </span>
+      )}
+    </div>
   )
 }
 function MaterialCell({ data }: ICellRendererParams<M15MaterialRow>) {
@@ -169,6 +184,8 @@ export function M15MaterialsGrid({
       let previous = 'quantity'
       for (const id of [
         ...(showRequested ? ['requested'] : []),
+        'documentedQuantity',
+        'cipherQuantity',
         'received',
         'projectQuantity',
       ]) {
@@ -224,9 +241,34 @@ export function M15MaterialsGrid({
           ]
         : []),
       {
+        field: 'documentedQuantity',
+        headerName: 'Уже получено по М-15',
+        headerTooltip:
+          'Сумма других М-15 по материалу выбранного шифра. Текущая накладная не включена.',
+        initialWidth: 165,
+        cellClass: 'request-material-number',
+        valueFormatter: ({ data }) =>
+          data?.documentedQuantity == null
+            ? '—'
+            : `${fmt(data.documentedQuantity)}${data.projectUnit === data.unit ? '' : ` ${data.projectUnit}`}`,
+      },
+      {
+        field: 'cipherQuantity',
+        headerName: 'По шифру',
+        headerTooltip:
+          'Текущее проектное количество материала по выбранному шифру',
+        initialWidth: 130,
+        cellClass: 'request-material-number',
+        valueFormatter: ({ data }) =>
+          data?.cipherQuantity == null
+            ? '—'
+            : `${fmt(data.cipherQuantity)}${data.projectUnit === data.unit ? '' : ` ${data.projectUnit}`}`,
+      },
+      {
         colId: 'received',
         headerName: 'По АПП с учётом возвратов',
-        headerTooltip: 'Все получения материала выбранного шифра, до возвратов',
+        headerTooltip:
+          'Получения материала выбранного шифра за вычетом возвратов заказчику',
         initialWidth: 125,
         cellClass: 'request-material-number',
         valueGetter: ({ data }) =>

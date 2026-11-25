@@ -20,3 +20,23 @@ export function documentFileSelectionError(
     return 'Общий размер выбранных файлов превышает 100 МБ.'
   return ''
 }
+
+/** M-15 has one original; APP may have several originals in supported formats. */
+export function requiredDocumentScanError(
+  kind: 'app' | 'm15',
+  files: { name: string }[],
+) {
+  if (!files.length)
+    return kind === 'm15'
+      ? 'Загрузите обязательный PDF-скан М-15.'
+      : 'Загрузите обязательный документ АПП.'
+  if (kind === 'm15' && (files.length !== 1 || !/\.pdf$/i.test(files[0]!.name)))
+    return 'Для М-15 нужен один PDF-скан. Замените ранее загруженные файлы одним PDF.'
+  return ''
+}
+export function m15FileSelectionError(files: { name: string; size: number }[]) {
+  return (
+    (files.length ? requiredDocumentScanError('m15', files) : '') ||
+    documentFileSelectionError(files)
+  )
+}

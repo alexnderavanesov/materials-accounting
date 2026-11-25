@@ -1,3 +1,4 @@
+import { EscapeLayer } from '#/components/ui/escape-layer'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -104,87 +105,89 @@ export function WorkflowDialog({
     }
   }
   const content = (
-    <div
-      ref={ref}
-      role={embedded ? undefined : 'dialog'}
-      aria-modal={embedded ? undefined : true}
-      aria-label={title}
-      tabIndex={-1}
-      className={
-        embedded
-          ? 'flex min-h-0 flex-1 flex-col bg-white'
-          : 'fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-3 sm:p-5'
-      }
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !event.defaultPrevented) {
-          event.preventDefault()
-          event.stopPropagation()
-          close()
-        }
-        if (event.key !== 'Tab' || embedded) return
-        const fields = [
-          ...(ref.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
-          ) ?? []),
-        ].filter((item) => item.getClientRects().length)
-        const first = fields[0],
-          last = fields.at(-1)
-        if (
-          event.shiftKey &&
-          (document.activeElement === first ||
-            document.activeElement === ref.current)
-        ) {
-          event.preventDefault()
-          last?.focus()
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault()
-          first?.focus()
-        }
-      }}
-    >
+    <EscapeLayer onEscape={close}>
       <div
-        className={`flex min-h-0 w-full flex-col overflow-hidden bg-white ${embedded ? 'flex-1' : compact ? 'max-h-[92dvh] max-w-xl rounded-xl shadow-xl' : 'h-[92dvh] max-w-7xl rounded-xl shadow-xl'}`}
+        ref={ref}
+        role={embedded ? undefined : 'dialog'}
+        aria-modal={embedded ? undefined : true}
+        aria-label={title}
+        tabIndex={-1}
+        className={
+          embedded
+            ? 'flex min-h-0 flex-1 flex-col bg-white'
+            : 'fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/35 p-3 sm:p-5'
+        }
+        onKeyDown={(event) => {
+          if (event.key !== 'Tab' || embedded) return
+          const fields = [
+            ...(ref.current?.querySelectorAll<HTMLElement>(
+              'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+            ) ?? []),
+          ].filter((item) => item.getClientRects().length)
+          const first = fields[0],
+            last = fields.at(-1)
+          if (
+            event.shiftKey &&
+            (document.activeElement === first ||
+              document.activeElement === ref.current)
+          ) {
+            event.preventDefault()
+            last?.focus()
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first?.focus()
+          }
+        }}
       >
-        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={embedded ? 'h-8 w-8' : undefined}
-            onClick={close}
-            disabled={busy}
-            aria-label={`Закрыть: ${title}`}
-          >
-            <X size={18} />
-          </Button>
-        </header>
-        {step !== undefined && onStep && (
-          <WorkflowSteps step={step} onStep={onStep} compact={compact} />
-        )}
         <div
-          className={`min-h-0 flex-1 ${embedded ? 'px-5 py-4' : 'p-5'} ${fillBody ? 'flex flex-col overflow-hidden' : 'overflow-auto'}`}
+          className={`flex min-h-0 w-full flex-col overflow-hidden bg-white ${embedded ? 'flex-1' : compact ? 'max-h-[92dvh] max-w-xl rounded-xl shadow-xl' : 'h-[92dvh] max-w-7xl rounded-xl shadow-xl'}`}
         >
-          {confirmClose && (
-            <div
-              className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"
-              role="alert"
+          <header className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
+            <h2 className="text-lg font-semibold">{title}</h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={embedded ? 'h-8 w-8' : undefined}
+              onClick={close}
+              disabled={busy}
+              aria-label={`Закрыть: ${title}`}
             >
-              <span className="mr-auto">Есть несохранённые изменения.</span>
-              <Button variant="outline" onClick={() => setConfirmClose(false)}>
-                Продолжить редактирование
-              </Button>
-              <Button onClick={onClose}>Выйти без сохранения</Button>
-            </div>
+              <X size={18} />
+            </Button>
+          </header>
+          {step !== undefined && onStep && (
+            <WorkflowSteps step={step} onStep={onStep} compact={compact} />
           )}
-          {children}
+          <div
+            className={`min-h-0 flex-1 ${embedded ? 'px-5 py-4' : 'p-5'} ${fillBody ? 'flex flex-col overflow-hidden' : 'overflow-auto'}`}
+          >
+            {confirmClose && (
+              <EscapeLayer onEscape={() => setConfirmClose(false)}>
+                <div
+                  className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"
+                  role="alert"
+                >
+                  <span className="mr-auto">Есть несохранённые изменения.</span>
+                  <Button
+                    variant="outline"
+                    onClick={() => setConfirmClose(false)}
+                  >
+                    Продолжить редактирование
+                  </Button>
+                  <Button onClick={onClose}>Выйти без сохранения</Button>
+                </div>
+              </EscapeLayer>
+            )}
+            {children}
+          </div>
+          {footer && (
+            <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-slate-200 bg-white px-5 py-4">
+              {typeof footer === 'function' ? footer(close) : footer}
+            </footer>
+          )}
         </div>
-        {footer && (
-          <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-slate-200 bg-white px-5 py-4">
-            {typeof footer === 'function' ? footer(close) : footer}
-          </footer>
-        )}
       </div>
-    </div>
+    </EscapeLayer>
   )
   return embedded ? content : createPortal(content, document.body)
 }

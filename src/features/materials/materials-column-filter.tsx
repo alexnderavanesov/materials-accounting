@@ -166,6 +166,21 @@ function MaterialsColumnFilter({
       className="materials-column-filter"
       style={size}
       aria-label={`${title}: фильтр`}
+      onKeyDown={(event) => {
+        if (
+          event.key !== 'Enter' ||
+          event.nativeEvent.isComposing ||
+          event.defaultPrevented
+        )
+          return
+        // Buttons keep their explicit action (Cancel, Clear, Close). Enter in
+        // the search, checkboxes, or resize/drag controls applies the selection.
+        if (event.target instanceof Element && event.target.closest('button'))
+          return
+        event.preventDefault()
+        event.stopPropagation()
+        if (!event.repeat) applyFilter()
+      }}
     >
       <header className="materials-filter-heading">
         <div
@@ -198,13 +213,6 @@ function MaterialsColumnFilter({
               placeholder="Поиск…"
               enterKeyHint="search"
               value={query}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.nativeEvent.isComposing)
-                  return
-                event.preventDefault()
-                event.stopPropagation()
-                applyFilter()
-              }}
               onChange={(event) => {
                 setQuery(event.target.value)
                 setScrollTop(0)

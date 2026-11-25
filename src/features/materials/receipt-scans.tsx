@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { requiredDocumentScanError } from './document-file-limits'
 import { Button } from '#/components/ui/button'
 import { receiptDocumentKey, receiptDocumentLabel } from './receipt-documents'
 import { normalizeDocumentNumber } from './document-number'
@@ -21,6 +22,7 @@ type ScanField =
   | 'technicalDecision'
 type ScanReceipt = {
   id: string
+  projectLineId?: string
   appDocumentId?: string
   m15DocumentId?: string
 } & Record<ScanField, string>
@@ -224,6 +226,63 @@ export function useReceiptScans(open: boolean, documents: ReceiptDocument[]) {
     ) {
       for (const { target } of Object.values(pendingRef.current))
         resolveReceiptScan(target, entries, docs, records)
+    },
+    async uploadRequired(
+      entries: ScanReceipt[],
+      docs: ReceiptDocument[],
+      records: M15Reconciliation[],
+    ) {
+      let current = await loadDocumentCatalog()
+      const appIds = new Set(entries.map((entry) => entry.appDocumentId))
+      for (const id of appIds) {
+        const doc = docs.find((item) => item.id === id && item.kind === 'app')
+        if (!doc)
+          throw new Error('Укажите АПП и прикрепите обязательный документ.')
+        const documentId = JSON.stringify(['receipt-document', doc.id])
+        const pendingDocument = Object.values(pendingRef.current).find(
+          ({ target }) =>
+            target.type === 'document' &&
+            receiptScanDocumentId(target, docs) === documentId,
+        )
+        const scanError = requiredDocumentScanError(
+          'app',
+          pendingDocument?.selection.files.length
+            ? pendingDocument.selection.files
+            : current.manifest.files.filter(
+                (file) => file.documentId === documentId,
+              ),
+        )
+        if (scanError)
+          throw new Error(
+            `${receiptDocumentLabel(doc)}: ${scanError} Прикрепите файл через скрепку рядом с реквизитами АПП.`,
+          )
+      }
+      for (const [key, { target, selection }] of Object.entries(
+        pendingRef.current,
+      )) {
+        if (target.type !== 'document') continue
+        const documentId = resolveReceiptScan(target, entries, docs, records)
+        const doc = docs.find(
+          (item) =>
+            JSON.stringify(['receipt-document', item.id]) === documentId,
+        )!
+        const manifest = await uploadDocumentScans(documentId, selection, {
+          ...doc,
+          lineIds: [
+            ...new Set(
+              entries
+                .filter((entry) => entry.appDocumentId === doc.id)
+                .map((entry) => entry.projectLineId)
+                .filter((id): id is string => !!id),
+            ),
+          ],
+        })
+        if (manifest) {
+          current = { ...current, manifest }
+          setCatalog(current)
+        }
+        forget(key)
+      }
     },
     async upload(
       entries: ScanReceipt[],

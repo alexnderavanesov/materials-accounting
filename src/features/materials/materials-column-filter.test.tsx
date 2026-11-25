@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { useState } from 'react'
+import { WorkflowDialog } from './workflow-dialog'
+import { EscapeFilters } from '#/components/ui/escape-layer'
 import {
   act,
   cleanup,
@@ -414,4 +417,72 @@ it('virtualizes 10,000 distinct values and keeps selections across search and ro
     api.getDisplayedRowAtIndex(0)?.id,
     api.getDisplayedRowAtIndex(1)?.id,
   ]).toEqual(['5000', '9999'])
+})
+
+it('closes only the popup, resets the current dialog filters on the next Escape, then closes the dialog', async () => {
+  const pageReset = vi.fn()
+  function DialogHarness() {
+    const [dialogOpen, setDialogOpen] = useState(true)
+    return (
+      <>
+        <EscapeFilters active onReset={pageReset} />
+        {dialogOpen && (
+          <WorkflowDialog title="Состав" onClose={() => setDialogOpen(false)}>
+            <Harness />
+          </WorkflowDialog>
+        )}
+      </>
+    )
+  }
+  render(<DialogHarness />)
+  const api = await operationGridApi('filter-test')
+  await act(async () => {
+    await api.setColumnFilterModel('group', {
+      filterType: 'set',
+      values: ['А'],
+    })
+    api.onFilterChanged()
+  })
+  const popup = await open()
+  fireEvent.change(popup.getByRole('textbox'), { target: { value: 'Отвод' } })
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('region', { name: 'Материал: фильтр' }),
+    ).toBeNull(),
+  )
+  expect(api.getFilterModel()).toEqual({
+    group: { filterType: 'set', values: ['А'] },
+  })
+  expect(screen.getByRole('dialog', { name: 'Состав' })).toBeTruthy()
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  await waitFor(() => expect(api.getFilterModel()).toEqual({}))
+  expect(api.getDisplayedRowCount()).toBe(rows.length)
+  expect(pageReset).not.toHaveBeenCalled()
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(pageReset).not.toHaveBeenCalled()
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  expect(pageReset).toHaveBeenCalledOnce()
+})
+
+it('applies with Enter from a value checkbox and keeps the explicit Cancel button action', async () => {
+  render(<Harness />)
+  const api = await operationGridApi('filter-test')
+  let popup = await open()
+  fireEvent.change(popup.getByRole('textbox'), { target: { value: 'Труба' } })
+  const checkbox = popup.getByRole('checkbox', { name: 'Труба 2' })
+  fireEvent.click(checkbox)
+  fireEvent.keyDown(checkbox, { key: 'Enter' })
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(1))
+  expect(api.getDisplayedRowAtIndex(0)?.id).toBe('a')
+  expect(screen.queryByRole('region', { name: 'Материал: фильтр' })).toBeNull()
+  popup = await open()
+  fireEvent.click(popup.getByRole('checkbox', { name: 'Выбрать все' }))
+  const cancel = popup.getByRole('button', { name: 'Отмена' })
+  expect(fireEvent.keyDown(cancel, { key: 'Enter' })).toBe(true)
+  fireEvent.click(cancel)
+  expect(api.getDisplayedRowCount()).toBe(1)
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  await waitFor(() => expect(api.getDisplayedRowCount()).toBe(rows.length))
 })

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Download, FileText, Trash2 } from 'lucide-react'
 import { Button } from '#/components/ui/button'
 import { DocumentFilePreview, documentFileUrl } from './document-file-preview'
+import { FileRemovalConfirmation } from './file-removal-confirmation'
 import { DocumentPhotoThumbnail } from './document-photo-thumbnail'
 import type { DocumentFile } from './document-registry'
 
@@ -14,7 +15,7 @@ export function DocumentAttachments({
   files: DocumentFile[]
   photos: boolean
   busy: boolean
-  onRemove: (file: DocumentFile) => Promise<void>
+  onRemove?: (file: DocumentFile) => Promise<void>
 }) {
   const [previewId, setPreviewId] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
@@ -84,43 +85,28 @@ export function DocumentAttachments({
               >
                 <Download size={16} />
               </a>
-              <Button
-                size="icon"
-                variant="ghost"
-                aria-label={`Удалить файл ${file.name}`}
-                disabled={busy}
-                onClick={() => setConfirmRemove(file.id)}
-              >
-                <Trash2 size={16} />
-              </Button>
+              {onRemove && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Удалить файл ${file.name}`}
+                  disabled={busy}
+                  onClick={() => setConfirmRemove(file.id)}
+                >
+                  <Trash2 size={16} />
+                </Button>
+              )}
             </div>
-            {confirmRemove === file.id && (
-              <div className="grid w-full gap-2 border-t border-stone-200 bg-stone-50 p-2">
-                <p className="text-xs text-stone-600">
-                  Удалить вложение из документа?
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => {
-                      void onRemove(file)
-                      setConfirmRemove(null)
-                    }}
-                  >
-                    Удалить файл
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => setConfirmRemove(null)}
-                  >
-                    Отмена
-                  </Button>
-                </div>
-              </div>
+            {onRemove && confirmRemove === file.id && (
+              <FileRemovalConfirmation
+                file={file}
+                busy={busy}
+                onCancel={() => setConfirmRemove(null)}
+                onConfirm={() => {
+                  void onRemove(file)
+                  setConfirmRemove(null)
+                }}
+              />
             )}
           </li>
         ))}

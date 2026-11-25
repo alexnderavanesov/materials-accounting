@@ -1,10 +1,13 @@
 import { useId, useRef, useState } from 'react'
 import { FileCheck2, Plus, X } from 'lucide-react'
-import { documentFileSelectionError } from './document-file-limits'
+import {
+  documentFileSelectionError,
+  m15FileSelectionError,
+} from './document-file-limits'
 
 const fileKey = (file: File) =>
   JSON.stringify([file.name, file.size, file.lastModified])
-const fileSize = (size: number) =>
+export const formatDocumentFileSize = (size: number) =>
   size >= 1024 * 1024
     ? `${(size / (1024 * 1024)).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} МБ`
     : `${Math.ceil(size / 1024)} КБ`
@@ -13,19 +16,31 @@ export function DocumentFileInput({
   files,
   onChange,
   disabled = false,
+  compact = false,
+  singlePdf = false,
+  buttonLabel,
 }: {
   files: File[]
   onChange: (files: File[]) => void
   disabled?: boolean
+  compact?: boolean
+  singlePdf?: boolean
+  buttonLabel?: string
 }) {
   const input = useRef<HTMLInputElement>(null)
   const hintId = useId()
   const errorId = useId()
   const [dragging, setDragging] = useState(false)
-  const error = documentFileSelectionError(files)
+  const error = singlePdf
+    ? m15FileSelectionError(files)
+    : documentFileSelectionError(files)
 
   function selectFiles(selected: FileList | null) {
     if (disabled || !selected?.length) return
+    if (singlePdf) {
+      onChange(Array.from(selected))
+      return
+    }
     const combined = new Map(files.map((file) => [fileKey(file), file]))
     for (const file of Array.from(selected)) combined.set(fileKey(file), file)
     onChange([...combined.values()])
@@ -33,14 +48,14 @@ export function DocumentFileInput({
 
   return (
     <div className="grid gap-3">
-      <span className="text-sm">Файлы оригиналов</span>
+      {!compact && <span className="text-sm">Файлы оригиналов</span>}
       <input
         ref={input}
         type="file"
-        multiple
+        multiple={!singlePdf}
         className="hidden"
         aria-label="Файлы оригиналов"
-        accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx"
+        accept={singlePdf ? '.pdf' : '.pdf,.png,.jpg,.jpeg,.xlsx,.docx'}
         disabled={disabled}
         onChange={(event) => {
           selectFiles(event.currentTarget.files)
@@ -51,9 +66,14 @@ export function DocumentFileInput({
         type="button"
         disabled={disabled}
         aria-label={
-          files.length
-            ? 'Добавить файлы оригиналов'
-            : 'Выбрать файлы оригиналов'
+          buttonLabel ??
+          (singlePdf
+            ? 'Выбрать PDF-скан'
+            : compact
+              ? 'Добавить документ'
+              : files.length
+                ? 'Добавить файлы оригиналов'
+                : 'Выбрать файлы оригиналов')
         }
         aria-describedby={`${hintId}${error ? ` ${errorId}` : ''}`}
         onClick={() => input.current?.click()}
@@ -72,31 +92,56 @@ export function DocumentFileInput({
           setDragging(false)
           selectFiles(event.dataTransfer.files)
         }}
-        className={`flex min-h-40 w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-5 py-6 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 ${dragging ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50/70 hover:border-slate-400 hover:bg-slate-100/70'}`}
+        className={`flex w-full cursor-pointer items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 ${compact ? 'gap-2 rounded-md border px-3 py-2 text-sm' : 'min-h-40 flex-col gap-3 rounded-xl border-2 border-dashed px-5 py-6 text-center'} ${dragging ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50/70 hover:border-slate-400 hover:bg-slate-100/70'}`}
       >
-        <span className="pointer-events-none flex size-12 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600">
-          <Plus size={26} />
-        </span>
-        <span className="pointer-events-none grid gap-1.5">
-          <span className="font-medium text-slate-800">
+        {compact ? (
+          <>
+            <Plus size={16} aria-hidden="true" />
             {dragging
-              ? 'Отпустите файлы здесь'
-              : files.length
-                ? 'Добавьте ещё файлы или перетащите их сюда'
-                : 'Выберите файлы или перетащите их сюда'}
-          </span>
-          <span id={hintId} className="text-xs text-slate-500">
-            PDF, PNG, JPEG, XLSX или DOCX · до 20 МБ каждый · до 50 файлов и 100
-            МБ за раз
-          </span>
-        </span>
+              ? 'Отпустите файл здесь'
+              : (buttonLabel ??
+                (singlePdf ? 'Выбрать PDF-скан' : 'Добавить документ'))}
+          </>
+        ) : (
+          <>
+            <span className="pointer-events-none flex size-12 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600">
+              <Plus size={26} />
+            </span>
+            <span className="pointer-events-none grid gap-1.5">
+              <span className="font-medium text-slate-800">
+                {dragging
+                  ? 'Отпустите файлы здесь'
+                  : singlePdf
+                    ? (buttonLabel ??
+                      'Выберите PDF-скан или перетащите его сюда')
+                    : files.length
+                      ? 'Добавьте ещё файлы или перетащите их сюда'
+                      : 'Выберите файлы или перетащите их сюда'}
+              </span>
+              <span id={hintId} className="text-xs text-slate-500">
+                {singlePdf
+                  ? 'Один PDF · до 20 МБ · обязательный документ'
+                  : 'PDF, PNG, JPEG, XLSX или DOCX · до 20 МБ каждый · до 50 файлов и 100 МБ за раз'}
+              </span>
+            </span>
+          </>
+        )}
       </button>
+      {compact && (
+        <p id={hintId} className="text-xs text-slate-500">
+          {singlePdf
+            ? 'Один PDF · до 20 МБ · обязательный документ'
+            : 'PDF, PNG, JPEG, XLSX или DOCX · до 20 МБ каждый. Можно выбрать несколько файлов.'}
+        </p>
+      )}
       {files.length > 0 && (
         <>
           <div className="flex items-center justify-between gap-2 text-sm text-slate-600">
             <span>
               Выбрано файлов: {files.length} ·{' '}
-              {fileSize(files.reduce((sum, file) => sum + file.size, 0))}
+              {formatDocumentFileSize(
+                files.reduce((sum, file) => sum + file.size, 0),
+              )}
             </span>
             <button
               type="button"
@@ -116,7 +161,7 @@ export function DocumentFileInput({
                 <FileCheck2 size={18} className="shrink-0 text-slate-500" />
                 <span className="min-w-0 flex-1 break-words">{file.name}</span>
                 <span className="shrink-0 text-xs text-slate-500">
-                  {fileSize(file.size)}
+                  {formatDocumentFileSize(file.size)}
                 </span>
                 <button
                   type="button"

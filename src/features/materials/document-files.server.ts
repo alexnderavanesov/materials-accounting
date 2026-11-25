@@ -140,6 +140,7 @@ export function createDocumentFileStore(directory: string) {
     expectedRevision: string
     document?: ManualDocument
     replaceFileIds?: string[]
+    keepDuplicates?: boolean
   }) {
     if (!input.files.length || input.files.length > maxDocumentUploadFiles)
       throw new PrintError(`Выберите от 1 до ${maxDocumentUploadFiles} файлов.`)
@@ -189,10 +190,19 @@ export function createDocumentFileStore(directory: string) {
           .map((file) => [file.sha256!, file.blobId ?? file.id]),
       )
       const retained = known.filter((file) => !replaced.has(file.id))
-      const targetHashes = new Set(
-        retained
-          .filter((file) => file.documentId === input.documentId)
-          .map((file) => file.sha256),
+      const attachmentKey = (name: string, hash?: string) =>
+        JSON.stringify([name, hash])
+      const seen = input.keepDuplicates
+        ? null
+        : new Set(
+            retained
+              .filter((file) => file.documentId === input.documentId)
+              .map((file) => attachmentKey(file.name, file.sha256)),
+          )
+      const replacedByKey = new Map(
+        known
+          .filter((file) => replaced.has(file.id))
+          .map((file) => [attachmentKey(file.name, file.sha256), file]),
       )
       const files: typeof current.files = []
       const paths: string[] = []
@@ -200,14 +210,14 @@ export function createDocumentFileStore(directory: string) {
       try {
         for (const incoming of input.files) {
           const hash = createHash('sha256').update(incoming.bytes).digest('hex')
-          if (targetHashes.has(hash)) continue
-          targetHashes.add(hash)
-          const existing = known.find(
-            (file) =>
-              file.documentId === input.documentId && file.sha256 === hash,
-          )
+          const name = safeDocumentFilename(incoming.name)
+          const key = attachmentKey(name, hash)
+          if (seen?.has(key)) continue
+          seen?.add(key)
+          const existing = replacedByKey.get(key)
           if (existing) {
             files.push(existing)
+            replacedByKey.delete(key)
             continue
           }
           const blobId = blobs.get(hash) ?? hash
@@ -227,7 +237,7 @@ export function createDocumentFileStore(directory: string) {
           files.push({
             id: randomUUID(),
             documentId: input.documentId,
-            name: safeDocumentFilename(incoming.name),
+            name,
             size: incoming.bytes.length,
             uploadedAt: new Date().toISOString(),
             blobId,

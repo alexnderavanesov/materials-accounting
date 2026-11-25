@@ -19,11 +19,29 @@ import { operationGridApi } from './project-grid-test-support'
 import * as m15Import from './m15-import'
 
 beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        documents: [],
+        manifest: {
+          files: ['m15', 'new'].map((id) => ({
+            id: `scan-${id}`,
+            documentId: JSON.stringify(['receipt-document', id]),
+            name: 'Скан.pdf',
+            size: 100,
+            uploadedAt: '2026-11-24',
+          })),
+        },
+      }),
+    ),
+  )
   sessionStorage.clear()
   HTMLElement.prototype.scrollIntoView = vi.fn()
 })
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 const click = (name: string | RegExp) =>
@@ -42,6 +60,7 @@ function mount(
   onSave = vi.fn(async (..._args: unknown[]) => {}),
 ) {
   const { workspace, value } = linkedM15Fixture()
+  workspace.lines[0]!.plannedQuantity = 100
   const onClose = vi.fn()
   const props = {
     documentId: isNew ? 'new' : 'm15',
@@ -133,6 +152,122 @@ it('blocks an empty composition and invalid quantities without writing', async (
   expect(screen.getByRole('alert')).toBeTruthy()
   expect(app.onSave).not.toHaveBeenCalled()
 })
+it('shows excess while typing and confirms the latest quantities only when saving', async () => {
+  const app = mount(true)
+  const workspace = structuredClone(app.workspace)
+  workspace.lines[0]!.plannedQuantity = 10
+  app.view.rerender(
+    <M15ReconciliationEditor {...app.props} workspace={workspace} />,
+  )
+  fill('Номер М-15', 'OVER')
+  fill('Шифр М-15', 'ТКМ5')
+  click('Далее')
+  await screen.findByLabelText(quantityLabel)
+  const grid = getGridApi('m15-material-picker')!
+  const node = grid.getRowNode('project:line')!
+  expect(
+    grid.getCellValue({ rowNode: node, colKey: 'documentedQuantity' }),
+  ).toBe(10)
+  expect(grid.getCellValue({ rowNode: node, colKey: 'cipherQuantity' })).toBe(
+    10,
+  )
+  fill(quantityLabel, '2')
+  expect(await screen.findByText('Превышение: 2 шт')).toBeTruthy()
+  click(/3\s*Проверка и сохранение/)
+  expect(
+    screen.queryByRole('dialog', { name: 'Превышение по шифру' }),
+  ).toBeNull()
+  click('Сохранить М-15')
+  let warning = screen.getByRole('dialog', { name: 'Превышение по шифру' })
+  expect(within(warning).getByText('12 шт')).toBeTruthy()
+  expect(within(warning).getAllByText('2 шт')).toHaveLength(2)
+  expect(app.onSave).not.toHaveBeenCalled()
+  click('Вернуться к количествам')
+  expect(
+    screen.queryByRole('dialog', { name: 'Превышение по шифру' }),
+  ).toBeNull()
+  click('Далее')
+  expect(screen.getByRole('region', { name: 'Сканы М-15' })).toBeTruthy()
+  click('Назад')
+  await screen.findByLabelText(quantityLabel)
+  fill(quantityLabel, '3')
+  click('Далее')
+  expect(
+    screen.queryByRole('dialog', { name: 'Превышение по шифру' }),
+  ).toBeNull()
+  const changed = structuredClone(workspace)
+  changed.m15Reconciliations![0]!.lines[0]!.quantity = 15
+  app.view.rerender(
+    <M15ReconciliationEditor {...app.props} workspace={changed} />,
+  )
+  click('Сохранить М-15')
+  warning = screen.getByRole('dialog', { name: 'Превышение по шифру' })
+  expect(within(warning).getByText('18 шт')).toBeTruthy()
+  expect(within(warning).getByText('8 шт')).toBeTruthy()
+  expect(app.onSave).not.toHaveBeenCalled()
+  click('Продолжить с превышением')
+  await screen.findByText('М-15 сохранена.')
+  expect(app.onSave).toHaveBeenCalledOnce()
+  expect(app.onSave.mock.calls[0]![0]).toMatchObject({
+    lines: [{ quantity: 3 }],
+  })
+})
+it.each(['10', '9', '11'])(
+  'only asks again for an existing excess when the saved quantity increases (new quantity %s)',
+  async (quantity) => {
+    const app = mount()
+    const workspace = structuredClone(app.workspace)
+    workspace.lines[0]!.plannedQuantity = 6
+    app.view.rerender(
+      <M15ReconciliationEditor {...app.props} workspace={workspace} />,
+    )
+    click(/3\s*Проверка и сохранение/)
+    const scans = screen.getByRole('region', { name: 'Сканы М-15' })
+    expect(await within(scans).findByLabelText('Файлы оригиналов')).toBeTruthy()
+    click('Назад')
+    await screen.findByLabelText(quantityLabel)
+    if (quantity !== '10') fill(quantityLabel, quantity)
+    click('Далее')
+    expect(
+      screen.queryByRole('dialog', { name: 'Превышение по шифру' }),
+    ).toBeNull()
+    click('Сохранить М-15')
+    if (quantity === '11') {
+      expect(app.onSave).not.toHaveBeenCalled()
+      click('Продолжить с превышением')
+    }
+    await screen.findByText('М-15 сохранена.')
+    expect(app.onSave).toHaveBeenCalledOnce()
+  },
+)
+it('excludes the current invoice from already received and accepts the exact cipher limit without a warning', async () => {
+  const { workspace } = linkedM15Fixture()
+  const save = vi.fn(async () => {})
+  render(
+    <M15ReconciliationEditor
+      documentId="m15"
+      workspace={workspace}
+      onSave={save}
+      onClose={() => {}}
+    />,
+  )
+  click('Далее')
+  await screen.findByLabelText(quantityLabel)
+  const grid = getGridApi('m15-material-picker')!
+  expect(
+    grid.getCellValue({
+      rowNode: grid.getRowNode('project:line')!,
+      colKey: 'documentedQuantity',
+    }),
+  ).toBe(0)
+  click('Далее')
+  expect(
+    screen.queryByRole('dialog', { name: 'Превышение по шифру' }),
+  ).toBeNull()
+  click('Сохранить М-15')
+  await screen.findByText('М-15 сохранена.')
+  expect(save).toHaveBeenCalledOnce()
+})
 it('shows receipts for the selected position and the project total across matching ciphers, preserving units and old layouts', async () => {
   sessionStorage.setItem(
     'materials.workspaceView.v1:grid:m15-material-picker',
@@ -197,8 +332,16 @@ it('shows receipts for the selected position and the project total across matchi
     grid
       .getAllDisplayedColumns()
       .map((column) => column.getColId())
-      .slice(0, 5),
-  ).toEqual(['name', 'quantity', 'received', 'projectQuantity', 'unit'])
+      .slice(0, 7),
+  ).toEqual([
+    'name',
+    'quantity',
+    'documentedQuantity',
+    'cipherQuantity',
+    'received',
+    'projectQuantity',
+    'unit',
+  ])
   const node = grid.getRowNode('project:line')!
   expect(
     grid.getCellValue({
@@ -382,6 +525,7 @@ it('requires explicit conversion and keeps quantities in both units', async () =
   click('Готово')
   click('Далее')
   click('Сохранить М-15')
+  click('Продолжить с превышением')
   await screen.findByText('М-15 сохранена.')
   expect(save.mock.calls[0]![0]).toMatchObject({
     allocations: [],
@@ -493,6 +637,7 @@ it('preserves separate invoice rows for one project material and unmatched histo
   ).toBe('3')
   click('Далее')
   click('Сохранить М-15')
+  click('Продолжить с превышением')
   await screen.findByText('М-15 сохранена.')
   expect(save.mock.calls[0]![0]).toMatchObject({
     lines: [
@@ -623,6 +768,11 @@ it('does not erase the composition when an unfilled template is uploaded', async
 })
 it('honors the import result when changed quantities invalidate old receipt links', async () => {
   const app = mount()
+  const workspace = structuredClone(app.workspace)
+  workspace.lines[0]!.plannedQuantity = 10
+  app.view.rerender(
+    <M15ReconciliationEditor {...app.props} workspace={workspace} />,
+  )
   click('Далее')
   click('Импорт Excel')
   await screen.findByLabelText('Файл Excel М-15')
@@ -636,6 +786,11 @@ it('honors the import result when changed quantities invalidate old receipt link
   expect(grid.getDisplayedRowAtIndex(0)!.data.linked).toBeUndefined()
   click('Далее')
   click('Сохранить М-15')
+  expect(
+    screen.getByRole('dialog', { name: 'Превышение по шифру' }),
+  ).toBeTruthy()
+  expect(app.onSave).not.toHaveBeenCalled()
+  click('Продолжить с превышением')
   await screen.findByText('М-15 сохранена.')
   expect(app.onSave.mock.calls[0]![0]).toMatchObject({
     lines: [{ projectLineId: 'line', quantity: 12 }],
@@ -692,4 +847,37 @@ it('cancels an Excel preview without applying any edits', async () => {
   click('Отменить импорт')
   expect(cancel).toHaveBeenCalledOnce()
   expect(apply).not.toHaveBeenCalled()
+})
+
+it('can retry loading the scan catalog for a new invoice without closing its draft', async () => {
+  let offline = true
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      offline
+        ? Response.json({ error: 'Нет связи со сканами' }, { status: 503 })
+        : Response.json({ manifest: { files: [] } }),
+    ),
+  )
+  mount(true)
+  fill('Номер М-15', 'RETRY')
+  fill('Шифр М-15', 'ТКМ5')
+  click('Далее')
+  await screen.findByLabelText(quantityLabel)
+  fill(quantityLabel, '1')
+  click('Далее')
+  await screen.findByText('Нет связи со сканами')
+  expect(screen.getByLabelText('Файлы оригиналов')).toHaveProperty(
+    'disabled',
+    true,
+  )
+  offline = false
+  click('Обновить список файлов')
+  await waitFor(() =>
+    expect(screen.getByLabelText('Файлы оригиналов')).toHaveProperty(
+      'disabled',
+      false,
+    ),
+  )
+  expect(screen.queryByText('Нет связи со сканами')).toBeNull()
 })

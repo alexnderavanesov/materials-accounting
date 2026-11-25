@@ -1,4 +1,4 @@
-import { m15Precise, m15Unit, equalAmount } from './m15-quantity'
+import { m15Precise, m15Unit, equalAmount, m15Remaining } from './m15-quantity'
 import type {
   M15Line,
   M15Reconciliation,
@@ -76,6 +76,9 @@ export type M15AccountingRow = {
   returned: number
   app: number
   documented: number
+  documentedNeedsConversion: boolean
+  cipherQuantity: number | null
+  cipherExcess: number | null
   shortage: number
   excess: number
   needsConversion: boolean
@@ -85,6 +88,7 @@ export type M15AccountingRow = {
 /** Linear aggregation. Returns follow the original APP, never the current stock owner. */
 export function buildM15Accounting(
   workspace: M15Workspace,
+  options: { excludeDocumentId?: string } = {},
 ): M15AccountingRow[] {
   const projects = new Map(
     workspace.lines?.map((line) => [String(line.id), line]),
@@ -124,6 +128,14 @@ export function buildM15Accounting(
         returned: 0,
         app: 0,
         documented: 0,
+        documentedNeedsConversion: false,
+        cipherQuantity:
+          project?.cipher === cipher &&
+          typeof project.plannedQuantity === 'number' &&
+          Number.isFinite(project.plannedQuantity)
+            ? project.plannedQuantity
+            : null,
+        cipherExcess: null,
         shortage: 0,
         excess: 0,
         needsConversion: false,
@@ -162,6 +174,7 @@ export function buildM15Accounting(
   }
   const seen = new Set<string>()
   for (const record of workspace.m15Reconciliations ?? []) {
+    if (record.id === options.excludeDocumentId) continue
     const document = documents.get(record.id)
     if (!document || document.kind !== 'm15' || seen.has(record.id)) continue
     seen.add(record.id)
@@ -176,6 +189,7 @@ export function buildM15Accounting(
       const totals = documentTotals.get(row.id)!
       if (factor === null) {
         row.needsConversion = true
+        row.documentedNeedsConversion = true
         totals.set(document.id, totals.get(document.id) ?? 0)
         continue
       }
@@ -194,6 +208,10 @@ export function buildM15Accounting(
       : m15Precise(row.app - row.documented)
     row.shortage = Math.max(0, delta)
     row.excess = Math.max(0, -delta)
+    row.cipherExcess =
+      row.cipherQuantity === null || row.documentedNeedsConversion
+        ? null
+        : Math.max(0, m15Remaining(row.documented, row.cipherQuantity))
     row.documents = [...documentTotals.get(row.id)!]
       .map(([id, quantity]) => ({ document: documents.get(id)!, quantity }))
       .sort(
@@ -203,4 +221,73 @@ export function buildM15Accounting(
       )
   }
   return [...rows.values()]
+}
+
+export type M15CipherBalance = {
+  projectLineId: string
+  name: string
+  unit: string
+  planned: number | null
+  documented: number | null
+  draft: number | null
+  total: number | null
+  excess: number | null
+}
+
+/** The supplied accounting must exclude the invoice being edited. */
+export function buildM15CipherBalances(
+  workspace: M15Workspace,
+  draft: M15Reconciliation,
+  otherAccounting: M15AccountingRow[],
+): Map<string, M15CipherBalance> {
+  const documented = new Map(
+    otherAccounting
+      .filter((row) => row.cipher === draft.cipher)
+      .map((row) => [row.projectLineId, row]),
+  )
+  const projects = new Map(
+    workspace.lines
+      ?.filter((line) => line.cipher === draft.cipher)
+      .map((line) => [String(line.id), line]),
+  )
+  const balances = new Map<string, M15CipherBalance>()
+  for (const [id, project] of projects) {
+    const other = documented.get(id)
+    balances.set(id, {
+      projectLineId: id,
+      name: String(project.projectMaterialName || project.material || ''),
+      unit: String(project.unit),
+      planned:
+        typeof project.plannedQuantity === 'number' &&
+        Number.isFinite(project.plannedQuantity)
+          ? project.plannedQuantity
+          : null,
+      documented: other?.documentedNeedsConversion
+        ? null
+        : (other?.documented ?? 0),
+      draft: 0,
+      total: null,
+      excess: null,
+    })
+  }
+  for (const line of draft.lines) {
+    const balance = balances.get(line.projectLineId ?? '')
+    if (!balance) continue
+    const factor = m15ProjectFactor(line, balance.unit)
+    balance.draft =
+      balance.draft === null || factor === null
+        ? null
+        : m15Precise(balance.draft + line.quantity * factor)
+  }
+  for (const balance of balances.values()) {
+    balance.total =
+      balance.draft === null || balance.documented === null
+        ? null
+        : m15Precise(balance.documented + balance.draft)
+    balance.excess =
+      balance.planned === null || balance.total === null
+        ? null
+        : Math.max(0, m15Remaining(balance.total, balance.planned))
+  }
+  return balances
 }

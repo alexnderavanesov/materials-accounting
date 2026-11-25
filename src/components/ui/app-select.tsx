@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search } from 'lucide-react'
+import { useEscapeAction } from './escape-layer'
 
 export function AppSelect({
   label,
@@ -57,6 +58,7 @@ export function AppSelect({
     setOpen(false)
     if (restoreFocus) trigger.current?.focus()
   }
+  useEscapeAction({ kind: 'popup', enabled: open, onEscape: () => close(true) })
   const show = () => {
     if (disabled) return
     setQuery('')
@@ -179,11 +181,6 @@ export function AppSelect({
             }}
             onKeyDown={(event) => {
               if (event.key === 'Tab') {
-                event.stopPropagation()
-                close(true)
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault()
                 event.stopPropagation()
                 close(true)
               }

@@ -1,3 +1,6 @@
+import { loadDocumentCatalog } from './document-scans'
+import { m15ScanDocumentId } from './m15-scans'
+import { useEscapeAction } from '#/components/ui/escape-layer'
 import { formatCalendarDate, localDateInputValue } from './calendar-date'
 import { RowActionButton, RowActions } from '#/components/ui/row-action'
 import { lazy, Suspense, useMemo, useState, useEffect, useRef } from 'react'
@@ -57,6 +60,48 @@ function M15Register({
   syncFeedback,
 }: M15Access) {
   const { mode, setMode } = useOperationDisplay()
+  const [scanNames, setScanNames] = useState<Map<string, string[]> | null>(null)
+  const [scanError, setScanError] = useState('')
+  const [scanRevision, setScanRevision] = useState(0)
+  useEffect(() => {
+    const refresh = () => setScanRevision((value) => value + 1)
+    window.addEventListener('materials:document-files-changed', refresh)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.removeEventListener('materials:document-files-changed', refresh)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [])
+  useEffect(() => {
+    const abort = new AbortController()
+    setScanError('')
+    void loadDocumentCatalog(abort.signal)
+      .then(({ manifest }) => {
+        if (abort.signal.aborted) return
+        const names = new Map<string, string[]>()
+        for (const file of manifest.files)
+          names.set(file.documentId, [
+            ...(names.get(file.documentId) ?? []),
+            file.name,
+          ])
+        setScanNames(names)
+      })
+      .catch((cause) => {
+        if (!abort.signal.aborted)
+          setScanError(
+            cause instanceof Error
+              ? cause.message
+              : 'Не удалось загрузить список сканов.',
+          )
+      })
+    return () => abort.abort()
+  }, [scanRevision])
+  const scanLabel = (id: string) =>
+    scanError
+      ? 'Ошибка загрузки'
+      : scanNames
+        ? scanNames.get(m15ScanDocumentId(id))?.join('; ') || 'Нет скана'
+        : 'Загрузка…'
   const [removal, setRemoval] = useState<{
     document: ReceiptDocument
     baseline: M15Reconciliation
@@ -112,6 +157,16 @@ function M15Register({
     [cipher, setCipher] = useState(''),
     [materialType, setMaterialType] = useState(''),
     [waiting, setWaiting] = useState(false)
+  useEscapeAction({
+    kind: 'filters',
+    enabled: !!(query || cipher || materialType || waiting),
+    onEscape: () => {
+      setQuery('')
+      setCipher('')
+      setMaterialType('')
+      setWaiting(false)
+    },
+  })
   const focused = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (focusId && focused.current !== focusId) {
@@ -123,7 +178,10 @@ function M15Register({
   const [documentId, setDocumentId] = useState<string | null>(null),
     [newDocument, setNewDocument] = useState<ReceiptDocument>()
   const accounting = useMemo(() => buildM15Accounting(workspace), [workspace])
-  const [preview, setPreview] = useState<ReceiptDocument>()
+  const [preview, setPreview] = useState<{
+    document: ReceiptDocument
+    chooseFile: boolean
+  }>()
   const records = useMemo(
     () => new Map(workspace.m15Reconciliations?.map((row) => [row.id, row])),
     [workspace.m15Reconciliations],
@@ -289,6 +347,18 @@ function M15Register({
         </Button>
         <span className="text-sm text-slate-500">Накладных: {rows.length}</span>
       </div>
+      {scanError && (
+        <p role="alert" className="text-sm text-red-700">
+          {scanError}{' '}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setScanRevision((value) => value + 1)}
+          >
+            Повторить загрузку сканов
+          </Button>
+        </p>
+      )}
       {waiting || mode === 'table' ? (
         <OperationsGrid
           key={`m15-accounting:${mode}`}
@@ -310,6 +380,13 @@ function M15Register({
               title: 'Единица',
               value: (row) => row.unit,
               width: 100,
+            },
+            {
+              id: 'received',
+              title: 'Получено по шифру',
+              value: (row) => row.received,
+              numeric: true,
+              width: 170,
             },
             {
               id: 'app',
@@ -334,10 +411,45 @@ function M15Register({
             },
             {
               id: 'excess',
-              width: 100,
-              title: 'Сверх АПП',
+              width: 175,
+              title: 'Превышение по АПП',
               value: (row) => (row.needsConversion ? null : row.excess),
               numeric: true,
+              renderInTable: true,
+              render: (row) => (
+                <span
+                  className={
+                    !row.needsConversion && row.excess
+                      ? 'font-medium text-red-700'
+                      : undefined
+                  }
+                >
+                  {row.needsConversion
+                    ? '—'
+                    : row.excess.toLocaleString('ru-RU', {
+                        maximumFractionDigits: 9,
+                      })}
+                </span>
+              ),
+            },
+            {
+              id: 'cipherExcess',
+              title: 'Превышение по шифру',
+              value: (row) => row.cipherExcess,
+              width: 175,
+              numeric: true,
+              renderInTable: true,
+              render: (row) => (
+                <span
+                  className={
+                    row.cipherExcess ? 'font-medium text-red-700' : undefined
+                  }
+                >
+                  {row.cipherExcess?.toLocaleString('ru-RU', {
+                    maximumFractionDigits: 9,
+                  }) ?? '—'}
+                </span>
+              ),
             },
             {
               id: 'documents',
@@ -354,34 +466,15 @@ function M15Register({
                     <button
                       key={document.id}
                       className="max-w-full whitespace-normal break-words text-left text-blue-700 underline underline-offset-2"
-                      onClick={() => setPreview(document)}
+                      onClick={() =>
+                        setPreview({ document, chooseFile: false })
+                      }
                     >
                       {receiptDocumentLabel(document)}
                     </button>
                   ))}
                   {row.needsConversion && <span>Нужен пересчёт единиц</span>}
                 </div>
-              ),
-            },
-            {
-              id: 'actions',
-              title: 'Действия',
-              value: () => '',
-              actions: true,
-              width: 110,
-              render: (row) => (
-                <RowActions>
-                  {row.documents.map(({ document }) => (
-                    <RowActionButton
-                      key={document.id}
-                      iconOnly
-                      aria-label={`Открыть карточку ${receiptDocumentLabel(document)}`}
-                      onClick={() => open(document.id)}
-                    >
-                      <FolderOpen size={14} />
-                    </RowActionButton>
-                  ))}
-                </RowActions>
               ),
             },
           ]}
@@ -439,6 +532,28 @@ function M15Register({
               minWidth: 180,
             },
             {
+              id: 'scan',
+              title: 'Файл М-15',
+              value: (row) => scanLabel(row.document.id),
+              width: 300,
+              minWidth: 200,
+              flex: 1,
+              verticallyCentered: true,
+              render: (row) => (
+                <span
+                  className={
+                    scanError ||
+                    (scanNames &&
+                      !scanNames.has(m15ScanDocumentId(row.document.id)))
+                      ? 'text-red-700'
+                      : undefined
+                  }
+                >
+                  {scanLabel(row.document.id)}
+                </span>
+              ),
+            },
+            {
               id: 'actions',
               title: 'Действия',
               value: () => '',
@@ -451,7 +566,9 @@ function M15Register({
                   <RowActionButton
                     iconOnly
                     aria-label="Открыть М-15"
-                    onClick={() => setPreview(row.document)}
+                    onClick={() =>
+                      setPreview({ document: row.document, chooseFile: true })
+                    }
                   >
                     <FolderOpen size={14} aria-hidden="true" />
                   </RowActionButton>
@@ -534,12 +651,13 @@ function M15Register({
       )}
       {preview && (
         <M15DocumentPreview
-          key={preview.id}
-          document={preview}
-          composition={records.get(preview.id)}
+          key={preview.document.id}
+          document={preview.document}
+          chooseFile={preview.chooseFile}
+          composition={records.get(preview.document.id)}
           onClose={() => setPreview(undefined)}
           onEdit={() => {
-            open(preview.id)
+            open(preview.document.id)
             setPreview(undefined)
           }}
         />

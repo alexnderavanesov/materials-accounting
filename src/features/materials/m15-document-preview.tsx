@@ -1,54 +1,69 @@
-import { useEffect, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { WorkflowDialog } from './workflow-dialog'
+import { ExistingScanFiles } from './document-scan-picker'
 import { DocumentFilePreview } from './document-file-preview'
-import { loadDocumentCatalog } from './document-scans'
-import { m15ScanDocumentId } from './m15-scans'
+import { uploadM15Scans, useM15ScanCatalog } from './m15-scans'
+import { DocumentFileInput } from './document-file-input'
+import { m15FileSelectionError } from './document-file-limits'
 import { receiptDocumentLabel } from './receipt-documents'
 import type { ReceiptDocument } from './receipt-documents'
-import type { DocumentFile } from './document-registry'
 import type { M15Reconciliation } from './m15-reconciliation'
 
 export function M15DocumentPreview({
   document,
   composition,
+  chooseFile,
   onClose,
   onEdit,
 }: {
   document: ReceiptDocument
   composition?: M15Reconciliation
+  chooseFile: boolean
   onClose: () => void
   onEdit: () => void
 }) {
-  const [files, setFiles] = useState<DocumentFile[] | null>(null)
+  const { files, error, refresh } = useM15ScanCatalog(document.id)
   const [index, setIndex] = useState(0)
-  const [error, setError] = useState('')
-  const [attempt, setAttempt] = useState(0)
-  useEffect(() => {
-    const abort = new AbortController()
-    setError('')
-    setFiles(null)
-    void loadDocumentCatalog(abort.signal)
-      .then((catalog) => {
-        if (!abort.signal.aborted)
-          setFiles(
-            catalog.manifest.files.filter(
-              (file) => file.documentId === m15ScanDocumentId(document.id),
-            ),
-          )
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const [notice, setNotice] = useState('')
+  const uploadInFlight = useRef(false)
+  const busy = uploading
+  async function upload() {
+    if (
+      uploadInFlight.current ||
+      files === null ||
+      error ||
+      !selectedFiles.length
+    )
+      return
+    uploadInFlight.current = true
+    setUploading(true)
+    setUploadError('')
+    setNotice('')
+    try {
+      await uploadM15Scans(document.id, selectedFiles, {
+        expectedFileIds: files.map((file) => file.id),
+        replace: true,
       })
-      .catch((cause) => {
-        if (!abort.signal.aborted)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Не удалось открыть документ.',
-          )
-      })
-    return () => abort.abort()
-  }, [document.id, attempt])
+      setSelectedFiles([])
+      setNotice('PDF-скан сохранён.')
+      refresh()
+    } catch (cause) {
+      setUploadError(
+        cause instanceof Error
+          ? cause.message
+          : 'Не удалось добавить документы.',
+      )
+    } finally {
+      uploadInFlight.current = false
+      setUploading(false)
+    }
+  }
   const showComposition = files?.length === 0 && !error
-  if (files?.length)
+  if (!chooseFile && files?.length)
     return (
       <DocumentFilePreview
         file={files[index]!}
@@ -59,34 +74,97 @@ export function M15DocumentPreview({
   return (
     <WorkflowDialog
       title={receiptDocumentLabel(document)}
+      busy={busy}
+      dirty={selectedFiles.length > 0}
       compact={!showComposition}
       onClose={onClose}
-      footer={
+      footer={(close) => (
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={busy} onClick={close}>
             Закрыть
           </Button>
           {showComposition && (
-            <Button onClick={onEdit}>Открыть карточку М-15</Button>
+            <Button
+              disabled={busy || selectedFiles.length > 0}
+              onClick={onEdit}
+            >
+              Открыть карточку М-15
+            </Button>
+          )}
+          {selectedFiles.length > 0 && (
+            <Button
+              disabled={
+                busy ||
+                files === null ||
+                !!error ||
+                !!m15FileSelectionError(selectedFiles)
+              }
+              onClick={() => void upload()}
+            >
+              {uploading
+                ? 'Загрузка…'
+                : files?.length
+                  ? 'Заменить скан'
+                  : 'Загрузить скан'}
+            </Button>
           )}
         </>
-      }
+      )}
     >
-      {error ? (
+      {error && (
         <div role="alert">
           {error}
-          <Button
-            variant="outline"
-            onClick={() => setAttempt((value) => value + 1)}
-          >
+          <Button variant="outline" onClick={refresh}>
             Повторить
           </Button>
         </div>
-      ) : files === null ? (
-        <p role="status">Загрузка документа…</p>
+      )}
+      {files === null ? (
+        !error && <p role="status">Загрузка документа…</p>
+      ) : files.length ? (
+        <ExistingScanFiles files={files} disabled={busy} />
       ) : (
         <p className="text-sm text-slate-500">Скан не загружен</p>
       )}
+      <div className="mt-4 grid gap-3">
+        <DocumentFileInput
+          compact
+          singlePdf
+          buttonLabel={
+            files?.length ? 'Заменить PDF-скан' : 'Добавить PDF-скан'
+          }
+          files={selectedFiles}
+          disabled={busy || files === null || !!error}
+          onChange={(next) => {
+            setSelectedFiles(next)
+            setUploadError('')
+            setNotice('')
+          }}
+        />
+        {selectedFiles.length > 0 && (
+          <p className="text-xs text-slate-500">
+            Для М-15 хранится один PDF. Новый скан заменит ранее загруженные
+            файлы; при ошибке загрузки прежние файлы сохранятся.
+          </p>
+        )}
+        {notice && (
+          <p role="status" className="text-sm text-emerald-700">
+            {notice}
+          </p>
+        )}
+        {uploadError && (
+          <div role="alert" className="grid gap-2 text-sm text-red-700">
+            {uploadError}
+            <Button
+              variant="outline"
+              disabled={busy || files === null}
+              onClick={refresh}
+            >
+              Обновить список файлов
+            </Button>
+          </div>
+        )}
+      </div>
       {showComposition && (
         <>
           <p>Шифр: {composition?.cipher || 'не указан'}</p>

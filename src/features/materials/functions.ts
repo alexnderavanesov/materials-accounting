@@ -1,3 +1,5 @@
+import { documentFileStore } from './document-files.server'
+import { workspaceDocumentScanError } from './required-document-scans'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequest, setResponseHeader } from '@tanstack/react-start/server'
 import { z } from 'zod'
@@ -27,6 +29,23 @@ export const saveProjectWorkspaceChanges = createServerFn({ method: 'POST' })
   .validator(workspacePatchSchema)
   .handler(async ({ data }) => {
     checkWorkspaceOrigin(getRequest())
+    if (
+      data.changes.some(
+        (change) =>
+          change.value !== null &&
+          [
+            'receiptDocuments',
+            'materialReceipts',
+            'm15Reconciliations',
+          ].includes(change.collection),
+      )
+    ) {
+      const scanError = workspaceDocumentScanError(
+        data,
+        (await documentFileStore.load()).files,
+      )
+      if (scanError) return { status: 'rejected' as const, message: scanError }
+    }
     return postgresWorkspaceStore().patch(data, 'local:Локальный пользователь')
   })
 

@@ -393,6 +393,51 @@ it('shows materials with documents by default and switches to only materials wit
   expect(screen.getByRole('button', { name: 'Труба 108х3' })).toBeTruthy()
 })
 
+it('deletes a saved attachment from the upload dialog and keeps the other files and pending selection', async () => {
+  let files = ['Акт.pdf', 'Фото.jpg'].map((name, index) => ({
+    id: String(index),
+    documentId: 'app',
+    name,
+    uploadedAt: '',
+    size: 200,
+  }))
+  const fetch = vi.fn(async (_url: string, options?: RequestInit) => {
+    if (options?.method === 'POST') {
+      expect(JSON.parse(String(options.body))).toEqual({
+        action: 'remove',
+        fileId: '0',
+        workspaceRevision: 'saved',
+        filesRevision: 'files',
+      })
+      files = files.slice(1)
+    }
+    return Response.json({ ...data, manifest: { ...data.manifest, files } })
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<DocumentsSection prepare={async () => 'saved'} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Труба 108х3' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Скачать архив · 1' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Прикрепить: АПП №1' }))
+  fireEvent.change(screen.getByLabelText('Файлы оригиналов'), {
+    target: { files: [new File(['new'], 'Новый.pdf')] },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить файл Акт.pdf' }))
+  expect(
+    fetch.mock.calls.some(([, options]) => options?.method === 'POST'),
+  ).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить файл' }))
+  await screen.findByText('Ранее загружено: 1')
+  expect(
+    screen.queryByRole('button', { name: 'Посмотреть: Акт.pdf' }),
+  ).toBeNull()
+  expect(
+    screen.getByRole('button', { name: 'Посмотреть: Фото.jpg' }),
+  ).toBeTruthy()
+  expect(
+    screen.getByRole('button', { name: 'Убрать файл: Новый.pdf' }),
+  ).toBeTruthy()
+})
+
 it('adds multiple dropped and picked files, removes individual entries and uploads them together after confirmation', async () => {
   const fetch = vi.fn(async () => Response.json(data))
   vi.stubGlobal('fetch', fetch)

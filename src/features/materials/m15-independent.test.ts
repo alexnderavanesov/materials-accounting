@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { buildM15Accounting, independentM15 } from './m15-independent'
+import {
+  buildM15Accounting,
+  buildM15CipherBalances,
+  independentM15,
+} from './m15-independent'
 import { validateM15Reconciliation } from './m15-reconciliation'
 import { emptyQualityWorkflow } from './quality-workflow'
 import type { M15Workspace } from './m15-reconciliation'
@@ -46,6 +50,97 @@ function fixture(): M15Workspace {
   }
 }
 describe('independent APP / M-15 accounting', () => {
+  it('keeps cipher excess separate from APP excess and recalculates it after editing the invoice or plan', () => {
+    const w = fixture()
+    w.lines![0]!.plannedQuantity = 60
+    expect(buildM15Accounting(w)[0]).toMatchObject({
+      documented: 70,
+      cipherQuantity: 60,
+      cipherExcess: 10,
+      excess: 0,
+    })
+    w.lines!.push({
+      ...w.lines![0]!,
+      id: 'other',
+      cipher: 'B',
+      plannedQuantity: 900,
+    })
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBe(10)
+    w.m15Reconciliations![0]!.lines[0]!.quantity = 110
+    expect(buildM15Accounting(w)[0]).toMatchObject({
+      cipherExcess: 50,
+      excess: 10,
+    })
+    w.lines![0]!.plannedQuantity = 120
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBe(0)
+    delete w.lines![0]!.plannedQuantity
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBeNull()
+  })
+  it('excludes the edited invoice and sums repeated draft rows using explicit unit conversion', () => {
+    const w = fixture()
+    w.lines![0]!.plannedQuantity = 60
+    w.qualityWorkflow!.receiptDocuments!.push({
+      id: 'other',
+      kind: 'm15',
+      number: '3',
+      date: '2026-11-21',
+    })
+    const invoice = w.m15Reconciliations![0]!
+    w.m15Reconciliations!.push({
+      ...structuredClone(invoice),
+      id: 'other',
+      lines: [{ ...invoice.lines[0]!, quantity: 40 }],
+    })
+    const draft = structuredClone(invoice)
+    draft.lines = [
+      { ...draft.lines[0]!, quantity: 20 },
+      {
+        ...draft.lines[0]!,
+        id: 'kg',
+        quantity: 30,
+        unit: 'кг',
+        projectConversion: { fromUnit: 'кг', toUnit: 'м', factor: 0.5 },
+      },
+    ]
+    const before = structuredClone(w)
+    const other = buildM15Accounting(w, { excludeDocumentId: draft.id })
+    expect(buildM15CipherBalances(w, draft, other).get('line')).toMatchObject({
+      planned: 60,
+      documented: 40,
+      draft: 35,
+      total: 75,
+      excess: 15,
+    })
+    expect(w).toEqual(before)
+    w.m15Reconciliations![1]!.lines[0]!.unit = 'кг'
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBeNull()
+    expect(
+      buildM15CipherBalances(
+        w,
+        draft,
+        buildM15Accounting(w, { excludeDocumentId: draft.id }),
+      ).get('line')!.excess,
+    ).toBeNull()
+    // Unknown APP units do not make a known M-15/project comparison incomplete.
+    w.m15Reconciliations![1]!.lines[0]!.unit = 'м'
+    w.materialReceipts[0]!.projectUnit = 'кг'
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBe(50)
+  })
+  it('does not flag rounding noise as a cipher excess', () => {
+    const w = fixture()
+    w.lines![0]!.plannedQuantity = 0.3
+    const invoice = w.m15Reconciliations![0]!
+    invoice.lines[0]!.quantity = 0.1
+    invoice.lines.push({ ...invoice.lines[0]!, id: 'second', quantity: 0.2 })
+    expect(buildM15Accounting(w)[0]!.cipherExcess).toBe(0)
+    expect(
+      buildM15CipherBalances(
+        w,
+        invoice,
+        buildM15Accounting(w, { excludeDocumentId: invoice.id }),
+      ).get('line')!.excess,
+    ).toBe(0)
+  })
   it('subtracts actual customer returns and ignores stock movements', () => {
     const w = fixture()
     w.qualityWorkflow!.customerReturns = [

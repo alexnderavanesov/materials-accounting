@@ -19,6 +19,10 @@ import { withoutM15Composition } from './m15-composition-removal'
 import { withM15Document } from './m15-document'
 
 beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => Response.json({ manifest: { files: [] } })),
+  )
   sessionStorage.clear()
   HTMLElement.prototype.scrollIntoView = vi.fn()
 })
@@ -53,7 +57,7 @@ it('aggregates documents by material and cipher and searches without changing to
   expect(register.getDisplayedRowCount()).toBe(2)
   expect(
     register.getAllDisplayedColumns().map((column) => column.getColId()),
-  ).toEqual(['document', 'cipher', 'materials', 'actions'])
+  ).toEqual(['document', 'cipher', 'materials', 'scan', 'actions'])
   expect(
     register.getCellValue({
       rowNode: register.getDisplayedRowAtIndex(0)!,
@@ -77,8 +81,23 @@ it('aggregates documents by material and cipher and searches without changing to
     documented: 20,
     shortage: 0,
     excess: 4,
+    cipherExcess: 10,
   })
   expect(grid.getDisplayedRowAtIndex(0)!.data.documents).toHaveLength(2)
+  expect(grid.getColumn('actions')).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: 'Действия' })).toBeNull()
+  expect(grid.getColumn('excess')?.getColDef().headerName).toBe(
+    'Превышение по АПП',
+  )
+  expect(grid.getColumn('cipherExcess')?.getColDef().headerName).toBe(
+    'Превышение по шифру',
+  )
+  expect(
+    grid.getCellValue({
+      rowNode: grid.getDisplayedRowAtIndex(0)!,
+      colKey: 'cipherExcess',
+    }),
+  ).toBe(10)
   expect(save).not.toHaveBeenCalled()
 })
 it('shows the last added invoice first regardless of its date and keeps that order after composition edits', async () => {
@@ -129,12 +148,23 @@ it('shows missing M15 quantities by material after actual customer returns', asy
   render(<M15Section workspace={workspace} save={vi.fn()} />)
   fireEvent.click(screen.getByRole('button', { name: /Не хватает М-15/ }))
   const grid = await operationGridApi('m15-accounting')
+  expect(grid.getColumn('actions')).toBeNull()
   expect(grid.getDisplayedRowCount()).toBe(1)
   expect(grid.getDisplayedRowAtIndex(0)!.data).toMatchObject({
+    received: 16,
     app: 14,
     documented: 10,
     shortage: 4,
   })
+  expect(
+    grid.getCellValue({
+      rowNode: grid.getDisplayedRowAtIndex(0)!,
+      colKey: 'received',
+    }),
+  ).toBe(16)
+  expect(grid.getColumn('received')?.getColDef().headerName).toBe(
+    'Получено по шифру',
+  )
 })
 it('keeps pending saves and remote feedback accessible in the independent editor', async () => {
   render(
@@ -241,61 +271,95 @@ it('opens a read-only document composition when its scan is not uploaded', async
     within(screen.getByRole('dialog')).getByRole('cell', { name: 'Клапан' }),
   ).toBeTruthy()
 })
-it('opens the selected invoice scan and edits its composition with a separate action', async () => {
-  HTMLDialogElement.prototype.showModal = function () {
-    this.setAttribute('open', '')
-  }
-  vi.stubGlobal(
-    'URL',
-    Object.assign(class extends URL {}, {
-      createObjectURL: vi.fn(() => 'blob:m15-scan'),
-      revokeObjectURL: vi.fn(),
-    }),
-  )
-  let releaseCatalog!: () => void
-  const catalogReady = new Promise<void>((resolve) => {
-    releaseCatalog = resolve
-  })
-  const fetch = vi.fn(async (url: string) => {
-    if (url === '/api/documents?file=scan-second&preview=1')
-      return new Response('scan', { headers: { 'Content-Type': 'image/png' } })
-    await catalogReady
-    return Response.json({
-      manifest: {
-        files: ['m15', 'second'].map((id) => ({
-          id: `scan-${id}`,
-          documentId: JSON.stringify(['receipt-document', id]),
-          name: `${id}.png`,
-          size: 4,
-          uploadedAt: '',
-        })),
-      },
+it.each([1, 2])(
+  'lists the invoice attachments before preview, returns to the list and keeps edit separate (%i files)',
+  async (count) => {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '')
+    }
+    vi.stubGlobal(
+      'URL',
+      Object.assign(class extends URL {}, {
+        createObjectURL: vi.fn(() => 'blob:m15-scan'),
+        revokeObjectURL: vi.fn(),
+      }),
+    )
+    let releaseCatalog!: () => void
+    const catalogReady = new Promise<void>((resolve) => {
+      releaseCatalog = resolve
     })
-  })
-  vi.stubGlobal('fetch', fetch)
-  const save = vi.fn()
-  render(<M15Section workspace={fixture()} save={save} />)
-  changeField(screen.getByLabelText('Поиск М-15'), {
-    target: { value: '15-2' },
-  })
-  fireEvent.click(await screen.findByRole('button', { name: 'Открыть М-15' }))
-  expect(screen.getByText('Загрузка документа…')).toBeTruthy()
-  expect(within(screen.getByRole('dialog')).queryByRole('table')).toBeNull()
-  expect(screen.queryByText('Скан не загружен')).toBeNull()
-  await act(async () => releaseCatalog())
-  expect(await screen.findByRole('img', { name: 'second.png' })).toBeTruthy()
-  expect(screen.queryByLabelText('Номер М-15')).toBeNull()
-  expect(fetch).toHaveBeenCalledWith(
-    '/api/documents?file=scan-second&preview=1',
-    expect.any(Object),
-  )
-  fireEvent.click(screen.getByRole('button', { name: 'Закрыть предпросмотр' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Редактировать М-15' }))
-  expect(
-    (await screen.findByLabelText<HTMLInputElement>('Номер М-15')).value,
-  ).toBe('15-2')
-  expect(save).not.toHaveBeenCalled()
-})
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes('&preview=1'))
+        return new Response('scan', {
+          headers: { 'Content-Type': 'image/png' },
+        })
+      await catalogReady
+      return Response.json({
+        manifest: {
+          files: [
+            'm15',
+            ...Array.from({ length: count }, (_, index) => 'second-' + index),
+          ].map((id) => ({
+            id: `scan-${id}`,
+            documentId: JSON.stringify(['receipt-document', id.split('-')[0]]),
+            name: `${id}.png`,
+            size: 4,
+            uploadedAt: '',
+          })),
+        },
+      })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const save = vi.fn()
+    render(<M15Section workspace={fixture()} save={save} />)
+    changeField(screen.getByLabelText('Поиск М-15'), {
+      target: { value: '15-2' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть М-15' }))
+    expect(screen.getByText('Загрузка документа…')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).queryByRole('table')).toBeNull()
+    expect(screen.queryByText('Скан не загружен')).toBeNull()
+    await act(async () => releaseCatalog())
+    const list = screen.getByRole('dialog')
+    expect(
+      within(list).getAllByRole('button', { name: /^Посмотреть:/ }),
+    ).toHaveLength(count)
+    expect(
+      within(list).queryByRole('button', { name: 'Посмотреть: m15.png' }),
+    ).toBeNull()
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/documents',
+      '/api/documents',
+    ])
+    const selected = `second-${count - 1}`
+    fireEvent.click(
+      within(list).getByRole('button', { name: `Посмотреть: ${selected}.png` }),
+    )
+    expect(
+      await screen.findByRole('img', { name: selected + '.png' }),
+    ).toBeTruthy()
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/documents?file=scan-${selected}&preview=1`,
+      expect.any(Object),
+    )
+    if (count > 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Предыдущий файл' }))
+      expect(
+        await screen.findByRole('img', { name: 'second-0.png' }),
+      ).toBeTruthy()
+    }
+    const viewer = screen.getByRole('dialog', { name: /^Предпросмотр:/ })
+    fireEvent.keyDown(viewer, { key: 'Escape' })
+    fireEvent(viewer, new Event('cancel', { cancelable: true }))
+    expect(screen.getByRole('dialog')).toBe(list)
+    fireEvent.click(within(list).getByRole('button', { name: 'Закрыть' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Редактировать М-15' }))
+    expect(
+      (await screen.findByLabelText<HTMLInputElement>('Номер М-15')).value,
+    ).toBe('15-2')
+    expect(save).not.toHaveBeenCalled()
+  },
+)
 it('removes the composition independently and retains the document and physical receipts', async () => {
   const workspace = fixture()
   workspace.m15Reconciliations = workspace.m15Reconciliations!.slice(0, 1)

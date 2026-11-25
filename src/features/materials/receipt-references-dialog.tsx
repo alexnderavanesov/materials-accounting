@@ -1,3 +1,4 @@
+import { EscapeLayer } from '#/components/ui/escape-layer'
 import { formatCalendarDate } from './calendar-date'
 import { useEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -101,127 +102,126 @@ export function ReceiptReferencesDialog({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/25 px-4 py-6">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="flex max-h-[calc(100dvh-3rem)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            event.stopPropagation()
-            onClose()
-          }
-          if (event.key === 'Tab') {
-            const items = Array.from(
-              event.currentTarget.querySelectorAll<HTMLElement>(
-                'button, summary',
-              ),
-            ).filter((item) => item.getClientRects().length > 0)
-            const first = items[0],
-              last = items.at(-1)
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault()
-              last?.focus()
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault()
-              first?.focus()
+    <EscapeLayer onEscape={onClose}>
+      <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/25 px-4 py-6">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          className="flex max-h-[calc(100dvh-3rem)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+          onKeyDown={(event) => {
+            if (event.key === 'Tab') {
+              const items = Array.from(
+                event.currentTarget.querySelectorAll<HTMLElement>(
+                  'button, summary',
+                ),
+              ).filter((item) => item.getClientRects().length > 0)
+              const first = items[0],
+                last = items.at(-1)
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault()
+                last?.focus()
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault()
+                first?.focus()
+              }
             }
-          }
-        }}
-      >
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="font-medium text-slate-950">{title}</h2>
-            <p className="mt-1 break-words text-sm text-slate-500">
-              {material}
-            </p>
+          }}
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="font-medium text-slate-950">{title}</h2>
+              <p className="mt-1 break-words text-sm text-slate-500">
+                {material}
+              </p>
+            </div>
+            <button
+              ref={close}
+              type="button"
+              aria-label="Закрыть"
+              onClick={onClose}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X size={18} />
+            </button>
           </div>
-          <button
-            ref={close}
-            type="button"
-            aria-label="Закрыть"
-            onClick={onClose}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <div className="min-h-0 overflow-y-auto p-2">
-          {kind === 'returns' &&
-            returns.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                title="Открыть исходное получение"
-                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-500"
-                onClick={() => onOpenReceipt(item.receiptId)}
-              >
-                <span className="grid min-w-0 gap-1 text-sm">
-                  <span className="font-medium text-blue-700">
-                    Возврат от {formatCalendarDate(item.date)}
-                  </span>
-                  <span className="break-words text-slate-700">
-                    {item.reason}
-                    {item.zni && ` · ЗНИ ${item.zni}`}
-                  </span>
-                  <span className="break-words text-xs text-slate-500">
-                    {item.request} · Получение от{' '}
-                    {formatCalendarDate(item.receiptDate)}
-                  </span>
-                  {item.documentNumber && (
+          <div className="min-h-0 overflow-y-auto p-2">
+            {kind === 'returns' &&
+              returns.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  title="Открыть исходное получение"
+                  className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-500"
+                  onClick={() => onOpenReceipt(item.receiptId)}
+                >
+                  <span className="grid min-w-0 gap-1 text-sm">
+                    <span className="font-medium text-blue-700">
+                      Возврат от {formatCalendarDate(item.date)}
+                    </span>
+                    <span className="break-words text-slate-700">
+                      {item.reason}
+                      {item.zni && ` · ЗНИ ${item.zni}`}
+                    </span>
                     <span className="break-words text-xs text-slate-500">
-                      Документ возврата: {item.documentNumber}
+                      {item.request} · Получение от{' '}
+                      {formatCalendarDate(item.receiptDate)}
                     </span>
-                  )}
-                  {item.note && (
-                    <span className="whitespace-pre-wrap break-words text-xs text-slate-500">
-                      {item.note}
+                    {item.documentNumber && (
+                      <span className="break-words text-xs text-slate-500">
+                        Документ возврата: {item.documentNumber}
+                      </span>
+                    )}
+                    {item.note && (
+                      <span className="whitespace-pre-wrap break-words text-xs text-slate-500">
+                        {item.note}
+                      </span>
+                    )}
+                  </span>
+                  <span className="rounded-md bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-700">
+                    {item.quantity}
+                  </span>
+                </button>
+              ))}
+            {kind === 'returns' && !returns.length && (
+              <p className="p-3 text-sm text-slate-500">
+                По этому материалу возвратов пока нет.
+              </p>
+            )}
+            {kind === 'receipts' &&
+              receipts.map((receipt) => receiptLink(receipt, true))}
+            {kind === 'documents' &&
+              documents.map(({ document, receipts: linked }) => (
+                <details
+                  key={document.id}
+                  className="group rounded-lg border border-slate-200 mb-2 last:mb-0"
+                >
+                  <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-3 text-sm hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                    <ChevronDown
+                      size={16}
+                      className="shrink-0 text-slate-400 transition-transform group-open:rotate-180"
+                    />
+                    <span className="min-w-0 flex-1 break-words font-medium text-slate-800">
+                      {receiptDocumentLabel(document)}
                     </span>
-                  )}
-                </span>
-                <span className="rounded-md bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-700">
-                  {item.quantity}
-                </span>
-              </button>
-            ))}
-          {kind === 'returns' && !returns.length && (
-            <p className="p-3 text-sm text-slate-500">
-              По этому материалу возвратов пока нет.
-            </p>
-          )}
-          {kind === 'receipts' &&
-            receipts.map((receipt) => receiptLink(receipt, true))}
-          {kind === 'documents' &&
-            documents.map(({ document, receipts: linked }) => (
-              <details
-                key={document.id}
-                className="group rounded-lg border border-slate-200 mb-2 last:mb-0"
-              >
-                <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-3 text-sm hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
-                  <ChevronDown
-                    size={16}
-                    className="shrink-0 text-slate-400 transition-transform group-open:rotate-180"
-                  />
-                  <span className="min-w-0 flex-1 break-words font-medium text-slate-800">
-                    {receiptDocumentLabel(document)}
-                  </span>
-                  <span className="shrink-0 text-xs text-slate-500">
-                    Получений: {linked.length}
-                  </span>
-                </summary>
-                <div className="border-t border-slate-100 p-1">
-                  {linked.map((receipt) => receiptLink(receipt, false))}
-                </div>
-              </details>
-            ))}
-          {kind === 'documents' && !documents.length && (
-            <p className="p-3 text-sm text-slate-500">Документы не указаны.</p>
-          )}
+                    <span className="shrink-0 text-xs text-slate-500">
+                      Получений: {linked.length}
+                    </span>
+                  </summary>
+                  <div className="border-t border-slate-100 p-1">
+                    {linked.map((receipt) => receiptLink(receipt, false))}
+                  </div>
+                </details>
+              ))}
+            {kind === 'documents' && !documents.length && (
+              <p className="p-3 text-sm text-slate-500">
+                Документы не указаны.
+              </p>
+            )}
+          </div>
         </div>
       </div>
-    </div>,
+    </EscapeLayer>,
     document.body,
   )
 }

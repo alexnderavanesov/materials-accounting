@@ -1,3 +1,4 @@
+import { EscapeLayer, useEscapeAction } from '#/components/ui/escape-layer'
 import { RowActionButton } from '#/components/ui/row-action'
 import type { WorkspaceSearch } from './workspace-navigation'
 import { SelectField } from '#/components/ui/select-field'
@@ -24,7 +25,10 @@ import {
   ScanReplacementChoice,
 } from './document-scan-picker'
 import { DocumentFileInput } from './document-file-input'
-import { documentFileSelectionError } from './document-file-limits'
+import {
+  documentFileSelectionError,
+  m15FileSelectionError,
+} from './document-file-limits'
 import { DocumentAttachments } from './document-attachments'
 import { MaterialsGridView, materialsGridTheme } from './materials-grid'
 import { materialsColumnFilter } from './materials-column-filter'
@@ -38,6 +42,7 @@ import {
 } from './document-registry'
 import type {
   DocumentCategory,
+  DocumentFile,
   DocumentFileManifest,
   DocumentMaterial,
   DocumentRegistry,
@@ -119,33 +124,35 @@ function DocumentDialog({
     }
   }, [])
   return createPortal(
-    <dialog
-      ref={ref}
-      aria-label={title}
-      onCancel={(event) => {
-        // A file input also emits a bubbling cancel event when its picker closes.
-        if (event.target !== event.currentTarget) return
-        event.preventDefault()
-        event.stopPropagation()
-        onClose()
-      }}
-      className="m-auto max-h-[90dvh] w-[min(960px,96vw)] overflow-hidden rounded-xl border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/40"
-    >
-      <div className="flex max-h-[90dvh] flex-col">
-        <div className="flex shrink-0 items-center gap-3 border-b border-slate-200 p-4">
-          <h2 className="mr-auto text-lg font-semibold">{title}</h2>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={closeLabel}
-            onClick={onClose}
-          >
-            <X size={18} />
-          </Button>
+    <EscapeLayer onEscape={onClose}>
+      <dialog
+        ref={ref}
+        aria-label={title}
+        onCancel={(event) => {
+          // A file input also emits a bubbling cancel event when its picker closes.
+          if (event.target !== event.currentTarget) return
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+        }}
+        className="m-auto max-h-[90dvh] w-[min(960px,96vw)] overflow-hidden rounded-xl border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/40"
+      >
+        <div className="flex max-h-[90dvh] flex-col">
+          <div className="flex shrink-0 items-center gap-3 border-b border-slate-200 p-4">
+            <h2 className="mr-auto text-lg font-semibold">{title}</h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={closeLabel}
+              onClick={onClose}
+            >
+              <X size={18} />
+            </Button>
+          </div>
+          {children}
         </div>
-        {children}
-      </div>
-    </dialog>,
+      </dialog>
+    </EscapeLayer>,
     document.body,
   )
 }
@@ -169,6 +176,14 @@ export function DocumentsSection({
   const [query, setQuery] = useState('')
   const [view, setView] = useState<DocumentView>('all')
   const [onlyWithoutDocuments, setOnlyWithoutDocuments] = useState(false)
+  useEscapeAction({
+    kind: 'filters',
+    enabled: !!query || onlyWithoutDocuments,
+    onEscape: () => {
+      setQuery('')
+      setOnlyWithoutDocuments(false)
+    },
+  })
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>([])
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
   const [selection, setSelection] = useState<DocumentSelection | null>(null)
@@ -276,6 +291,15 @@ export function DocumentsSection({
     uploadDocument && uploadDocument !== 'new'
       ? (filesByDocument.get(uploadDocument.id) ?? [])
       : []
+  const uploadCategory =
+    uploadDocument === 'new' ? uploadKind : uploadDocument?.kind
+  const singlePdf = uploadCategory === 'm15'
+  const uploadFileError = singlePdf
+    ? m15FileSelectionError(uploadFiles)
+    : documentFileSelectionError(uploadFiles)
+  const canRemoveOriginal = (kind: DocumentCategory, documentId: string) =>
+    kind !== 'm15' &&
+    (kind !== 'app' || (filesByDocument.get(documentId)?.length ?? 0) > 1)
   const uploadSignature = uploadStored
     .map((file) => file.id)
     .sort()
@@ -524,11 +548,17 @@ export function DocumentsSection({
         : 'passport',
     )
   }
+  function removeFile(file: DocumentFile) {
+    return run('Удаление файла…', async () => {
+      await post({ action: 'remove', fileId: file.id })
+      await refresh()
+    })
+  }
   async function upload() {
     if (!uploadFiles.length || !uploadDocument) return
-    if (uploadStored.length && !uploadChoice)
+    if (!singlePdf && uploadStored.length && !uploadChoice)
       throw new Error('Выберите: заменить файлы или оставить несколько.')
-    const selectionError = documentFileSelectionError(uploadFiles)
+    const selectionError = uploadFileError
     if (selectionError) throw new Error(selectionError)
     const files: { name: string; base64: string }[] = []
     for (const [index, file] of uploadFiles.entries()) {
@@ -552,7 +582,7 @@ export function DocumentsSection({
             documentId: uploadDocument.id,
             expectedFileIds: uploadStored.map((file) => file.id),
             replaceFileIds:
-              uploadChoice === 'replace'
+              singlePdf || uploadChoice === 'replace'
                 ? uploadStored.map((file) => file.id)
                 : [],
           }),
@@ -563,6 +593,7 @@ export function DocumentsSection({
     setUploadDocument(null)
     setUploadFiles([])
     await refresh()
+    window.dispatchEvent(new Event('materials:document-files-changed'))
     setNotice(`Прикреплено файлов: ${files.length}.`)
   }
   async function archive() {
@@ -841,19 +872,36 @@ export function DocumentsSection({
                 ) : (
                   <p>{uploadDocument.label}</p>
                 )}
-                <ExistingScanFiles files={uploadStored} />
+                <ExistingScanFiles
+                  files={uploadStored}
+                  onRemove={
+                    uploadDocument !== 'new' &&
+                    canRemoveOriginal(uploadDocument.kind, uploadDocument.id)
+                      ? removeFile
+                      : undefined
+                  }
+                  disabled={Boolean(busy)}
+                />
                 <DocumentFileInput
+                  singlePdf={singlePdf}
+                  buttonLabel={
+                    singlePdf && uploadStored.length
+                      ? 'Заменить PDF-скан'
+                      : undefined
+                  }
                   files={uploadFiles}
                   onChange={setUploadFiles}
                   disabled={Boolean(busy)}
                 />
-                {!!uploadStored.length && !!uploadFiles.length && (
-                  <ScanReplacementChoice
-                    value={uploadChoice}
-                    onChange={setUploadChoice}
-                    disabled={Boolean(busy)}
-                  />
-                )}
+                {!singlePdf &&
+                  !!uploadStored.length &&
+                  !!uploadFiles.length && (
+                    <ScanReplacementChoice
+                      value={uploadChoice}
+                      onChange={setUploadChoice}
+                      disabled={Boolean(busy)}
+                    />
+                  )}
               </>
             ) : (
               <>
@@ -1029,8 +1077,8 @@ export function DocumentsSection({
                   disabled={
                     Boolean(busy) ||
                     !uploadFiles.length ||
-                    (!!uploadStored.length && !uploadChoice) ||
-                    Boolean(documentFileSelectionError(uploadFiles)) ||
+                    (!singlePdf && !!uploadStored.length && !uploadChoice) ||
+                    Boolean(uploadFileError) ||
                     (uploadDocument === 'new' && !uploadLabel.trim())
                   }
                   onClick={() => void run('Подготовка файлов…', upload)}
@@ -1084,11 +1132,13 @@ export function DocumentsSection({
                   files={attachmentFiles}
                   photos={attachmentGroup.photos}
                   busy={Boolean(busy)}
-                  onRemove={(file) =>
-                    run('Удаление файла…', async () => {
-                      await post({ action: 'remove', fileId: file.id })
-                      await refresh()
-                    })
+                  onRemove={
+                    canRemoveOriginal(
+                      attachmentDocument.kind,
+                      attachmentDocument.id,
+                    )
+                      ? removeFile
+                      : undefined
                   }
                 />
               </div>

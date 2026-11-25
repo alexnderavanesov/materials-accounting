@@ -1,3 +1,4 @@
+import { useEscapeAction } from '#/components/ui/escape-layer'
 import { useEffect, useId, useRef, useState } from 'react'
 import {
   ChevronDown,
@@ -104,6 +105,11 @@ export function WorkspaceDock({
     setMobileOpen(false)
     triggerRef.current?.focus({ preventScroll: true })
   }
+  useEscapeAction({
+    kind: 'popup',
+    enabled: narrowScreen && mobileOpen,
+    onEscape: closeMobile,
+  })
 
   function select(next: WorkspaceSearch) {
     onNavigate(next)

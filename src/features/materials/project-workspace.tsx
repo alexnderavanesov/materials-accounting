@@ -1,3 +1,8 @@
+import {
+  EscapeLayer,
+  EscapeFilters,
+  useEscapeAction,
+} from '#/components/ui/escape-layer'
 import { buildM15Accounting } from './m15-independent'
 import { DateInput } from '#/components/ui/date-input'
 import { RequestMaterialsGrid } from './request-materials-grid'
@@ -739,21 +744,21 @@ function ProjectWorkspaceContent({
         setExcelMenuOpen(false)
       }
     }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setExcelMenuOpen(false)
-        excelMenuButtonRef.current?.focus()
-      }
-    }
     document.addEventListener('pointerdown', closeOutside)
     document.addEventListener('focusin', closeOutside)
-    document.addEventListener('keydown', closeOnEscape)
     return () => {
       document.removeEventListener('pointerdown', closeOutside)
       document.removeEventListener('focusin', closeOutside)
-      document.removeEventListener('keydown', closeOnEscape)
     }
   }, [excelMenuOpen])
+  useEscapeAction({
+    kind: 'popup',
+    enabled: excelMenuOpen,
+    onEscape: () => {
+      setExcelMenuOpen(false)
+      excelMenuButtonRef.current?.focus()
+    },
+  })
   const [projectGrid, setProjectGrid] =
     useState<GridApi<MaterialMatrixRow> | null>(null)
   const [configuredCiphers, setConfiguredCiphers] = useState<Array<string>>(
@@ -1367,56 +1372,6 @@ function ProjectWorkspaceContent({
     m15Reconciliations,
     documentNumbering,
   ])
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape' || event.defaultPrevented) {
-        return
-      }
-      // Closing a native grid popup must not also clear the workspace filters.
-      if (
-        event
-          .composedPath()
-          .some(
-            (target) =>
-              target instanceof Element &&
-              target.classList.contains('ag-popup-child'),
-          )
-      ) {
-        return
-      }
-
-      if (pendingDeleteMaterial) {
-        event.preventDefault()
-        setPendingDeleteMaterial(null)
-        return
-      }
-
-      if (materialImportOpen) {
-        event.preventDefault()
-        setMaterialImportOpen(false)
-        return
-      }
-
-      if (section === 'settings') return
-
-      if (materialModalOpen) {
-        event.preventDefault()
-        setMaterialModalOpen(false)
-        setEditingLineId(null)
-        return
-      }
-
-      event.preventDefault()
-      setSelectedCombinationKey(null)
-      setImportedCombinationKeys([])
-      setCipherFilter('all')
-      setTableFilterResetVersion((version) => version + 1)
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [materialImportOpen, materialModalOpen, pendingDeleteMaterial, section])
 
   const selectedLine = lines.find((line) => line.id === selectedLineId)
   const importedKeySet = useMemo(
@@ -2933,6 +2888,19 @@ function DatabaseSection({
   const grid = useRef<GridApi<MaterialMatrixRow> | null>(null)
   const [tableFiltered, setTableFiltered] = useState(false)
   const [gridRowCount, setGridRowCount] = useState<number | null>(null)
+  useEscapeAction({
+    kind: 'filters',
+    enabled:
+      !!search ||
+      cipherFilter !== 'all' ||
+      !!selectedCombination ||
+      selectedImportedCount > 0,
+    onEscape: () => {
+      setSearch('')
+      onChangeCipherFilter('all')
+      onClearSelectedCombination()
+    },
+  })
 
   return (
     <section
@@ -3451,6 +3419,16 @@ function OperationsSection({
     },
   }
   const search = activeTab === 'overview' ? null : searches[activeTab]
+  useEscapeAction({
+    kind: 'filters',
+    enabled:
+      activeTab !== 'overview' &&
+      !!(search?.value || listView.cipher || listView.materialType),
+    onEscape: () => {
+      search?.onChange('')
+      updateListView({ ...listView, cipher: '', materialType: '' })
+    },
+  })
   const overviewRows = useMemo(
     () =>
       buildOperationOverviewRows({
@@ -3496,22 +3474,6 @@ function OperationsSection({
       remainingByRequest,
     ],
   )
-
-  useEffect(() => {
-    if (!modal) {
-      return
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setModal(null)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [modal])
 
   const returnsContent = (
     <>
@@ -4116,6 +4078,15 @@ function OperationOverview({
     '',
     isViewString,
   )
+  useEscapeAction({
+    kind: 'filters',
+    enabled: !!(search || cipherFilter || materialTypeFilter),
+    onEscape: () => {
+      setSearch('')
+      setCipherFilter('')
+      setMaterialTypeFilter('')
+    },
+  })
   const cipherOptions = useMemo(
     () => unique(rows.flatMap((row) => row.ciphers.map((item) => item.cipher))),
     [rows],
@@ -4805,79 +4776,73 @@ function OverviewDocumentsDialog({
   onClose: () => void
   onOpenDocument: (targetId: string) => void
 }) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        onClose()
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown, true)
-
-    return () => document.removeEventListener('keydown', handleKeyDown, true)
-  }, [onClose])
-
   const dialogTitle = tab === 'requests' ? `Заявки по шифру ${cipher}` : title
 
   return (
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/25 px-4 py-6">
-      <div className="w-full max-w-lg overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-slate-950">
-              {dialogTitle}
+    <EscapeLayer onEscape={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={dialogTitle}
+        className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/25 px-4 py-6"
+      >
+        <div className="w-full max-w-lg overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-slate-950">
+                {dialogTitle}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span>
+                  {documents.length}{' '}
+                  {getOverviewDocumentLabelSuffix(documents.length)}
+                </span>
+                {tab === 'requests' ? null : <span>Шифр: {cipher}</span>}
+              </div>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span>
-                {documents.length}{' '}
-                {getOverviewDocumentLabelSuffix(documents.length)}
-              </span>
-              {tab === 'requests' ? null : <span>Шифр: {cipher}</span>}
-            </div>
-          </div>
-          <button
-            className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            type="button"
-            aria-label="Закрыть"
-            onClick={onClose}
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="max-h-[460px] overflow-auto p-2">
-          {sortOperationsNewestFirst(
-            documents,
-            (document) => document.date,
-          ).map((document) => (
             <button
-              key={document.id}
-              className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-blue-50"
+              className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               type="button"
-              onClick={() => onOpenDocument(document.id)}
+              aria-label="Закрыть"
+              onClick={onClose}
             >
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-normal text-blue-700">
-                  {document.label}
-                </span>
-                <span className="mt-1 block text-xs text-slate-500">
-                  {getOverviewDocumentDateLabel(tab)}:{' '}
-                  {formatDate(document.date)}
-                </span>
-                {document.replacement ? (
-                  <span className="mt-1 inline-flex rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
-                    1 замена
-                  </span>
-                ) : null}
-              </span>
-              <span className="shrink-0 rounded-md bg-slate-50 px-2 py-1 text-xs tabular-nums text-slate-500">
-                {formatQuantity(document.quantity)} {unit}
-              </span>
+              <X size={16} />
             </button>
-          ))}
+          </div>
+          <div className="max-h-[460px] overflow-auto p-2">
+            {sortOperationsNewestFirst(
+              documents,
+              (document) => document.date,
+            ).map((document) => (
+              <button
+                key={document.id}
+                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-blue-50"
+                type="button"
+                onClick={() => onOpenDocument(document.id)}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-normal text-blue-700">
+                    {document.label}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    {getOverviewDocumentDateLabel(tab)}:{' '}
+                    {formatDate(document.date)}
+                  </span>
+                  {document.replacement ? (
+                    <span className="mt-1 inline-flex rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
+                      1 замена
+                    </span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 rounded-md bg-slate-50 px-2 py-1 text-xs tabular-nums text-slate-500">
+                  {formatQuantity(document.quantity)} {unit}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 
@@ -7549,40 +7514,42 @@ function RequestModal({
             editingRequest ? (
               <div className="flex items-center gap-2">
                 {deleteConfirmOpen ? (
-                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
-                    <div className="basis-full">
-                      <p>Удалить заявку {editingRequest.number}?</p>
-                      <p className="mt-1 text-xs leading-5">
-                        {receiptCount > 0
-                          ? `По заявке уже оформлены получения: ${receiptCount}. Они сохранятся во вкладке «Получение» как история удалённой заявки.`
-                          : 'Получений по заявке нет.'}
-                      </p>
+                  <EscapeLayer onEscape={() => setDeleteConfirmOpen(false)}>
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+                      <div className="basis-full">
+                        <p>Удалить заявку {editingRequest.number}?</p>
+                        <p className="mt-1 text-xs leading-5">
+                          {receiptCount > 0
+                            ? `По заявке уже оформлены получения: ${receiptCount}. Они сохранятся во вкладке «Получение» как история удалённой заявки.`
+                            : 'Получений по заявке нет.'}
+                        </p>
+                      </div>
+                      <Button
+                        className="h-8 border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-100"
+                        variant="outline"
+                        onClick={() => {
+                          try {
+                            onDelete(editingRequest.number)
+                          } catch (error) {
+                            setRequestSaveError(
+                              error instanceof Error
+                                ? error.message
+                                : 'Не удалось удалить заявку.',
+                            )
+                          }
+                        }}
+                      >
+                        Удалить
+                      </Button>
+                      <Button
+                        className="h-8 px-3 text-xs"
+                        variant="ghost"
+                        onClick={() => setDeleteConfirmOpen(false)}
+                      >
+                        Отмена
+                      </Button>
                     </div>
-                    <Button
-                      className="h-8 border-red-200 bg-white px-3 text-xs text-red-700 hover:bg-red-100"
-                      variant="outline"
-                      onClick={() => {
-                        try {
-                          onDelete(editingRequest.number)
-                        } catch (error) {
-                          setRequestSaveError(
-                            error instanceof Error
-                              ? error.message
-                              : 'Не удалось удалить заявку.',
-                          )
-                        }
-                      }}
-                    >
-                      Удалить
-                    </Button>
-                    <Button
-                      className="h-8 px-3 text-xs"
-                      variant="ghost"
-                      onClick={() => setDeleteConfirmOpen(false)}
-                    >
-                      Отмена
-                    </Button>
-                  </div>
+                  </EscapeLayer>
                 ) : (
                   <Button
                     className="border-red-200 bg-white text-red-700 hover:bg-red-50"
@@ -7604,6 +7571,16 @@ function RequestModal({
         />
       }
     >
+      <EscapeFilters
+        active={
+          step === 1 &&
+          (!!requestSearch || requestSearchOpen || requestListMode === 'filled')
+        }
+        onReset={() => {
+          closeRequestSearch()
+          if (requestListMode === 'filled') setRequestListMode('all')
+        }}
+      />
       <div
         className={`request-wizard-step-${step} grid gap-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col`}
       >
@@ -8112,217 +8089,224 @@ function RequestImportDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6">
-      <div className="flex h-[min(820px,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-950">
-              Импорт заявки из Excel
-            </h3>
-            <p className="mt-1 text-sm leading-6 text-slate-500">
-              Шаблон строится по выбранному шифру и типу материала. Серые
-              колонки служебные, заполняйте только количество и примечания.
-            </p>
-          </div>
-          <button
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            type="button"
-            aria-label="Закрыть"
-            onClick={onClose}
-          >
-            <X size={17} />
-          </button>
-        </div>
-
-        <div className="grid gap-4 overflow-auto px-5 py-5">
-          <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-            <div className="grid gap-2 text-sm text-slate-600">
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
-                  Шифр: {cipher || '-'}
-                </span>
-                <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
-                  Тип: {materialType || '-'}
-                </span>
-                <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
-                  Позиций в шаблоне: {scopeCount}
-                </span>
-              </div>
+    <EscapeLayer onEscape={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Импорт заявки из Excel"
+        className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6"
+      >
+        <div className="flex h-[min(820px,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-950">
+                Импорт заявки из Excel
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                Шаблон строится по выбранному шифру и типу материала. Серые
+                колонки служебные, заполняйте только количество и примечания.
+              </p>
             </div>
-            <input
-              ref={fileInputRef}
-              className="hidden"
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-
-                if (file) {
-                  onFileChange(file)
-                }
-
-                event.currentTarget.value = ''
-              }}
-            />
+            <button
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              type="button"
+              aria-label="Закрыть"
+              onClick={onClose}
+            >
+              <X size={17} />
+            </button>
           </div>
 
-          {draft ? (
-            <div className="grid gap-3">
-              <div className="grid gap-2 sm:grid-cols-4">
-                <RequestImportMetric
-                  label="Позиций в файле"
-                  value={draft.summary.total}
-                />
-                <RequestImportMetric
-                  label="Готово к импорту"
-                  value={draft.summary.ready}
-                />
-                <RequestImportMetric
-                  label="Пропущено"
-                  value={draft.summary.ignored}
-                />
-                <RequestImportMetric
-                  label="Ошибки"
-                  tone={draft.summary.errors > 0 ? 'danger' : 'default'}
-                  value={draft.summary.errors}
-                />
+          <div className="grid gap-4 overflow-auto px-5 py-5">
+            <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+              <div className="grid gap-2 text-sm text-slate-600">
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
+                    Шифр: {cipher || '-'}
+                  </span>
+                  <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
+                    Тип: {materialType || '-'}
+                  </span>
+                  <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
+                    Позиций в шаблоне: {scopeCount}
+                  </span>
+                </div>
               </div>
+              <input
+                ref={fileInputRef}
+                className="hidden"
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
 
-              <div className="min-w-0 rounded-xl border border-slate-200">
-                <OperationsGrid
-                  id={'request-import'}
-                  label={'Проверка импорта заявки'}
-                  rows={[
-                    ...draft.rows.map((row) => {
-                      return { row }
-                    }),
-                  ]}
-                  rowId={({ row }) =>
-                    `${row.row.rowNumber}-${row.row.projectLineId}`
+                  if (file) {
+                    onFileChange(file)
                   }
-                  columns={[
-                    {
-                      id: 'row',
-                      title: '№ в файле',
-                      value: ({ row }) => row.row.rowNumber,
-                      numeric: true,
-                      width: 120,
-                      render: ({ row }) => <>{row.row.rowNumber}</>,
-                    },
-                    {
-                      id: 'name',
-                      title: 'Наименование по проекту',
-                      value: ({ row }) =>
-                        row.line?.projectMaterialName ||
-                        row.row.projectMaterialName ||
-                        '',
-                      width: 400,
-                      render: ({ row }) => (
-                        <>
-                          {row.line?.projectMaterialName ||
-                            row.row.projectMaterialName ||
-                            '-'}
-                          {row.errors.length > 0 ? (
-                            <div className="mt-1 text-xs leading-5 text-red-600">
-                              {row.errors.join(' ')}
-                            </div>
-                          ) : null}
-                        </>
-                      ),
-                    },
-                    {
-                      id: 'quantity',
-                      title: 'Количество по заявке',
-                      value: ({ row }) => row.row.quantity,
-                      numeric: true,
-                      render: ({ row }) => (
-                        <>
-                          {row.row.quantity === null
-                            ? '-'
-                            : formatQuantity(row.row.quantity)}
-                        </>
-                      ),
-                    },
-                    {
-                      id: 'unit',
-                      title: 'Единица измерения проекта',
-                      value: ({ row }) => row.line?.unit || row.row.unit,
-                      render: ({ row }) => (
-                        <>{row.line?.unit || row.row.unit || '-'}</>
-                      ),
-                    },
-                    {
-                      id: 'status',
-                      title: 'Статус',
-                      value: ({ row }) =>
-                        row.status === 'ready'
-                          ? 'Готово'
-                          : row.status === 'error'
-                            ? 'Ошибка'
-                            : 'Пустая позиция',
-                      render: ({ row }) => (
-                        <>
-                          <span
-                            className={`inline-flex rounded-md px-2 py-1 text-xs ${
-                              row.status === 'ready'
-                                ? 'bg-emerald-50 text-emerald-700'
+
+                  event.currentTarget.value = ''
+                }}
+              />
+            </div>
+
+            {draft ? (
+              <div className="grid gap-3">
+                <div className="grid gap-2 sm:grid-cols-4">
+                  <RequestImportMetric
+                    label="Позиций в файле"
+                    value={draft.summary.total}
+                  />
+                  <RequestImportMetric
+                    label="Готово к импорту"
+                    value={draft.summary.ready}
+                  />
+                  <RequestImportMetric
+                    label="Пропущено"
+                    value={draft.summary.ignored}
+                  />
+                  <RequestImportMetric
+                    label="Ошибки"
+                    tone={draft.summary.errors > 0 ? 'danger' : 'default'}
+                    value={draft.summary.errors}
+                  />
+                </div>
+
+                <div className="min-w-0 rounded-xl border border-slate-200">
+                  <OperationsGrid
+                    id={'request-import'}
+                    label={'Проверка импорта заявки'}
+                    rows={[
+                      ...draft.rows.map((row) => {
+                        return { row }
+                      }),
+                    ]}
+                    rowId={({ row }) =>
+                      `${row.row.rowNumber}-${row.row.projectLineId}`
+                    }
+                    columns={[
+                      {
+                        id: 'row',
+                        title: '№ в файле',
+                        value: ({ row }) => row.row.rowNumber,
+                        numeric: true,
+                        width: 120,
+                        render: ({ row }) => <>{row.row.rowNumber}</>,
+                      },
+                      {
+                        id: 'name',
+                        title: 'Наименование по проекту',
+                        value: ({ row }) =>
+                          row.line?.projectMaterialName ||
+                          row.row.projectMaterialName ||
+                          '',
+                        width: 400,
+                        render: ({ row }) => (
+                          <>
+                            {row.line?.projectMaterialName ||
+                              row.row.projectMaterialName ||
+                              '-'}
+                            {row.errors.length > 0 ? (
+                              <div className="mt-1 text-xs leading-5 text-red-600">
+                                {row.errors.join(' ')}
+                              </div>
+                            ) : null}
+                          </>
+                        ),
+                      },
+                      {
+                        id: 'quantity',
+                        title: 'Количество по заявке',
+                        value: ({ row }) => row.row.quantity,
+                        numeric: true,
+                        render: ({ row }) => (
+                          <>
+                            {row.row.quantity === null
+                              ? '-'
+                              : formatQuantity(row.row.quantity)}
+                          </>
+                        ),
+                      },
+                      {
+                        id: 'unit',
+                        title: 'Единица измерения проекта',
+                        value: ({ row }) => row.line?.unit || row.row.unit,
+                        render: ({ row }) => (
+                          <>{row.line?.unit || row.row.unit || '-'}</>
+                        ),
+                      },
+                      {
+                        id: 'status',
+                        title: 'Статус',
+                        value: ({ row }) =>
+                          row.status === 'ready'
+                            ? 'Готово'
+                            : row.status === 'error'
+                              ? 'Ошибка'
+                              : 'Пустая позиция',
+                        render: ({ row }) => (
+                          <>
+                            <span
+                              className={`inline-flex rounded-md px-2 py-1 text-xs ${
+                                row.status === 'ready'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : row.status === 'error'
+                                    ? 'bg-red-50 text-red-700'
+                                    : 'bg-slate-100 text-slate-500'
+                              }`}
+                            >
+                              {row.status === 'ready'
+                                ? 'Готово'
                                 : row.status === 'error'
-                                  ? 'bg-red-50 text-red-700'
-                                  : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {row.status === 'ready'
-                              ? 'Готово'
-                              : row.status === 'error'
-                                ? 'Ошибка'
-                                : 'Пустая позиция'}
-                          </span>
-                        </>
-                      ),
-                    },
-                  ]}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="grid min-h-[320px] place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
-              <div className="max-w-xl">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm">
-                  <FileSpreadsheet size={24} />
+                                  ? 'Ошибка'
+                                  : 'Пустая позиция'}
+                            </span>
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
                 </div>
-                <div className="mt-4 text-base font-medium text-slate-950">
-                  Черновик импорта еще не создан
-                </div>
-
-                <Button
-                  className="mt-4"
-                  variant={templateDownloaded ? 'default' : 'outline'}
-                  onClick={
-                    templateDownloaded ? onChooseFile : handleDownloadTemplate
-                  }
-                >
-                  {templateDownloaded ? (
-                    <FileInput size={16} />
-                  ) : (
-                    <Download size={16} />
-                  )}
-                  {templateDownloaded ? 'Загрузить файл' : 'Скачать шаблон'}
-                </Button>
               </div>
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="grid min-h-[320px] place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
+                <div className="max-w-xl">
+                  <div className="mx-auto grid h-14 w-14 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm">
+                    <FileSpreadsheet size={24} />
+                  </div>
+                  <div className="mt-4 text-base font-medium text-slate-950">
+                    Черновик импорта еще не создан
+                  </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
-          <Button variant="outline" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button disabled={!canApply} onClick={onApply}>
-            Применить импорт
-          </Button>
+                  <Button
+                    className="mt-4"
+                    variant={templateDownloaded ? 'default' : 'outline'}
+                    onClick={
+                      templateDownloaded ? onChooseFile : handleDownloadTemplate
+                    }
+                  >
+                    {templateDownloaded ? (
+                      <FileInput size={16} />
+                    ) : (
+                      <Download size={16} />
+                    )}
+                    {templateDownloaded ? 'Загрузить файл' : 'Скачать шаблон'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+            <Button variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button disabled={!canApply} onClick={onApply}>
+              Применить импорт
+            </Button>
+          </div>
         </div>
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 
@@ -8361,80 +8345,89 @@ function OverRequestDialog({
   onClose: () => void
 }) {
   return (
-    <div className="fixed inset-0 z-[70] grid place-items-center bg-stone-950/35 px-4 py-6">
-      <div className="w-full max-w-3xl overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-stone-200 px-5 py-4">
-          <div>
-            <h3 className="text-lg font-semibold text-stone-950">
-              Остаток по проекту превышен
-            </h3>
-            <p className="mt-1 text-sm leading-6 text-stone-500">
-              Нельзя создать заявку с отрицательным остатком. Выберите, как
-              закрыть нехватку по этой позиции.
-            </p>
-          </div>
-          <button
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
-            type="button"
-            aria-label="Закрыть"
-            onClick={onClose}
-          >
-            <X size={17} />
-          </button>
-        </div>
-
-        <div className="grid gap-4 px-5 py-5">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <div className="text-sm font-medium text-amber-950">
-              {overRequest.line.projectMaterialName ||
-                overRequest.line.material ||
-                'Материал'}
+    <EscapeLayer onEscape={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Остаток по проекту превышен"
+        className="fixed inset-0 z-[70] grid place-items-center bg-stone-950/35 px-4 py-6"
+      >
+        <div className="w-full max-w-3xl overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl">
+          <div className="flex items-start justify-between gap-4 border-b border-stone-200 px-5 py-4">
+            <div>
+              <h3 className="text-lg font-semibold text-stone-950">
+                Остаток по проекту превышен
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-stone-500">
+                Нельзя создать заявку с отрицательным остатком. Выберите, как
+                закрыть нехватку по этой позиции.
+              </p>
             </div>
-            <div className="mt-2 grid gap-2 text-sm text-amber-900 sm:grid-cols-3">
-              <div>
-                Остаток:{' '}
-                <span className="font-semibold">
-                  {formatQuantity(overRequest.available)}{' '}
-                  {overRequest.line.unit}
-                </span>
-              </div>
-              <div>
-                Заявлено:{' '}
-                <span className="font-semibold">
-                  {formatQuantity(overRequest.quantity)} {overRequest.line.unit}
-                </span>
-              </div>
-              <div>
-                Не хватает:{' '}
-                <span className="font-semibold">
-                  {formatQuantity(overRequest.shortage)} {overRequest.line.unit}
-                </span>
-              </div>
-            </div>
+            <button
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              type="button"
+              aria-label="Закрыть"
+              onClick={onClose}
+            >
+              <X size={17} />
+            </button>
           </div>
 
-          <button
-            className="rounded-lg border border-stone-200 bg-white px-4 py-4 text-left transition-colors hover:border-blue-200 hover:bg-blue-50/50"
-            type="button"
-            onClick={onAdjustProjectQuantity}
-          >
-            <div className="text-sm font-semibold text-stone-950">
-              Изменить проектное количество
+          <div className="grid gap-4 px-5 py-5">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <div className="text-sm font-medium text-amber-950">
+                {overRequest.line.projectMaterialName ||
+                  overRequest.line.material ||
+                  'Материал'}
+              </div>
+              <div className="mt-2 grid gap-2 text-sm text-amber-900 sm:grid-cols-3">
+                <div>
+                  Остаток:{' '}
+                  <span className="font-semibold">
+                    {formatQuantity(overRequest.available)}{' '}
+                    {overRequest.line.unit}
+                  </span>
+                </div>
+                <div>
+                  Заявлено:{' '}
+                  <span className="font-semibold">
+                    {formatQuantity(overRequest.quantity)}{' '}
+                    {overRequest.line.unit}
+                  </span>
+                </div>
+                <div>
+                  Не хватает:{' '}
+                  <span className="font-semibold">
+                    {formatQuantity(overRequest.shortage)}{' '}
+                    {overRequest.line.unit}
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="mt-1 text-sm leading-6 text-stone-500">
-              Увеличить количество по шифру {overRequest.line.cipher} на{' '}
-              {formatQuantity(overRequest.shortage)} {overRequest.line.unit}.
-            </div>
-          </button>
 
-          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
-            Перенос материала между шифрами будет оформляться на этапе
-            получения, когда будет понятно фактическое поступление и возможная
-            замена.
+            <button
+              className="rounded-lg border border-stone-200 bg-white px-4 py-4 text-left transition-colors hover:border-blue-200 hover:bg-blue-50/50"
+              type="button"
+              onClick={onAdjustProjectQuantity}
+            >
+              <div className="text-sm font-semibold text-stone-950">
+                Изменить проектное количество
+              </div>
+              <div className="mt-1 text-sm leading-6 text-stone-500">
+                Увеличить количество по шифру {overRequest.line.cipher} на{' '}
+                {formatQuantity(overRequest.shortage)} {overRequest.line.unit}.
+              </div>
+            </button>
+
+            <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
+              Перенос материала между шифрами будет оформляться на этапе
+              получения, когда будет понятно фактическое поступление и возможная
+              замена.
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 
@@ -9516,12 +9509,8 @@ function ReceiptModal({
     let persisted = false
     try {
       scans.validate(reviewEntries, localDocuments, m15Records)
+      await scans.uploadRequired(reviewEntries, localDocuments, m15Records)
       if (!submitted.current) {
-        if (!scans.hasPending) {
-          onSubmit(reviewEntries, localDocuments, m15Records)
-          onSaved()
-          return
-        }
         // Flush the accounting state/effect before waiting for its save queue.
         flushSync(() => onSubmit(reviewEntries, localDocuments, m15Records))
         submitted.current = true
@@ -9580,24 +9569,35 @@ function ReceiptModal({
         )
       }
     >
+      <EscapeFilters
+        active={step === 1 && !!(receiptSearch || receiptMaterialTypeFilter)}
+        onReset={() => {
+          setReceiptSearch('')
+          setReceiptMaterialTypeFilter('')
+        }}
+      />
       <>
         {scans.dialog}
         {confirmDiscardScans && (
-          <div
-            role="alert"
-            className="mb-3 grid gap-2 rounded-lg bg-amber-50 p-3 text-sm"
-          >
-            <p>Выбранные, но ещё не загруженные сканы будут убраны из формы.</p>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setConfirmDiscardScans(false)}
-              >
-                Продолжить работу
-              </Button>
-              <Button onClick={onClose}>Закрыть без загрузки сканов</Button>
+          <EscapeLayer onEscape={() => setConfirmDiscardScans(false)}>
+            <div
+              role="alert"
+              className="mb-3 grid gap-2 rounded-lg bg-amber-50 p-3 text-sm"
+            >
+              <p>
+                Выбранные, но ещё не загруженные сканы будут убраны из формы.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmDiscardScans(false)}
+                >
+                  Продолжить работу
+                </Button>
+                <Button onClick={onClose}>Закрыть без загрузки сканов</Button>
+              </div>
             </div>
-          </div>
+          </EscapeLayer>
         )}
         <fieldset disabled={savingScans}>{scans.summary}</fieldset>
         {submitError && (
@@ -10438,387 +10438,368 @@ function ReceiptImportDialog({
   )
 
   return (
-    <div
-      className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6"
-      onKeyDownCapture={(event) => {
-        const grid = gridRef.current
-        if (
-          event.key === 'Escape' &&
-          grid &&
-          !grid.isDestroyed() &&
-          grid.getEditingCells().length > 0
-        ) {
-          event.preventDefault()
-          event.stopPropagation()
-          grid.stopEditing(true)
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          event.stopPropagation()
-          // AG Grid handles Escape in its editor; do not also close the import.
-          if (
-            !(
-              event.target instanceof Element &&
-              event.target.closest('[grid-id]')
-            )
-          )
-            onClose()
-        }
-      }}
-    >
-      <div className="flex h-[min(820px,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-950">
-              Импорт получения из Excel
-            </h3>
-          </div>
-          <button
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            type="button"
-            aria-label="Закрыть"
-            onClick={onClose}
-          >
-            <X size={17} />
-          </button>
-        </div>
-
-        <div className="grid gap-4 overflow-auto px-5 py-5">
-          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-            <div className="flex flex-wrap gap-2 text-sm text-slate-600">
-              <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
-                Область:{' '}
-                {requestNumber
-                  ? `заявка ${requestNumber}`
-                  : 'найденные позиции'}
-              </span>
-              <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
-                Позиций в шаблоне: {scopeCount}
-              </span>
+    <EscapeLayer onEscape={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Импорт получения из Excel"
+        className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 px-4 py-6"
+      >
+        <div className="flex h-[min(820px,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-950">
+                Импорт получения из Excel
+              </h3>
             </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button variant="outline" onClick={onDownloadTemplate}>
-                <Download size={16} /> Скачать шаблон
-              </Button>
-              <Button onClick={onChooseFile}>
-                <FileInput size={16} />
-                {draft ? 'Загрузить исправленный файл' : 'Загрузить файл'}
-              </Button>
-              <span className="break-all text-sm text-slate-600" role="status">
-                {loading ? 'Чтение файла…' : fileName}
-              </span>
-            </div>
-            {draft ? (
-              <p className="mt-2 text-sm leading-6 text-slate-500">
-                Новый файл заменит черновик и правки в таблице.
-              </p>
-            ) : null}
-            {fileNotice ? (
-              <p role="status" className="mt-2 text-sm text-amber-700">
-                {fileNotice}
-              </p>
-            ) : null}
-            {fileError ? (
-              <p role="alert" className="mt-2 text-sm text-red-600">
-                {fileError}
-              </p>
-            ) : null}
-            <input
-              ref={fileInputRef}
-              className="hidden"
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-
-                if (file) {
-                  const grid = gridRef.current
-                  if (grid && !grid.isDestroyed()) grid.stopEditing(true)
-                  onFileChange(file)
-                }
-
-                event.currentTarget.value = ''
-              }}
-            />
+            <button
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              type="button"
+              aria-label="Закрыть"
+              onClick={onClose}
+            >
+              <X size={17} />
+            </button>
           </div>
 
-          {draft ? (
-            <div className="grid gap-3">
-              <div className="grid gap-2 sm:grid-cols-4">
-                <RequestImportMetric
-                  label="Позиций в файле"
-                  value={draft.summary.total}
-                />
-                <RequestImportMetric
-                  label="Готово к импорту"
-                  value={draft.summary.ready}
-                />
-                <RequestImportMetric
-                  label="Пропущено"
-                  value={draft.summary.ignored}
-                />
-                <RequestImportMetric
-                  label="Ошибки"
-                  tone={draft.summary.errors > 0 ? 'danger' : 'default'}
-                  value={draft.summary.errors}
-                />
+          <div className="grid gap-4 overflow-auto px-5 py-5">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+              <div className="flex flex-wrap gap-2 text-sm text-slate-600">
+                <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
+                  Область:{' '}
+                  {requestNumber
+                    ? `заявка ${requestNumber}`
+                    : 'найденные позиции'}
+                </span>
+                <span className="rounded-md bg-white px-2.5 py-1 text-slate-700 ring-1 ring-slate-200">
+                  Позиций в шаблоне: {scopeCount}
+                </span>
               </div>
 
-              <div className="min-w-0 rounded-xl border border-slate-200">
-                <OperationsGrid
-                  id={'receipt-import'}
-                  label={'Проверка импорта получения'}
-                  rows={[
-                    ...draft.rows.map((row) => {
-                      return { row }
-                    }),
-                  ]}
-                  rowId={({ row }) =>
-                    `${row.row.rowNumber}-${row.row.requestId}`
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button variant="outline" onClick={onDownloadTemplate}>
+                  <Download size={16} /> Скачать шаблон
+                </Button>
+                <Button onClick={onChooseFile}>
+                  <FileInput size={16} />
+                  {draft ? 'Загрузить исправленный файл' : 'Загрузить файл'}
+                </Button>
+                <span
+                  className="break-all text-sm text-slate-600"
+                  role="status"
+                >
+                  {loading ? 'Чтение файла…' : fileName}
+                </span>
+              </div>
+              {draft ? (
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  Новый файл заменит черновик и правки в таблице.
+                </p>
+              ) : null}
+              {fileNotice ? (
+                <p role="status" className="mt-2 text-sm text-amber-700">
+                  {fileNotice}
+                </p>
+              ) : null}
+              {fileError ? (
+                <p role="alert" className="mt-2 text-sm text-red-600">
+                  {fileError}
+                </p>
+              ) : null}
+              <input
+                ref={fileInputRef}
+                className="hidden"
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+
+                  if (file) {
+                    const grid = gridRef.current
+                    if (grid && !grid.isDestroyed()) grid.stopEditing(true)
+                    onFileChange(file)
                   }
-                  onReady={(api) => {
-                    gridRef.current = api
-                  }}
-                  columns={[
-                    {
-                      id: 'row',
-                      title: '№ в файле',
-                      value: ({ row }) => row.row.rowNumber,
-                      numeric: true,
-                      width: 120,
-                      render: ({ row }) => <>{row.row.rowNumber}</>,
-                    },
-                    {
-                      id: 'name',
-                      title: 'Наименование по проекту',
-                      value: ({ row }) =>
-                        row.request?.projectMaterialName ||
-                        row.row.projectMaterialName ||
-                        '',
-                      width: 400,
-                      render: ({ row }) => (
-                        <>
-                          {row.request?.projectMaterialName ||
-                            row.row.projectMaterialName ||
-                            '-'}
-                          {row.errors.length > 0 ? (
-                            <div className="mt-1 text-xs leading-5 text-red-600">
-                              {row.errors.join(' ')}
-                            </div>
-                          ) : null}
-                        </>
-                      ),
-                    },
-                    {
-                      id: 'actualName',
-                      title: 'Материал',
-                      value: ({ row }) => row.row.actualName,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'actualName', value),
-                      width: 300,
-                      render: ({ row }) => <>{row.row.actualName || '-'}</>,
-                    },
-                    {
-                      id: 'quantity',
-                      title: 'Поступило',
-                      value: ({ row }) => row.row.quantity,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'quantity', value),
-                      validateEdit: (value) =>
-                        value.trim() && parseNullableNumber(value) === null
-                          ? 'Введите число, например 2,5.'
-                          : null,
-                      numeric: true,
-                      render: ({ row }) => (
-                        <>
-                          {row.row.quantity === null
-                            ? '-'
-                            : formatQuantity(row.row.quantity)}
-                        </>
-                      ),
-                    },
-                    {
-                      id: 'unit',
-                      title: 'Единица измерения проекта',
-                      value: ({ row }) =>
-                        row.request?.projectUnit || row.row.unit,
-                      render: ({ row }) => (
-                        <>{row.request?.projectUnit || row.row.unit || '-'}</>
-                      ),
-                    },
-                    {
-                      id: 'date',
-                      date: true,
-                      title: 'Дата поступления',
-                      value: ({ row }) =>
-                        row.status === 'ignored'
-                          ? row.row.date
-                          : row.draft.date,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'date', value),
-                      render: ({ row }) => (
-                        <>
-                          {row.status === 'ignored'
-                            ? '-'
-                            : formatDate(row.draft.date)}
-                        </>
-                      ),
-                    },
-                    ...(['appNumber', 'appDate'] as const).map((field) => ({
-                      id: field,
-                      date: field.endsWith('Date'),
-                      title: {
-                        appNumber: 'Номер АПП',
-                        appDate: 'Дата АПП',
-                        m15Number: 'Номер М-15',
-                        m15Date: 'Дата М-15',
-                      }[field],
-                      value: ({
-                        row,
-                      }: {
-                        row: MaterialReceiptImportDraftRow
-                      }) => row.row[field],
-                      onEdit: (
-                        { row }: { row: MaterialReceiptImportDraftRow },
-                        value: string,
-                      ) =>
-                        onEdit(
-                          row.row.rowNumber,
-                          field,
-                          field.endsWith('Date')
-                            ? (normalizeCalendarDate(value) ?? value)
-                            : value,
-                        ),
-                      render: ({
-                        row,
-                      }: {
-                        row: MaterialReceiptImportDraftRow
-                      }) => (
-                        <>
-                          {field.endsWith('Date')
-                            ? formatDate(row.row[field])
-                            : row.row[field] || '-'}
-                        </>
-                      ),
-                    })),
-                    {
-                      id: 'manufacturer',
-                      title: 'Завод-изготовитель',
-                      value: ({ row }) => row.row.manufacturer,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'manufacturer', value),
-                      render: ({ row }) => <>{row.row.manufacturer || '-'}</>,
-                    },
-                    {
-                      id: 'heatBatch',
-                      title: 'Партия плавки',
-                      value: ({ row }) => row.row.heatBatch,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'heatBatch', value),
-                      render: ({ row }) => <>{row.row.heatBatch || '-'}</>,
-                    },
-                    {
-                      id: 'note',
-                      title: 'Примечание',
-                      value: ({ row }) => row.row.note,
-                      onEdit: ({ row }, value) =>
-                        onEdit(row.row.rowNumber, 'note', value),
-                      render: ({ row }) => <>{row.row.note || '-'}</>,
-                    },
-                    ...(
-                      [
-                        ['factoryNumber', 'Заводской номер'],
-                        ['certificate', 'Паспорт / сертификат'],
-                        ['qualityDocument', 'Документ о качестве'],
-                        ['customerArvk', 'АРВК Заказчика'],
-                        [
-                          'technicalDecision',
-                          'Техническое решение (согласование замены)',
-                        ],
-                      ] as const
-                    ).map(([field, title]) => ({
-                      id: field,
-                      title,
-                      value: ({
-                        row,
-                      }: {
-                        row: MaterialReceiptImportDraftRow
-                      }) => row.row[field],
-                      onEdit: (
-                        { row }: { row: MaterialReceiptImportDraftRow },
-                        value: string,
-                      ) => onEdit(row.row.rowNumber, field, value),
-                    })),
-                    {
-                      id: 'status',
-                      title: 'Статус',
-                      value: ({ row }) =>
-                        row.status === 'ready'
-                          ? 'Готово'
-                          : row.status === 'error'
-                            ? 'Ошибка'
-                            : 'Пустая позиция',
-                      render: ({ row }) => (
-                        <>
-                          <span
-                            className={`inline-flex rounded-md px-2 py-1 text-xs ${
-                              row.status === 'ready'
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : row.status === 'error'
-                                  ? 'bg-red-50 text-red-700'
-                                  : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {row.status === 'ready'
-                              ? 'Готово'
-                              : row.status === 'error'
-                                ? 'Ошибка'
-                                : 'Пустая позиция'}
-                          </span>
-                        </>
-                      ),
-                    },
-                  ]}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="grid min-h-[320px] place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
-              <div className="max-w-xl">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm">
-                  <FileSpreadsheet size={24} />
-                </div>
-                <div className="mt-4 text-base font-medium text-slate-950">
-                  Черновик импорта еще не создан
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
-          <Button variant="outline" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button
-            disabled={!canApply}
-            onClick={() => {
-              const grid = gridRef.current
-              if (grid && !grid.isDestroyed()) {
-                grid.stopEditing()
-                if (grid.getEditingCells().length > 0) return
-              }
-              onApply()
-            }}
-          >
-            Применить импорт
-          </Button>
+                  event.currentTarget.value = ''
+                }}
+              />
+            </div>
+
+            {draft ? (
+              <div className="grid gap-3">
+                <div className="grid gap-2 sm:grid-cols-4">
+                  <RequestImportMetric
+                    label="Позиций в файле"
+                    value={draft.summary.total}
+                  />
+                  <RequestImportMetric
+                    label="Готово к импорту"
+                    value={draft.summary.ready}
+                  />
+                  <RequestImportMetric
+                    label="Пропущено"
+                    value={draft.summary.ignored}
+                  />
+                  <RequestImportMetric
+                    label="Ошибки"
+                    tone={draft.summary.errors > 0 ? 'danger' : 'default'}
+                    value={draft.summary.errors}
+                  />
+                </div>
+
+                <div className="min-w-0 rounded-xl border border-slate-200">
+                  <OperationsGrid
+                    id={'receipt-import'}
+                    label={'Проверка импорта получения'}
+                    rows={[
+                      ...draft.rows.map((row) => {
+                        return { row }
+                      }),
+                    ]}
+                    rowId={({ row }) =>
+                      `${row.row.rowNumber}-${row.row.requestId}`
+                    }
+                    onReady={(api) => {
+                      gridRef.current = api
+                    }}
+                    columns={[
+                      {
+                        id: 'row',
+                        title: '№ в файле',
+                        value: ({ row }) => row.row.rowNumber,
+                        numeric: true,
+                        width: 120,
+                        render: ({ row }) => <>{row.row.rowNumber}</>,
+                      },
+                      {
+                        id: 'name',
+                        title: 'Наименование по проекту',
+                        value: ({ row }) =>
+                          row.request?.projectMaterialName ||
+                          row.row.projectMaterialName ||
+                          '',
+                        width: 400,
+                        render: ({ row }) => (
+                          <>
+                            {row.request?.projectMaterialName ||
+                              row.row.projectMaterialName ||
+                              '-'}
+                            {row.errors.length > 0 ? (
+                              <div className="mt-1 text-xs leading-5 text-red-600">
+                                {row.errors.join(' ')}
+                              </div>
+                            ) : null}
+                          </>
+                        ),
+                      },
+                      {
+                        id: 'actualName',
+                        title: 'Материал',
+                        value: ({ row }) => row.row.actualName,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'actualName', value),
+                        width: 300,
+                        render: ({ row }) => <>{row.row.actualName || '-'}</>,
+                      },
+                      {
+                        id: 'quantity',
+                        title: 'Поступило',
+                        value: ({ row }) => row.row.quantity,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'quantity', value),
+                        validateEdit: (value) =>
+                          value.trim() && parseNullableNumber(value) === null
+                            ? 'Введите число, например 2,5.'
+                            : null,
+                        numeric: true,
+                        render: ({ row }) => (
+                          <>
+                            {row.row.quantity === null
+                              ? '-'
+                              : formatQuantity(row.row.quantity)}
+                          </>
+                        ),
+                      },
+                      {
+                        id: 'unit',
+                        title: 'Единица измерения проекта',
+                        value: ({ row }) =>
+                          row.request?.projectUnit || row.row.unit,
+                        render: ({ row }) => (
+                          <>{row.request?.projectUnit || row.row.unit || '-'}</>
+                        ),
+                      },
+                      {
+                        id: 'date',
+                        date: true,
+                        title: 'Дата поступления',
+                        value: ({ row }) =>
+                          row.status === 'ignored'
+                            ? row.row.date
+                            : row.draft.date,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'date', value),
+                        render: ({ row }) => (
+                          <>
+                            {row.status === 'ignored'
+                              ? '-'
+                              : formatDate(row.draft.date)}
+                          </>
+                        ),
+                      },
+                      ...(['appNumber', 'appDate'] as const).map((field) => ({
+                        id: field,
+                        date: field.endsWith('Date'),
+                        title: {
+                          appNumber: 'Номер АПП',
+                          appDate: 'Дата АПП',
+                          m15Number: 'Номер М-15',
+                          m15Date: 'Дата М-15',
+                        }[field],
+                        value: ({
+                          row,
+                        }: {
+                          row: MaterialReceiptImportDraftRow
+                        }) => row.row[field],
+                        onEdit: (
+                          { row }: { row: MaterialReceiptImportDraftRow },
+                          value: string,
+                        ) =>
+                          onEdit(
+                            row.row.rowNumber,
+                            field,
+                            field.endsWith('Date')
+                              ? (normalizeCalendarDate(value) ?? value)
+                              : value,
+                          ),
+                        render: ({
+                          row,
+                        }: {
+                          row: MaterialReceiptImportDraftRow
+                        }) => (
+                          <>
+                            {field.endsWith('Date')
+                              ? formatDate(row.row[field])
+                              : row.row[field] || '-'}
+                          </>
+                        ),
+                      })),
+                      {
+                        id: 'manufacturer',
+                        title: 'Завод-изготовитель',
+                        value: ({ row }) => row.row.manufacturer,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'manufacturer', value),
+                        render: ({ row }) => <>{row.row.manufacturer || '-'}</>,
+                      },
+                      {
+                        id: 'heatBatch',
+                        title: 'Партия плавки',
+                        value: ({ row }) => row.row.heatBatch,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'heatBatch', value),
+                        render: ({ row }) => <>{row.row.heatBatch || '-'}</>,
+                      },
+                      {
+                        id: 'note',
+                        title: 'Примечание',
+                        value: ({ row }) => row.row.note,
+                        onEdit: ({ row }, value) =>
+                          onEdit(row.row.rowNumber, 'note', value),
+                        render: ({ row }) => <>{row.row.note || '-'}</>,
+                      },
+                      ...(
+                        [
+                          ['factoryNumber', 'Заводской номер'],
+                          ['certificate', 'Паспорт / сертификат'],
+                          ['qualityDocument', 'Документ о качестве'],
+                          ['customerArvk', 'АРВК Заказчика'],
+                          [
+                            'technicalDecision',
+                            'Техническое решение (согласование замены)',
+                          ],
+                        ] as const
+                      ).map(([field, title]) => ({
+                        id: field,
+                        title,
+                        value: ({
+                          row,
+                        }: {
+                          row: MaterialReceiptImportDraftRow
+                        }) => row.row[field],
+                        onEdit: (
+                          { row }: { row: MaterialReceiptImportDraftRow },
+                          value: string,
+                        ) => onEdit(row.row.rowNumber, field, value),
+                      })),
+                      {
+                        id: 'status',
+                        title: 'Статус',
+                        value: ({ row }) =>
+                          row.status === 'ready'
+                            ? 'Готово'
+                            : row.status === 'error'
+                              ? 'Ошибка'
+                              : 'Пустая позиция',
+                        render: ({ row }) => (
+                          <>
+                            <span
+                              className={`inline-flex rounded-md px-2 py-1 text-xs ${
+                                row.status === 'ready'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : row.status === 'error'
+                                    ? 'bg-red-50 text-red-700'
+                                    : 'bg-slate-100 text-slate-500'
+                              }`}
+                            >
+                              {row.status === 'ready'
+                                ? 'Готово'
+                                : row.status === 'error'
+                                  ? 'Ошибка'
+                                  : 'Пустая позиция'}
+                            </span>
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="grid min-h-[320px] place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
+                <div className="max-w-xl">
+                  <div className="mx-auto grid h-14 w-14 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm">
+                    <FileSpreadsheet size={24} />
+                  </div>
+                  <div className="mt-4 text-base font-medium text-slate-950">
+                    Черновик импорта еще не создан
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+            <Button variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button
+              disabled={!canApply}
+              onClick={() => {
+                const grid = gridRef.current
+                if (grid && !grid.isDestroyed()) {
+                  grid.stopEditing()
+                  if (grid.getEditingCells().length > 0) return
+                }
+                onApply()
+              }}
+            >
+              Применить импорт
+            </Button>
+          </div>
         </div>
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 
@@ -11243,6 +11224,15 @@ function IssueModal({
         </div>
       }
     >
+      <EscapeFilters
+        active={!!(search || cipher || materialType || onlySelected)}
+        onReset={() => {
+          setSearch('')
+          setCipher('')
+          setMaterialType('')
+          setOnlySelected(false)
+        }}
+      />
       <div
         className={`issue-wizard-step-${step} grid gap-4`}
         onKeyDownCapture={(event) => {
@@ -13297,6 +13287,10 @@ function MaterialModal({
       title={editing ? 'Редактирование материала' : 'Материал проектной базы'}
       onClose={onClose}
     >
+      <EscapeFilters
+        active={isLookupVisible && !!combinationSearch}
+        onReset={() => setCombinationSearch('')}
+      />
       <div className="grid gap-4">
         {error ? (
           <div
@@ -14605,72 +14599,71 @@ function Modal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/30 px-4 py-6">
-      <div
-        className={`flex max-h-[calc(100vh-3rem)] w-full flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-xl ${
-          size === 'xl'
-            ? 'h-[min(900px,calc(100vh-2rem))] max-w-[1500px]'
-            : size === 'lg'
-              ? 'h-[min(820px,calc(100vh-3rem))] max-w-6xl'
-              : size === 'details'
-                ? 'max-w-4xl'
-                : 'max-w-xl'
-        }`}
-        ref={dialog}
-        tabIndex={-1}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && !event.defaultPrevented) {
-            event.preventDefault()
-            event.stopPropagation()
-            onClose()
-          }
-          if (event.key !== 'Tab') return
-          const fields = [
-            ...(dialog.current?.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
-            ) ?? []),
-          ].filter((item) => item.getClientRects().length)
-          const first = fields[0],
-            last = fields.at(-1)
-          if (
-            event.shiftKey &&
-            (document.activeElement === first ||
-              document.activeElement === dialog.current)
-          ) {
-            event.preventDefault()
-            last?.focus()
-          }
-          if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault()
-            first?.focus()
-          }
-        }}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-      >
-        {!hideHeader && (
-          <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-4">
-            <h2 className="text-lg font-semibold">{title}</h2>
-            <button
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
-              type="button"
-              aria-label="Закрыть"
-              onClick={onClose}
-            >
-              <X size={17} />
-            </button>
-          </div>
-        )}
-        {steps}
+    <EscapeLayer onEscape={onClose}>
+      <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/30 px-4 py-6">
         <div
-          className={bodyClassName ?? 'min-h-0 flex-1 overflow-auto px-5 py-5'}
+          className={`flex max-h-[calc(100vh-3rem)] w-full flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-xl ${
+            size === 'xl'
+              ? 'h-[min(900px,calc(100vh-2rem))] max-w-[1500px]'
+              : size === 'lg'
+                ? 'h-[min(820px,calc(100vh-3rem))] max-w-6xl'
+                : size === 'details'
+                  ? 'max-w-4xl'
+                  : 'max-w-xl'
+          }`}
+          ref={dialog}
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key !== 'Tab') return
+            const fields = [
+              ...(dialog.current?.querySelectorAll<HTMLElement>(
+                'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+              ) ?? []),
+            ].filter((item) => item.getClientRects().length)
+            const first = fields[0],
+              last = fields.at(-1)
+            if (
+              event.shiftKey &&
+              (document.activeElement === first ||
+                document.activeElement === dialog.current)
+            ) {
+              event.preventDefault()
+              last?.focus()
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault()
+              first?.focus()
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
         >
-          {children}
+          {!hideHeader && (
+            <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-4">
+              <h2 className="text-lg font-semibold">{title}</h2>
+              <button
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                type="button"
+                aria-label="Закрыть"
+                onClick={onClose}
+              >
+                <X size={17} />
+              </button>
+            </div>
+          )}
+          {steps}
+          <div
+            className={
+              bodyClassName ?? 'min-h-0 flex-1 overflow-auto px-5 py-5'
+            }
+          >
+            {children}
+          </div>
+          {footer}
         </div>
-        {footer}
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 

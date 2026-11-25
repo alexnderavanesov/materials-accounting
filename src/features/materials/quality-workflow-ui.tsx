@@ -1,3 +1,4 @@
+import { EscapeLayer, EscapeFilters } from '#/components/ui/escape-layer'
 import { formatCalendarDate } from './calendar-date'
 import { RowActionButton } from '#/components/ui/row-action'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -192,56 +193,58 @@ export function QualityModal({
     return () => previous?.focus()
   }, [])
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      ref={ref}
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !event.defaultPrevented) {
-          event.stopPropagation()
-          if (!busy) onClose()
-        }
-        if (event.key === 'Tab') {
-          const elements = ref.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]',
-          )
-          const first = elements?.[0],
-            last = elements?.[elements.length - 1]
-          if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault()
-            last?.focus()
-          }
-          if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault()
-            first?.focus()
-          }
-        }
+    <EscapeLayer
+      onEscape={() => {
+        if (!busy) onClose()
       }}
     >
-      <div className="flex max-h-[92vh] w-full max-w-6xl flex-col rounded-xl bg-white shadow-xl">
-        <div className="flex items-center border-b p-5">
-          <h2 className="mr-auto text-xl font-semibold">{title}</h2>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Закрыть документ"
-            disabled={busy}
-            onClick={onClose}
-          >
-            <X size={20} />
-          </Button>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        ref={ref}
+        className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4"
+        onKeyDown={(event) => {
+          if (event.key === 'Tab') {
+            const elements = ref.current?.querySelectorAll<HTMLElement>(
+              'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]',
+            )
+            const first = elements?.[0],
+              last = elements?.[elements.length - 1]
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault()
+              last?.focus()
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault()
+              first?.focus()
+            }
+          }
+        }}
+      >
+        <div className="flex max-h-[92vh] w-full max-w-6xl flex-col rounded-xl bg-white shadow-xl">
+          <div className="flex items-center border-b p-5">
+            <h2 className="mr-auto text-xl font-semibold">{title}</h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Закрыть документ"
+              disabled={busy}
+              onClick={onClose}
+            >
+              <X size={20} />
+            </Button>
+          </div>
+          {steps}
+          <div className="min-h-0 flex-1 overflow-auto p-5">{children}</div>
+          {footer && (
+            <footer className="flex shrink-0 items-center justify-end gap-3 border-t px-5 py-4">
+              {footer}
+            </footer>
+          )}
         </div>
-        {steps}
-        <div className="min-h-0 flex-1 overflow-auto p-5">{children}</div>
-        {footer && (
-          <footer className="flex shrink-0 items-center justify-end gap-3 border-t px-5 py-4">
-            {footer}
-          </footer>
-        )}
       </div>
-    </div>
+    </EscapeLayer>
   )
 }
 const fieldLabelClassName =
@@ -525,6 +528,7 @@ function InspectionMaterialPicker({
   )
   return (
     <QualityModal title="Материалы для ЗНИ" onClose={onClose}>
+      <EscapeFilters active={!!search} onReset={() => setSearch('')} />
       <div className="grid gap-4">
         <label className="grid gap-1 text-sm">
           АПП
@@ -706,6 +710,7 @@ function InspectionActPicker({
   )
   return (
     <QualityModal title="Создать АВК" onClose={onClose}>
+      <EscapeFilters active={!!search} onReset={() => setSearch('')} />
       <div className="grid gap-4">
         <p className="text-sm text-slate-600">Подписанные ЗНИ</p>
         {!!eligible.length && (

@@ -10,6 +10,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DocumentFilePreview } from './document-file-preview'
+import { WorkflowDialog } from './workflow-dialog'
 
 const file = {
   id: 'photo',
@@ -33,6 +34,47 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+})
+
+it('closes a native preview before its containing workflow on separate Escape presses', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response('photo', {
+          headers: { 'Content-Type': 'image/jpeg' },
+        }),
+    ),
+  )
+  function PreviewInWorkflow() {
+    const [open, setOpen] = useState(true)
+    const [preview, setPreview] = useState(true)
+    return (
+      open && (
+        <WorkflowDialog title="Вложения" onClose={() => setOpen(false)}>
+          <button>Открыть файл</button>
+          {preview && (
+            <DocumentFilePreview
+              file={file}
+              onClose={() => setPreview(false)}
+            />
+          )}
+        </WorkflowDialog>
+      )
+    )
+  }
+  render(<PreviewInWorkflow />)
+  await screen.findByRole('img', { name: file.name })
+  fireEvent.keyDown(
+    screen.getByRole('button', { name: 'Закрыть предпросмотр' }),
+    { key: 'Escape' },
+  )
+  expect(
+    screen.queryByRole('dialog', { name: `Предпросмотр: ${file.name}` }),
+  ).toBeNull()
+  expect(screen.getByRole('dialog', { name: 'Вложения' })).toBeTruthy()
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
 })
 
 it('shows preview failures, retains an explicit download and lets the user retry', async () => {
@@ -104,9 +146,9 @@ it('navigates a photo gallery by buttons and arrow keys while releasing previous
   expect(await screen.findByRole('img', { name: file.name })).toBeTruthy()
   expect(screen.getByText('1 из 2')).toBeTruthy()
   expect(
-    screen.getByRole('button', { name: 'Предыдущая фотография' }),
+    screen.getByRole('button', { name: 'Предыдущий файл' }),
   ).toHaveProperty('disabled', true)
-  fireEvent.click(screen.getByRole('button', { name: 'Следующая фотография' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Следующий файл' }))
   expect(await screen.findByRole('img', { name: 'Фото 2.jpg' })).toBeTruthy()
   expect(screen.getByText('2 из 2')).toBeTruthy()
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:photo')
@@ -114,9 +156,10 @@ it('navigates a photo gallery by buttons and arrow keys while releasing previous
     'download',
     'Фото 2.jpg',
   )
-  expect(
-    screen.getByRole('button', { name: 'Следующая фотография' }),
-  ).toHaveProperty('disabled', true)
+  expect(screen.getByRole('button', { name: 'Следующий файл' })).toHaveProperty(
+    'disabled',
+    true,
+  )
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
   expect(screen.getByText('2 из 2')).toBeTruthy()
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowLeft' })

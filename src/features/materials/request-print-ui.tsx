@@ -1,3 +1,4 @@
+import { EscapeLayer } from '#/components/ui/escape-layer'
 import { createPortal } from 'react-dom'
 import { readPrintBundle } from './print-output'
 import type { PrintBundle } from './print-output'
@@ -121,94 +122,95 @@ export function PdfPreview({
     }
   }, [pdf, excel])
   return createPortal(
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-black/40 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Предпросмотр PDF"
-        className="flex h-[calc(100dvh-2rem)] max-h-[1100px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-xl"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            event.stopPropagation()
-            onClose()
-          }
-          if (event.key === 'Tab') {
-            const controls = event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not([disabled]), a[href]',
-            )
-            const first = controls[0],
-              last = controls[controls.length - 1]
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault()
-              last?.focus()
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault()
-              first?.focus()
+    <EscapeLayer onEscape={onClose}>
+      <div className="fixed inset-0 z-[100] grid place-items-center bg-black/40 p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Предпросмотр PDF"
+          className="flex h-[calc(100dvh-2rem)] max-h-[1100px] w-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-xl"
+          onKeyDown={(event) => {
+            if (event.key === 'Tab') {
+              const controls =
+                event.currentTarget.querySelectorAll<HTMLElement>(
+                  'button:not([disabled]), a[href]',
+                )
+              const first = controls[0],
+                last = controls[controls.length - 1]
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault()
+                last?.focus()
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault()
+                first?.focus()
+              }
             }
-          }
-        }}
-      >
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <h2 className="mr-auto text-lg font-semibold">{name}</h2>
-          <Button
-            variant="outline"
-            disabled={!url}
-            onClick={() =>
-              download(url, `${name.replace(/[\\/:*?"<>|]/g, '-')}.pdf`)
-            }
-          >
-            <Download size={16} />
-            Скачать PDF
-          </Button>
-          {excel && (
+          }}
+        >
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="mr-auto text-lg font-semibold">{name}</h2>
             <Button
               variant="outline"
-              disabled={!excelUrl}
+              disabled={!url}
               onClick={() =>
-                download(excelUrl, `${name.replace(/[\\/:*?"<>|]/g, '-')}.xlsx`)
+                download(url, `${name.replace(/[\\/:*?"<>|]/g, '-')}.pdf`)
               }
             >
               <Download size={16} />
-              Скачать Excel
+              Скачать PDF
             </Button>
-          )}
-          {url && (
-            <a
-              href={url || undefined}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-medium"
+            {excel && (
+              <Button
+                variant="outline"
+                disabled={!excelUrl}
+                onClick={() =>
+                  download(
+                    excelUrl,
+                    `${name.replace(/[\\/:*?"<>|]/g, '-')}.xlsx`,
+                  )
+                }
+              >
+                <Download size={16} />
+                Скачать Excel
+              </Button>
+            )}
+            {url && (
+              <a
+                href={url || undefined}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-medium"
+              >
+                <Printer size={16} />
+                Открыть PDF для печати
+              </a>
+            )}
+            <Button
+              ref={close}
+              variant="ghost"
+              size="icon"
+              aria-label="Закрыть PDF"
+              onClick={onClose}
             >
-              <Printer size={16} />
-              Открыть PDF для печати
-            </a>
+              <X size={20} />
+            </Button>
+          </div>
+          {pdfError && (
+            <p
+              role="alert"
+              className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900"
+            >
+              {pdfError} Excel доступен для скачивания.
+            </p>
           )}
-          <Button
-            ref={close}
-            variant="ghost"
-            size="icon"
-            aria-label="Закрыть PDF"
-            onClick={onClose}
-          >
-            <X size={20} />
-          </Button>
+          {url ? (
+            <Suspense fallback={<p role="status">Загрузка просмотра PDF…</p>}>
+              <RequestPrintPreview url={url} />
+            </Suspense>
+          ) : null}
         </div>
-        {pdfError && (
-          <p
-            role="alert"
-            className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900"
-          >
-            {pdfError} Excel доступен для скачивания.
-          </p>
-        )}
-        {url ? (
-          <Suspense fallback={<p role="status">Загрузка просмотра PDF…</p>}>
-            <RequestPrintPreview url={url} />
-          </Suspense>
-        ) : null}
       </div>
-    </div>,
+    </EscapeLayer>,
     portalTarget ?? document.body,
   )
 }

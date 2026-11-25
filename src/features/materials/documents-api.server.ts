@@ -1,3 +1,7 @@
+import {
+  receiptDocumentSchema,
+  receiptDocumentLabel,
+} from './receipt-documents'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
@@ -22,6 +26,7 @@ import { printOutput } from './print-output.server'
 import type { WorkspaceSnapshot } from './workspace-snapshot'
 import type { DocumentTarget } from './document-registry'
 import {
+  requiredDocumentScanError,
   maxDocumentUploadBytes,
   maxDocumentUploadFiles,
 } from './document-file-limits'
@@ -76,6 +81,9 @@ const bodySchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('upload-files'),
+      draftDocument: receiptDocumentSchema
+        .extend({ lineIds: z.array(id).min(1).max(10000) })
+        .optional(),
       ...common,
       documentId: id.optional(),
       document: uploadDocumentSchema.optional(),
@@ -226,18 +234,50 @@ export function createDocumentsHandler(
           'Данные изменились. Обновите реестр и повторите действие.',
           409,
         )
-      if (body.action === 'remove')
+      if (body.action === 'remove') {
+        const file = manifest.files.find((entry) => entry.id === body.fileId)
+        const source = registry.documents.find(
+          (entry) => entry.id === file?.documentId,
+        )
+        if (
+          source?.kind === 'm15' ||
+          (source?.kind === 'app' &&
+            manifest.files.filter((entry) => entry.documentId === source.id)
+              .length <= 1)
+        )
+          throw new PrintError(
+            'Документ обязателен. Загрузите замену вместо удаления последнего скана.',
+          )
         return Response.json(
           await deps.files.remove(body.fileId, manifest.revision),
         )
+      }
       if (body.action === 'upload' || body.action === 'upload-files') {
         if (Boolean(body.documentId) === Boolean(body.document))
           throw new PrintError(
             'Выберите существующий документ или создайте новый.',
           )
-        let doc = body.document
-          ? { ...body.document, id: `manual:${randomUUID()}` }
-          : undefined
+        const draft =
+          body.action === 'upload-files' ? body.draftDocument : undefined
+        if (
+          draft &&
+          (body.document ||
+            body.documentId !== JSON.stringify(['receipt-document', draft.id]))
+        )
+          throw new PrintError('Неверная ссылка на документ получения.')
+        let doc =
+          draft &&
+          !registry.documents.some((entry) => entry.id === body.documentId)
+            ? {
+                id: body.documentId!,
+                kind: draft.kind,
+                label: receiptDocumentLabel(draft),
+                date: draft.date,
+                lineIds: draft.lineIds,
+              }
+            : body.document
+              ? { ...body.document, id: `manual:${randomUUID()}` }
+              : undefined
         if (doc) {
           const lineIds = new Set(
             registry.materials.flatMap((row) => row.lineIds),
@@ -252,6 +292,11 @@ export function createDocumentsHandler(
             (entry) => entry.id === body.documentId,
           )
           if (!existing) throw new PrintError('Документ не найден.', 404)
+          if (draft && draft.kind !== existing.kind)
+            throw new PrintError(
+              'Тип документа изменился. Обновите форму.',
+              409,
+            )
           // Retain the original's association if its source operation is later removed.
           const materials = new Set(existing.materialIds)
           doc = {
@@ -279,6 +324,21 @@ export function createDocumentsHandler(
               409,
             )
         }
+        if (doc.kind === 'm15') {
+          const error = requiredDocumentScanError('m15', uploads)
+          if (error) throw new PrintError(error)
+          const existingIds = manifest.files
+            .filter((file) => file.documentId === doc.id)
+            .map((file) => file.id)
+          const replacing =
+            body.action === 'upload-files'
+              ? new Set(body.replaceFileIds)
+              : new Set<string>()
+          if (existingIds.some((fileId) => !replacing.has(fileId)))
+            throw new PrintError(
+              'У М-15 может быть только один PDF-скан. Выберите замену существующего файла.',
+            )
+        }
         const files = uploads.map((file) => {
           if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64))
             throw new PrintError(`Файл повреждён: ${file.name}`)
@@ -293,6 +353,11 @@ export function createDocumentsHandler(
             document: doc,
             files,
             expectedRevision: manifest.revision,
+            // The picker sends the IDs it showed and an empty replacement list for “keep”.
+            keepDuplicates:
+              body.action === 'upload-files' &&
+              !!body.expectedFileIds?.length &&
+              body.replaceFileIds?.length === 0,
             replaceFileIds:
               body.action === 'upload-files' ? body.replaceFileIds : undefined,
           }),

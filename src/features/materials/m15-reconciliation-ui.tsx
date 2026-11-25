@@ -1,3 +1,5 @@
+import { requireUploadedDocument } from './document-scans'
+import { EscapeFilters } from '#/components/ui/escape-layer'
 import type { ScanSelection } from './document-scans'
 import { DateInput } from '#/components/ui/date-input'
 import { lazy, Suspense, useMemo, useRef, useState } from 'react'
@@ -23,13 +25,15 @@ import {
 import type { ReceiptDocument } from './receipt-documents'
 import { withM15Document } from './m15-document'
 import { M15Scans, uploadM15Scans } from './m15-scans'
-import { documentFileSelectionError } from './document-file-limits'
+import { m15FileSelectionError } from './document-file-limits'
 import {
   independentM15,
   buildM15Accounting,
+  buildM15CipherBalances,
   m15ProjectFactor,
 } from './m15-independent'
-import { m15Unit } from './m15-quantity'
+import type { M15CipherBalance } from './m15-independent'
+import { m15Remaining, m15Unit } from './m15-quantity'
 import { m15Precise, validateM15Reconciliation } from './m15-reconciliation'
 import type {
   M15Reconciliation,
@@ -39,6 +43,7 @@ import type {
 import { normalizeOperationSearch } from './operation-list-view'
 import { matchM15ProjectMaterials } from './m15-project-materials'
 import type { M15ProjectMaterial } from './m15-project-materials'
+import { M15CipherWarning } from './m15-cipher-warning'
 
 const ImportPanel = lazy(() => import('./m15-import-ui'))
 export function M15ReconciliationEditor({
@@ -93,15 +98,15 @@ export function M15ReconciliationEditor({
   const [step, setStep] = useState(0),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('')
-  const [busy, setBusy] = useState(false),
+  const [savingDraft, setSavingDraft] = useState(false),
     [saved, setSaved] = useState(false),
     [files, setFiles] = useState<File[]>([])
+  const busy = savingDraft
   const [scanPolicy, setScanPolicy] = useState<Omit<
     ScanSelection,
     'files'
   > | null>(null)
   const [scanRevision, setScanRevision] = useState(0),
-    [showScans, setShowScans] = useState(false),
     [importing, setImporting] = useState(false)
   const [query, setQuery] = useState('')
   const [detailLine, setDetailLine] = useState('')
@@ -116,7 +121,14 @@ export function M15ReconciliationEditor({
   const [editingMaterial, setEditingMaterial] = useState('')
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const saving = useRef(false)
-  const accounting = useMemo(() => buildM15Accounting(workspace), [workspace])
+  const approvedExcess = useRef<M15CipherBalance[]>([])
+  const [excessWarning, setExcessWarning] = useState<M15CipherBalance[] | null>(
+    null,
+  )
+  const accounting = useMemo(
+    () => buildM15Accounting(workspace, { excludeDocumentId: documentId }),
+    [workspace, documentId],
+  )
   const candidates = useMemo(() => {
     const result = new Map<string, M15ProjectMaterial>()
     for (const line of workspace.lines ?? [])
@@ -176,8 +188,13 @@ export function M15ReconciliationEditor({
     )
   }, [workspace.lines])
   const receivedQuantities = useMemo(
-    () => new Map(accounting.map((row) => [row.projectLineId, row.appUnits])),
-    [accounting],
+    () =>
+      new Map(
+        accounting
+          .filter((row) => row.cipher === draft.cipher)
+          .map((row) => [row.projectLineId, row.appUnits]),
+      ),
+    [accounting, draft.cipher],
   )
   const preparedDraft = useMemo(
     () => ({
@@ -185,6 +202,30 @@ export function M15ReconciliationEditor({
       lines: draft.lines.filter((line) => line.quantity !== 0),
     }),
     [draft],
+  )
+  const cipherBalances = useMemo(
+    () => buildM15CipherBalances(workspace, preparedDraft, accounting),
+    [workspace, preparedDraft, accounting],
+  )
+  const savedBalances = useMemo(
+    () => baseline && buildM15CipherBalances(workspace, baseline, []),
+    [workspace, baseline],
+  )
+  const increasedExcess = useMemo(
+    () =>
+      new Map(
+        [...cipherBalances].filter(([id, row]) => {
+          const savedQuantity =
+            baseline?.cipher === draft.cipher
+              ? savedBalances?.get(id)?.draft
+              : 0
+          return (
+            (row.excess ?? 0) > 0 &&
+            m15Remaining(row.draft ?? 0, savedQuantity ?? 0) > 0
+          )
+        }),
+      ),
+    [cipherBalances, savedBalances, baseline?.cipher, draft.cipher],
   )
   const requestMaterials = useMemo(() => {
     const materials = new Map<string, M15MaterialRow['requested']>()
@@ -211,6 +252,9 @@ export function M15ReconciliationEditor({
       line?: M15Line,
     ): M15MaterialRow => {
       const metadata = project ? projectMetadata.get(project.id) : undefined
+      const balance = cipherBalances.get(
+        project?.id ?? line?.projectLineId ?? '',
+      )
       return {
         id,
         lineId: line?.id,
@@ -227,6 +271,12 @@ export function M15ReconciliationEditor({
           ? (projectQuantities.get(project.id) ?? null)
           : null,
         projectUnit: String(metadata?.unit ?? ''),
+        documentedQuantity: balance?.documented ?? null,
+        cipherQuantity: balance?.planned ?? null,
+        cipherExcess:
+          balance && increasedExcess.has(balance.projectLineId)
+            ? balance.excess
+            : null,
         name: project?.name ?? line?.name ?? '',
         invoiceName: line?.name ?? project?.name ?? '',
         unit: line?.unit ?? project?.unit ?? '',
@@ -270,6 +320,8 @@ export function M15ReconciliationEditor({
     requestMaterials,
     projectQuantities,
     receivedQuantities,
+    cipherBalances,
+    increasedExcess,
   ])
   const filledRows = gridRows.filter(
     (row) => (parseProjectQuantity(row.quantity) ?? -1) !== 0,
@@ -388,17 +440,16 @@ export function M15ReconciliationEditor({
     }
   }
   async function save() {
-    if (saving.current) return
+    if (busy || saving.current || changedRemotely) return
     saving.current = true
-    setBusy(true)
+    setSavingDraft(true)
     setError('')
-    let dataSaved = saved
     try {
       if (files.length && !scanPolicy)
         throw new Error(
-          'Откройте сканы и выберите: заменить файлы или оставить несколько.',
+          'Дождитесь проверки скана М-15 или обновите список файлов.',
         )
-      const fileError = documentFileSelectionError(files)
+      const fileError = m15FileSelectionError(files)
       if (fileError) throw new Error(fileError)
       validateM15Reconciliation(
         preparedDraft,
@@ -407,6 +458,28 @@ export function M15ReconciliationEditor({
           newDocument && !saved ? documentDraft : undefined,
         ),
       )
+      const excessRows = [...increasedExcess.values()]
+      if (excessRows.length && !jsonEqual(excessRows, approvedExcess.current)) {
+        setExcessWarning(excessRows)
+        return
+      }
+      if (!embedded) {
+        if (files.length && scanPolicy) {
+          await uploadM15Scans(documentId, files, scanPolicy, {
+            ...documentDraft,
+            lineIds: [
+              ...new Set(
+                preparedDraft.lines
+                  .map((line) => line.projectLineId)
+                  .filter((id): id is string => !!id),
+              ),
+            ],
+          })
+          setFiles([])
+          setScanRevision((value) => value + 1)
+        }
+        await requireUploadedDocument(documentDraft)
+      }
       if (!saved || !jsonEqual(preparedDraft, baseline) || hasPendingSave?.()) {
         await onSave(
           preparedDraft,
@@ -417,12 +490,6 @@ export function M15ReconciliationEditor({
         setDraft(preparedDraft)
         setQuantityTexts({})
         setSaved(true)
-        dataSaved = true
-      }
-      if (files.length && scanPolicy) {
-        await uploadM15Scans(documentId, files, scanPolicy)
-        setFiles([])
-        setScanRevision((value) => value + 1)
       }
       setNotice(
         embedded ? 'М-15 добавлена в черновик получения.' : 'М-15 сохранена.',
@@ -431,11 +498,11 @@ export function M15ReconciliationEditor({
       onClose()
     } catch (cause) {
       setError(
-        `${dataSaved && files.length ? 'М-15 сохранена, сканы не загружены. Повторите сохранение. ' : ''}${cause instanceof Error ? cause.message : 'Не удалось сохранить М-15.'}`,
+        cause instanceof Error ? cause.message : 'Не удалось сохранить М-15.',
       )
     } finally {
       saving.current = false
-      setBusy(false)
+      setSavingDraft(false)
     }
   }
   const title =
@@ -450,7 +517,11 @@ export function M15ReconciliationEditor({
       busy={busy}
       onClose={onClose}
       step={step}
-      onStep={(next) => (next < step ? setStep(next) : validate(next))}
+      onStep={(next) => {
+        if (busy) return
+        if (next < step) setStep(next)
+        else validate(next)
+      }}
       footer={(close) => (
         <>
           {error && (
@@ -480,7 +551,7 @@ export function M15ReconciliationEditor({
               disabled={busy || importing || changedRemotely}
               onClick={() => void save()}
             >
-              {busy
+              {savingDraft
                 ? 'Сохранение…'
                 : embedded
                   ? 'Добавить в получение'
@@ -490,6 +561,15 @@ export function M15ReconciliationEditor({
         </>
       )}
     >
+      <EscapeFilters
+        active={
+          step === 1 && !importing && (!!query || searchOpen || filledOnly)
+        }
+        onReset={() => {
+          closeSearch()
+          setFilledOnly(false)
+        }}
+      />
       <fieldset
         disabled={busy}
         className={
@@ -910,28 +990,31 @@ export function M15ReconciliationEditor({
               ]}
             />
             {!embedded && (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() => setShowScans(!showScans)}
-                >
-                  Сканы М-15{files.length ? ` · ${files.length}` : ''}
-                </Button>
-                {showScans && (
-                  <M15Scans
-                    documentId={documentId}
-                    saved={!!existing || saved}
-                    revision={scanRevision}
-                    files={files}
-                    onChange={setFiles}
-                    policy={scanPolicy}
-                    onPolicyChange={setScanPolicy}
-                    disabled={busy}
-                  />
-                )}
-              </>
+              <M15Scans
+                documentId={documentId}
+                revision={scanRevision}
+                files={files}
+                onChange={setFiles}
+                onPolicyChange={setScanPolicy}
+                disabled={busy}
+              />
             )}
           </>
+        )}
+        {excessWarning && (
+          <M15CipherWarning
+            cipher={draft.cipher}
+            rows={excessWarning}
+            onClose={() => {
+              setExcessWarning(null)
+              setStep(1)
+            }}
+            onContinue={() => {
+              approvedExcess.current = excessWarning
+              setExcessWarning(null)
+              void save()
+            }}
+          />
         )}
       </fieldset>
     </WorkflowDialog>
