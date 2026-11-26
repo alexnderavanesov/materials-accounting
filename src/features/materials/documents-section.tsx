@@ -893,6 +893,15 @@ export function DocumentsSection({
                   onChange={setUploadFiles}
                   disabled={Boolean(busy)}
                 />
+                {singlePdf && !!uploadStored.length && !!uploadFiles.length && (
+                  <p
+                    role="status"
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                  >
+                    Ранее загруженный файл М-15 будет заменён новым PDF после
+                    прикрепления.
+                  </p>
+                )}
                 {!singlePdf &&
                   !!uploadStored.length &&
                   !!uploadFiles.length && (
