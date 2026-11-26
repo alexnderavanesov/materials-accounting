@@ -209,6 +209,34 @@ const receiptHeaderMap: Partial<
   примечание: 'note',
 }
 
+function projectImportField(header: string) {
+  return headerMap[
+    header
+      .trim()
+      .toLocaleLowerCase('ru')
+      .replace(/[.\s-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+  ]
+}
+
+// sheet_to_json otherwise turns Excel error cells into empty optional weights.
+function preserveUnitWeightErrors(sheet: XLSX.WorkSheet) {
+  if (!sheet['!ref']) return
+  const { s, e } = XLSX.utils.decode_range(sheet['!ref'])
+  for (let c = s.c; c <= e.c; c++) {
+    const column = XLSX.utils.encode_col(c)
+    const header = XLSX.utils.format_cell(sheet[`${column}${s.r + 1}`])
+    if (projectImportField(header) !== 'unitWeight') continue
+    for (let r = s.r + 1; r <= e.r; r++) {
+      const address = `${column}${r + 1}`
+      const cell: XLSX.CellObject | undefined = sheet[address]
+      if (cell?.t === 'e') {
+        sheet[address] = { t: 's', v: cell.w || 'Ошибка Excel' }
+      }
+    }
+  }
+}
+
 export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
   const workbook = XLSX.read(buffer, { type: 'array' })
   const sheetName = workbook.SheetNames[0]
@@ -219,6 +247,7 @@ export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
 
   const sheet = workbook.Sheets[sheetName]
   if (!sheet) throw new Error('Лист Excel не найден')
+  preserveUnitWeightErrors(sheet)
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',
   })
@@ -234,12 +263,7 @@ export function parseProjectMaterialsWorkbook(buffer: ArrayBuffer) {
     const cipherEntries: Array<[string, number]> = []
 
     for (const [rawHeader, value] of Object.entries(row)) {
-      const normalizedHeader = rawHeader
-        .trim()
-        .toLocaleLowerCase('ru')
-        .replace(/[.\s-]+/g, '_')
-        .replace(/^_+|_+$/g, '')
-      const field = headerMap[normalizedHeader]
+      const field = projectImportField(rawHeader)
 
       if (field === 'quantity') {
         parsed.quantity = value as string | number

@@ -29,6 +29,29 @@ function workbookFromRows(rows: Array<Record<string, string | number>>) {
 }
 
 describe('materials Excel import', () => {
+  it('distinguishes a formula error in the unit weight column from a blank weight', () => {
+    const workbook = XLSX.utils.book_new()
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Наименование по проекту', 'Ед. изм.', 'Вес ед.', 'ТК1', 'ТК2'],
+      ['Труба', 'м', null, 2, 4],
+      ['Отвод', 'шт', null, 3],
+    ])
+    sheet.C2 = { t: 'e', v: 7, f: '1/0' }
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Материалы')
+    const draft = validateImportDraft(
+      parseProjectMaterialsWorkbook(
+        XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }),
+      ),
+    )
+    expect(draft.summary).toMatchObject({ validRows: 1, errorRows: 2 })
+    for (const row of draft.rows.slice(0, 2)) {
+      expect(row.errors.join(' ')).toContain(
+        'Некорректная масса единицы «#DIV/0!»',
+      )
+    }
+    expect(draft.rows[2]).toMatchObject({ unitWeight: null, errors: [] })
+  })
+
   it('imports a filled template with explicit cipher and quantity when no ciphers are configured', async () => {
     const buffer = await createProjectMaterialsTemplateWorkbook(
       [],

@@ -263,6 +263,12 @@ export function normalizeImportRow(
     errors.push('Количество по шифру должно быть больше 0')
   }
 
+  if (unitWeight !== null && (!Number.isFinite(unitWeight) || unitWeight < 0)) {
+    errors.push(
+      `Некорректная масса единицы «${row.unitWeight}». Введите число не меньше нуля или оставьте ячейку пустой.`,
+    )
+  }
+
   const conversionError = getAlternativeConversionError(
     normalized.alternativeUnit ?? '',
     normalized.alternativeUnitFactor,

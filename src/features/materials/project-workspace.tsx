@@ -34,11 +34,7 @@ import { useProjectEditDraft } from './use-project-edit-draft'
 import { isReceiptOverageApproved } from './receipt-overage'
 import type { ReceiptOverageApproval } from './receipt-overage'
 import { ProjectEditReview } from './project-edit-review'
-import {
-  importProjectDraft,
-  projectDraftChanges,
-  updateProjectFields,
-} from './project-edit-draft'
+import { projectDraftChanges, updateProjectFields } from './project-edit-draft'
 import type { ProjectEditableField } from './project-edit-draft'
 import {
   ProjectAccountingContext,
@@ -1938,18 +1934,7 @@ function ProjectWorkspaceContent({
               ]),
             ) as ImportRowInput,
         )
-      projectEditor.update(
-        (current) =>
-          importProjectDraft(
-            {
-              baseline:
-                projectEditor.read()?.baseline ?? projectAccountingWorkspace,
-              lines: current,
-            },
-            rows,
-            projectImportMode,
-          ).lines,
-      )
+      projectEditor.importRows(rows, projectImportMode)
       setMaterialImportOpen(false)
       setMaterialImportDraft(null)
       setSelectedCombinationKey(null)
@@ -13644,10 +13629,15 @@ function MaterialImportModal({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [fileVersion, setFileVersion] = useState(0)
+  const [onlyErrors, setOnlyErrors] = useState(true)
+  const hasErrors = (draft?.summary.errorRows ?? 0) > 0
+  const showOnlyErrors = hasErrors && onlyErrors
   const pagination = useOperationPagination(
     'material-import',
-    draft?.rows ?? [],
-    String(fileVersion),
+    (showOnlyErrors
+      ? draft?.rows.filter((entry) => entry.errors.length > 0)
+      : draft?.rows) ?? [],
+    `${fileVersion}:${showOnlyErrors}`,
   )
   const previews = useMemo(
     () =>
@@ -13729,6 +13719,7 @@ function MaterialImportModal({
               const file = event.target.files?.[0]
               if (file) {
                 setFileVersion((current) => current + 1)
+                setOnlyErrors(true)
                 onImportFile(file)
                 event.currentTarget.value = ''
               }
@@ -13822,10 +13813,20 @@ function MaterialImportModal({
         </aside>
 
         <section className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden rounded-md border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
             <div className="text-sm font-medium text-slate-900">
               Проверка перед импортом
             </div>
+            {hasErrors && (
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={onlyErrors}
+                  onChange={(event) => setOnlyErrors(event.target.checked)}
+                />
+                Только позиции с ошибками
+              </label>
+            )}
           </div>
 
           {draft ? (
@@ -13834,11 +13835,11 @@ function MaterialImportModal({
                 ref={pagination.containerRef}
                 className="min-h-0 flex-1 overflow-auto"
               >
-                {pagination.items.map((entry, index) => (
+                {pagination.items.map((entry) => (
                   <ImportDraftRowCard
                     key={`${entry.row.rowNumber}-${entry.identityKey}-${entry.row.cipher}`}
                     entry={entry}
-                    preview={previews[pagination.start - 1 + index]!}
+                    preview={previews[entry.row.rowNumber - 1]!}
                   />
                 ))}
               </div>
@@ -14882,7 +14883,7 @@ function clearMissingReferenceErrors(
 ): MaterialImportDraft {
   const rows = draft.rows.map((entry) => ({
     ...entry,
-    errors: entry.errors.filter((error) => !error.includes('настройках')),
+    errors: entry.row.errors,
   }))
 
   return {
@@ -14913,8 +14914,8 @@ function buildMaterialImportSummary(
       (entry) => entry.errors.length === 0 && !entry.isExistingCombination,
     ).length,
     totalRows: rows.length,
-    unknownReferenceRows: rows.filter((entry) =>
-      entry.errors.some((error) => error.includes('настройках')),
+    unknownReferenceRows: rows.filter(
+      (entry) => entry.errors.length > entry.row.errors.length,
     ).length,
     validRows: rows.filter((entry) => entry.errors.length === 0).length,
   }

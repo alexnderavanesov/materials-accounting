@@ -1861,6 +1861,134 @@ it('exports the filtered view from the Excel menu while the full export keeps ev
 })
 
 describe('material import change preview', () => {
+  it('saves a first Excel import as the original composition without a change reason', async () => {
+    const workspace = base()
+    workspace.lines = []
+    workspace.configuredAlloys = ['Сталь']
+    mount(workspace)
+    const dialog = openImport()
+    upload(
+      dialog,
+      Array.from({ length: 2 }, (_, index) => ({
+        'Наименование по проекту': `Материал ${index + 1}`,
+        Количество: index + 1,
+      })),
+    )
+    await within(dialog).findByRole('group', {
+      name: 'Позиция 1: Материал 1, шифр ТЕСТ',
+    })
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Перейти к изменениям' }),
+    )
+    const review = within(
+      await screen.findByRole('dialog', { name: 'Сохранить исходный состав' }),
+    )
+    expect(review.queryByRole('radio')).toBeNull()
+    expect(review.queryByLabelText('Основание / причина')).toBeNull()
+    fireEvent.click(
+      review.getByRole('button', { name: 'Показать последствия' }),
+    )
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+    fireEvent.click(
+      review.getByRole('button', { name: 'Сохранить исходный состав' }),
+    )
+    await waitFor(() =>
+      expect(saveProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1),
+    )
+    const saved = lastSaved()
+    expect(saved.lines).toHaveLength(2)
+    expect(saved.projectChanges).toHaveLength(1)
+    const initial = saved.projectChanges![0]!
+    expect(initial).toMatchObject({
+      kind: 'baseline',
+      cipher: 'ТЕСТ',
+      previousId: null,
+      number: '',
+    })
+    expect(initial.items.map((item) => item.after.id)).toEqual(
+      saved.lines.map((line) => line.id),
+    )
+    expect(initial.items.at(-1)?.after.plannedQuantity).toBe(2)
+    fireEvent.click(screen.getByRole('button', { name: 'История изменений' }))
+    const history = within(
+      screen.getByRole('dialog', { name: 'История изменений' }),
+    )
+    expect(history.getByText(/^Исходный состав/)).toBeTruthy()
+  })
+
+  it('opens on invalid weights across pages and counts blank and numeric weights as ready', async () => {
+    mount()
+    const dialog = openImport()
+    const preview = within(dialog)
+    const apply = preview.getByRole<HTMLButtonElement>('button', {
+      name: 'Перейти к изменениям',
+    })
+    const weights = [
+      ...Array<string>(23).fill(''),
+      '  ',
+      0,
+      '0,95',
+      'нет данных в настройках',
+      -1,
+      '1e999',
+    ]
+    const rows = weights.map((weight, index) => ({
+      'Наименование по проекту': `Материал ${index + 1}`,
+      Количество: 2,
+      'Масса единицы': weight,
+    }))
+    upload(dialog, rows)
+    const filter = await preview.findByRole<HTMLInputElement>('checkbox', {
+      name: 'Только позиции с ошибками',
+    })
+    expect(filter.checked).toBe(true)
+    expect(
+      preview.queryByRole('button', { name: 'Добавить в настройки' }),
+    ).toBeNull()
+    expect(preview.getAllByRole('group', { name: /^Позиция / })).toHaveLength(3)
+    for (const position of [27, 28, 29]) {
+      const card = within(
+        preview.getByRole('group', {
+          name: `Позиция ${position}: Материал ${position}, шифр ТЕСТ`,
+        }),
+      )
+      expect(card.getByText('Нужно исправить')).toBeTruthy()
+      expect(
+        card.getByText(/Некорректная масса единицы/).textContent,
+      ).toContain(`«${weights[position - 1]}»`)
+    }
+    expect(preview.getByText('Готово').nextElementSibling?.textContent).toBe(
+      '26',
+    )
+    expect(preview.getByText('Ошибки').nextElementSibling?.textContent).toBe(
+      '3',
+    )
+    expect(apply.disabled).toBe(true)
+    fireEvent.click(filter)
+    const first = preview.getByRole('group', {
+      name: 'Позиция 1: Материал 1, шифр ТЕСТ',
+    })
+    expect(within(first).getByText('не указана')).toBeTruthy()
+
+    upload(
+      dialog,
+      rows.map((row, index) =>
+        index < 26 ? row : { ...row, 'Масса единицы': '' },
+      ),
+    )
+    await waitFor(() => expect(apply.disabled).toBe(false))
+    expect(preview.getByText('Готово').nextElementSibling?.textContent).toBe(
+      '29',
+    )
+    expect(preview.getByText('Ошибки').nextElementSibling?.textContent).toBe(
+      '0',
+    )
+    expect(
+      preview.queryByRole('checkbox', { name: 'Только позиции с ошибками' }),
+    ).toBeNull()
+    expect(saveProjectWorkspaceSnapshot).not.toHaveBeenCalled()
+  })
+
   it('paginates large previews while applying all rows, including rows outside the current page', async () => {
     mount()
     const dialog = openImport()
@@ -2038,6 +2166,16 @@ describe('material import change preview', () => {
     expect(
       lastSaved().lines.find((line) => line.cipher === 'НОВЫЙ'),
     ).toMatchObject({ plannedQuantity: 7 })
+    expect(
+      lastSaved().projectChanges?.filter((change) => change.cipher === 'НОВЫЙ'),
+    ).toMatchObject([
+      {
+        kind: 'baseline',
+        previousId: null,
+        number: '',
+        items: [{ after: { plannedQuantity: 7 } }],
+      },
+    ])
   })
 
   it('identifies the final repeated row, refreshes the preview for another file and cancels without saving', async () => {

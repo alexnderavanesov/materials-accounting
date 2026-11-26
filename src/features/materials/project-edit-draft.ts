@@ -9,7 +9,7 @@ import {
   projectPosition,
 } from './project-changes'
 import type { ProjectChangeWorkspace } from './project-changes'
-import type { ProjectPosition } from './project-change-types'
+import type { ProjectChange, ProjectPosition } from './project-change-types'
 import type { ImportRowInput, SubobjectMaterialMetric } from './types'
 import { jsonEqual } from './workspace-protocol'
 import { parseProjectQuantity } from './project-grid-state'
@@ -20,9 +20,10 @@ export type ProjectEditableField = (typeof projectMatrixColumns)[number]['key']
 export type ProjectEditDraft = {
   baseline: ProjectChangeWorkspace
   lines: SubobjectMaterialMetric[]
+  importedScopes?: ReadonlySet<string>
 }
 export type ProjectEditMetadata = {
-  kind: 'revision' | 'correction'
+  kind: ProjectChange['kind']
   date: string
   reason: string
   author: string
@@ -30,25 +31,30 @@ export type ProjectEditMetadata = {
   replacements: Record<string, string>
 }
 export function projectEditMetadataErrors(
-  draft: ProjectEditDraft,
+  scopes: ReturnType<typeof projectDraftScopes>,
   metadata: Pick<ProjectEditMetadata, 'date' | 'reason' | 'numbers'> & {
     kind: ProjectEditMetadata['kind'] | ''
   },
 ) {
+  const changedScopes = scopes.filter((scope) => !scope.initialImport)
   return {
-    kind: metadata.kind ? '' : 'Выберите «Ошибка» или «ИЗМ».',
+    kind:
+      changedScopes.length && (!metadata.kind || metadata.kind === 'baseline')
+        ? 'Выберите «Ошибка» или «ИЗМ».'
+        : '',
     date:
       /^\d{4}-\d{2}-\d{2}$/.test(metadata.date) &&
       normalizeCalendarDate(metadata.date) === metadata.date
         ? ''
         : 'Укажите корректную дату.',
-    reason: metadata.reason.trim()
-      ? ''
-      : metadata.kind === 'correction'
-        ? 'Укажите причину исправления.'
-        : 'Укажите основание изменения.',
+    reason:
+      !changedScopes.length || metadata.reason.trim()
+        ? ''
+        : metadata.kind === 'correction'
+          ? 'Укажите причину исправления.'
+          : 'Укажите основание изменения.',
     numbers: Object.fromEntries(
-      projectDraftScopes(draft)
+      changedScopes
         .filter(
           (scope) =>
             metadata.kind === 'revision' &&
@@ -129,33 +135,43 @@ export function projectDraftChanges(draft: ProjectEditDraft) {
       : [{ before: before ?? null, after, fields }]
   })
 }
-export function projectDraftScopes(draft: ProjectEditDraft) {
+export function projectDraftScopes(
+  draft: ProjectEditDraft,
+  changes = projectDraftChanges(draft),
+) {
+  const initialImports = new Set(draft.importedScopes)
+  if (initialImports.size) {
+    for (const line of draft.baseline.lines)
+      initialImports.delete(cipherKey(line.project, line.cipher))
+    for (const change of draft.baseline.projectChanges ?? [])
+      initialImports.delete(cipherKey(change.project, change.cipher))
+  }
   return [
     ...new Map(
-      projectDraftChanges(draft).map(({ after }) => [
-        cipherKey(after.project, after.cipher),
-        {
-          key: cipherKey(after.project, after.cipher),
-          project: after.project,
-          cipher: after.cipher,
-        },
-      ]),
+      changes.map(({ after: { project, cipher } }) => {
+        const key = cipherKey(project, cipher)
+        return [
+          key,
+          { key, project, cipher, initialImport: initialImports.has(key) },
+        ] as const
+      }),
     ).values(),
   ]
 }
-/** The same staged positions become corrections or replacements only after the user selects the reason. */
 export function prepareProjectDraft(
   draft: ProjectEditDraft,
   metadata: ProjectEditMetadata,
 ) {
-  const errors = projectEditMetadataErrors(draft, metadata)
+  const changes = projectDraftChanges(draft)
+  const scopes = projectDraftScopes(draft, changes)
+  const errors = projectEditMetadataErrors(scopes, metadata)
   const metadataError =
     errors.kind ||
     errors.date ||
     errors.reason ||
     Object.values(errors.numbers)[0]
   if (metadataError) throw new Error(metadataError)
-  for (const { before, after, fields } of projectDraftChanges(draft)) {
+  for (const { before, after, fields } of changes) {
     if (
       !before ||
       fields.has('alternativeUnit') ||
@@ -168,7 +184,6 @@ export function prepareProjectDraft(
       if (error) throw new Error(`${after.projectMaterialName}: ${error}`)
     }
   }
-  const scopes = projectDraftScopes(draft)
   if (!scopes.length) throw new Error('Нет изменений для сохранения.')
   const originals = new Map(
     draft.baseline.lines.map((line) => [line.id, projectPosition(line)]),
@@ -183,6 +198,7 @@ export function prepareProjectDraft(
   let next = draft.baseline
   const usedReplacements = new Set<string>()
   for (const scope of scopes) {
+    const kind = scope.initialImport ? 'baseline' : metadata.kind
     const positions = new Map(
       draft.lines
         .filter((line) => cipherKey(line.project, line.cipher) === scope.key)
@@ -205,7 +221,7 @@ export function prepareProjectDraft(
           'Одна исходная позиция не может быть связана с несколькими новыми строками в этом сохранении.',
         )
       usedReplacements.add(sourceId)
-      if (metadata.kind === 'correction') {
+      if (kind === 'correction') {
         if (source.plannedQuantity > 0)
           throw new Error(
             'Для исправления характеристики обнулите старую строку. Частичную замену оформляйте как ИЗМ.',
@@ -220,7 +236,7 @@ export function prepareProjectDraft(
         replacements[id] = sourceId
       }
     }
-    if (metadata.kind === 'revision')
+    if (kind === 'revision')
       for (const [id, after] of [...positions]) {
         const before = originals.get(id)
         if (
@@ -237,13 +253,14 @@ export function prepareProjectDraft(
     next = prepareProjectChange(next, {
       project: scope.project,
       cipher: scope.cipher,
-      kind: metadata.kind,
+      kind,
       number:
-        metadata.kind === 'revision'
-          ? (metadata.numbers[scope.key]?.trim() ?? '')
-          : '',
+        kind === 'revision' ? (metadata.numbers[scope.key]?.trim() ?? '') : '',
       date: metadata.date,
-      reason: metadata.reason,
+      reason:
+        kind === 'baseline'
+          ? 'Первичная загрузка проектной базы'
+          : metadata.reason,
       author: metadata.author,
       positions: [...positions.values()],
       replacements,
@@ -268,6 +285,7 @@ export function importProjectDraft(
     groups.set(cipher, entries)
   }
   let lines = draft.lines
+  const importedScopes = new Set(draft.importedScopes)
   for (const [cipher, entries] of groups) {
     const current = lines.filter((line) => line.cipher === cipher)
     const projects = new Set(current.map((line) => line.project))
@@ -277,6 +295,7 @@ export function importProjectDraft(
       )
     const project =
       current[0]?.project ?? (entries[0]!.project?.trim() || 'Проектная база')
+    importedScopes.add(cipherKey(project, cipher))
     const imported = importProjectRevision(
       current.map(projectPosition),
       entries,
@@ -302,7 +321,7 @@ export function importProjectDraft(
       }),
     ]
   }
-  return { ...draft, lines }
+  return { ...draft, lines, importedScopes }
 }
 
 /** Keep local edits when unrelated operations change; never overwrite a concurrently edited field. */
@@ -348,5 +367,5 @@ export function refreshProjectDraft(
       ...(fields.has('materialType') ? { category: after.category } : {}),
     })
   }
-  return { baseline: workspace, lines: [...latest.values()] }
+  return { ...draft, baseline: workspace, lines: [...latest.values()] }
 }

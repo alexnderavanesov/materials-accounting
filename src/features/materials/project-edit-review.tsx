@@ -73,7 +73,7 @@ export function ProjectEditReview({
   onSourceQuantity: (id: string, quantity: number) => void
 }) {
   const form = useRef<HTMLFormElement>(null)
-  const [kind, setKind] = useState<'revision' | 'correction' | ''>('')
+  const [selectedKind, setKind] = useState<'revision' | 'correction' | ''>('')
   const [date, setDate] = useState(localToday),
     [reason, setReason] = useState('')
   const [numbers, setNumbers] = useState<Record<string, string>>({})
@@ -89,8 +89,15 @@ export function ProjectEditReview({
   const [page, setPage] = useState(0),
     [impactPage, setImpactPage] = useState(0)
   const changes = useMemo(() => projectDraftChanges(draft), [draft])
-  const scopes = useMemo(() => projectDraftScopes(draft), [draft])
-  const errors = projectEditMetadataErrors(draft, {
+  const scopes = useMemo(
+    () => projectDraftScopes(draft, changes),
+    [draft, changes],
+  )
+  const changedScopes = scopes.filter((scope) => !scope.initialImport)
+  const initialScopes = scopes.filter((scope) => scope.initialImport)
+  const onlyBaseline = initialScopes.length > 0 && !changedScopes.length
+  const kind = onlyBaseline ? 'baseline' : selectedKind
+  const errors = projectEditMetadataErrors(scopes, {
     kind,
     date,
     reason,
@@ -110,11 +117,15 @@ export function ProjectEditReview({
   )
   const affected = new Set(
     preview?.projectChanges
-      ?.filter(
-        (change) =>
-          change.kind !== 'baseline' && !previousChanges.has(change.id),
-      )
-      .flatMap((change) => change.items.map((item) => item.after.id)),
+      ?.filter((change) => !previousChanges.has(change.id))
+      .flatMap((change) =>
+        change.items
+          .filter(
+            (item) =>
+              change.kind !== 'baseline' || !originalById.has(item.after.id),
+          )
+          .map((item) => item.after.id),
+      ),
   )
   const consequences = preview
     ? projectConsequences(preview).filter(
@@ -232,7 +243,11 @@ export function ProjectEditReview({
   }
   return (
     <ProjectDialog
-      title="Сохранить изменения проекта"
+      title={
+        onlyBaseline
+          ? 'Сохранить исходный состав'
+          : 'Сохранить изменения проекта'
+      }
       compact
       onClose={() => {
         if (!saving) onClose()
@@ -275,55 +290,67 @@ export function ProjectEditReview({
           Позиций: {changes.length}
         </p>
         <fieldset disabled={saving} className="grid gap-4">
-          <legend className="sr-only">Почему меняем?</legend>
-          <div>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-              <span className="text-stone-500">Причина изменения</span>
-              {(
-                [
-                  {
-                    value: 'correction',
-                    label: 'Ошибка',
-                    hint: 'Исправляем ошибку во введённых данных',
-                  },
-                  {
-                    value: 'revision',
-                    label: 'ИЗМ',
-                    hint: 'Получен изменённый проект',
-                  },
-                ] as const
-              ).map((option) => (
-                <label
-                  key={option.value}
-                  title={option.hint}
-                  className="flex cursor-pointer items-center gap-2"
-                >
-                  <input
-                    type="radio"
-                    name="project-edit-reason"
-                    checked={kind === option.value}
-                    aria-invalid={showValidation && Boolean(errors.kind)}
-                    aria-describedby={
-                      showValidation && errors.kind
-                        ? 'project-kind-error'
-                        : undefined
-                    }
-                    onChange={() => {
-                      setKind(option.value)
-                      invalidate()
-                    }}
-                  />
-                  {option.label}
-                </label>
-              ))}
+          <legend className="sr-only">Данные для сохранения</legend>
+          {initialScopes.length > 0 && !onlyBaseline && (
+            <p className="text-sm">
+              Исходный состав для новых шифров:{' '}
+              {initialScopes.map((scope) => scope.cipher).join(', ')}.
+            </p>
+          )}
+          {!onlyBaseline && (
+            <div>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                <span className="text-stone-500">
+                  {initialScopes.length
+                    ? `Причина изменения для ${changedScopes.map((scope) => scope.cipher).join(', ')}`
+                    : 'Причина изменения'}
+                </span>
+                {(
+                  [
+                    {
+                      value: 'correction',
+                      label: 'Ошибка',
+                      hint: 'Исправляем ошибку во введённых данных',
+                    },
+                    {
+                      value: 'revision',
+                      label: 'ИЗМ',
+                      hint: 'Получен изменённый проект',
+                    },
+                  ] as const
+                ).map((option) => (
+                  <label
+                    key={option.value}
+                    title={option.hint}
+                    className="flex cursor-pointer items-center gap-2"
+                  >
+                    <input
+                      type="radio"
+                      name="project-edit-reason"
+                      checked={kind === option.value}
+                      aria-invalid={showValidation && Boolean(errors.kind)}
+                      aria-describedby={
+                        showValidation && errors.kind
+                          ? 'project-kind-error'
+                          : undefined
+                      }
+                      onChange={() => {
+                        setKind(option.value)
+                        invalidate()
+                      }}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+              <FieldError
+                id="project-kind-error"
+                message={showValidation ? errors.kind : ''}
+              />
             </div>
-            <FieldError
-              id="project-kind-error"
-              message={showValidation ? errors.kind : ''}
-            />
-          </div>
+          )}
           <div
-            className={`grid items-start gap-3 ${kind === 'revision' && scopes.length === 1 ? 'sm:grid-cols-[10rem_7rem_minmax(0,1fr)]' : 'sm:grid-cols-[10rem_minmax(0,1fr)]'}`}
+            className={`grid items-start gap-3 ${kind === 'revision' && changedScopes.length === 1 ? 'sm:grid-cols-[10rem_7rem_minmax(0,1fr)]' : 'sm:grid-cols-[10rem_minmax(0,1fr)]'}`}
           >
             <label className="grid gap-1 text-sm">
               Дата
@@ -346,44 +373,48 @@ export function ProjectEditReview({
               />
             </label>
             {kind === 'revision' &&
-              scopes.length === 1 &&
-              numberField(scopes[0]!, 0)}
-            <label className="grid gap-1 text-sm">
-              {kind === 'correction'
-                ? 'Причина исправления'
-                : 'Основание изменения'}
-              <Input
-                aria-label="Основание / причина"
-                value={reason}
-                placeholder={
-                  kind === 'correction'
-                    ? 'Например, опечатка в количестве'
-                    : 'Например, письмо или новая спецификация'
-                }
-                aria-invalid={showValidation && Boolean(errors.reason)}
-                aria-describedby={
-                  showValidation && errors.reason
-                    ? 'project-reason-error'
-                    : undefined
-                }
-                onChange={(event) => {
-                  setReason(event.target.value)
-                  invalidate()
-                }}
-              />
-              <FieldError
-                id="project-reason-error"
-                message={showValidation ? errors.reason : ''}
-              />
-            </label>
+              changedScopes.length === 1 &&
+              numberField(changedScopes[0]!, 0)}
+            {!onlyBaseline && (
+              <label className="grid gap-1 text-sm">
+                {kind === 'correction'
+                  ? 'Причина исправления'
+                  : 'Основание изменения'}
+                <Input
+                  aria-label="Основание / причина"
+                  value={reason}
+                  placeholder={
+                    kind === 'correction'
+                      ? 'Например, опечатка в количестве'
+                      : 'Например, письмо или новая спецификация'
+                  }
+                  aria-invalid={showValidation && Boolean(errors.reason)}
+                  aria-describedby={
+                    showValidation && errors.reason
+                      ? 'project-reason-error'
+                      : undefined
+                  }
+                  onChange={(event) => {
+                    setReason(event.target.value)
+                    invalidate()
+                  }}
+                />
+                <FieldError
+                  id="project-reason-error"
+                  message={showValidation ? errors.reason : ''}
+                />
+              </label>
+            )}
           </div>
-          {kind === 'revision' && scopes.length > 1 && (
+          {kind === 'revision' && changedScopes.length > 1 && (
             <div className="grid gap-2">
               <p className="text-sm text-stone-500">
                 Номер ИЗМ по каждому шифру
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                {scopes.map((scope, index) => numberField(scope, index, true))}
+                {changedScopes.map((scope, index) =>
+                  numberField(scope, index, true),
+                )}
               </div>
             </div>
           )}
@@ -696,7 +727,9 @@ export function ProjectEditReview({
             {saving
               ? 'Сохранение…'
               : preview
-                ? 'Подтвердить и сохранить'
+                ? onlyBaseline
+                  ? 'Сохранить исходный состав'
+                  : 'Подтвердить и сохранить'
                 : 'Показать последствия'}
           </Button>
         </div>

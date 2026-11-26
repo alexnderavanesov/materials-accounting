@@ -190,21 +190,95 @@ describe('project grid and Excel edit batches', () => {
     ).toBe('line')
     expect(next.materialReceipts).toEqual(draft.baseline.materialReceipts)
   })
-  it('records an empty baseline when Excel introduces a new cipher', () => {
+  it('saves a first Excel import as one populated baseline and links the next revision to it', () => {
     const draft = fixture(),
+      row = { ...excel(draft), cipher: 'НОВЫЙ' },
       staged = importProjectDraft(
         draft,
-        [{ ...excel(draft), cipher: 'НОВЫЙ' }],
-        'changes',
+        [row, { ...row, projectMaterialName: 'Задвижка DN50' }],
+        'full',
       )
-    const next = prepareProjectDraft(staged, metadata(staged))
+    const initial = { ...metadata(staged, 'baseline'), reason: '', numbers: {} }
+    const next = prepareProjectDraft(staged, initial)
     validateProjectAccounting(next, draft.baseline)
-    expect(next.projectChanges?.[0]).toMatchObject({
+    expect(next.projectChanges).toHaveLength(1)
+    const baseline = next.projectChanges![0]!
+    expect(baseline).toMatchObject({
       cipher: 'НОВЫЙ',
       kind: 'baseline',
-      items: [],
+      number: '',
+      previousId: null,
+      date: initial.date,
+      author: initial.author,
     })
-    expect(next.projectChanges?.[1]?.items).toHaveLength(1)
+    expect(
+      baseline.items.map((item) => [
+        item.before,
+        item.after.projectMaterialName,
+      ]),
+    ).toEqual([
+      [null, row.projectMaterialName],
+      [null, 'Задвижка DN50'],
+    ])
+    expect(next.materialRequests).toEqual(draft.baseline.materialRequests)
+    const saved = { baseline: next, lines: next.lines }
+    expect(
+      projectDraftChanges(importProjectDraft(saved, [row], 'changes')),
+    ).toEqual([])
+    const updated = importProjectDraft(
+      saved,
+      [{ ...row, quantity: 12 }],
+      'changes',
+    )
+    expect(() => prepareProjectDraft(updated, initial)).toThrow('Выберите')
+    const revised = prepareProjectDraft(updated, metadata(updated))
+    validateProjectAccounting(revised, next)
+    expect(revised.projectChanges).toHaveLength(2)
+    expect(revised.projectChanges?.[1]).toMatchObject({
+      kind: 'revision',
+      previousId: baseline.id,
+      items: [
+        { before: { plannedQuantity: 8 }, after: { plannedQuantity: 12 } },
+      ],
+    })
+  })
+  it('rejects an incomplete initial history or a competing first import in the same cipher', () => {
+    const draft = fixture(),
+      row = { ...excel(draft), cipher: 'НОВЫЙ' }
+    const staged = importProjectDraft(
+      draft,
+      [row, { ...row, projectMaterialName: 'Задвижка DN50' }],
+      'changes',
+    )
+    const initial = metadata(staged, 'baseline')
+    const next = prepareProjectDraft(staged, initial)
+    const incomplete = structuredClone(next)
+    incomplete.projectChanges![0]!.items.pop()
+    expect(() =>
+      validateProjectAccounting(incomplete, draft.baseline),
+    ).toThrow()
+    const otherDraft = importProjectDraft(
+      draft,
+      [{ ...row, projectMaterialName: 'Отвод' }],
+      'changes',
+    )
+    const other = prepareProjectDraft(otherDraft, initial)
+    expect(() =>
+      validateProjectAccounting(
+        {
+          ...next,
+          lines: [
+            ...next.lines,
+            ...other.lines.filter((line) => line.cipher === 'НОВЫЙ'),
+          ],
+          projectChanges: [...next.projectChanges!, ...other.projectChanges!],
+        },
+        other,
+      ),
+    ).toThrow()
+    expect(() =>
+      prepareProjectDraft(refreshProjectDraft(staged, other), initial),
+    ).toThrow('Выберите')
   })
   it('treats matching legacy defaults in Excel as unchanged and refuses unallocated new placeholders', () => {
     const draft = fixture()

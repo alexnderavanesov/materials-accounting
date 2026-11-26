@@ -291,7 +291,7 @@ export function reconcileProjectRequests<T extends ProjectRequest>(
 export type ProjectChangeInput = {
   project: string
   cipher: string
-  kind: 'revision' | 'correction'
+  kind: ProjectChange['kind']
   number: string
   date: string
   reason: string
@@ -346,7 +346,9 @@ export function prepareProjectChange<T extends ProjectChangeWorkspace>(
   if (!items.length) fail('Состав и количества не изменились.')
   const changes = [...(workspace.projectChanges ?? [])]
   let previous = latestProjectChange(changes, input.project, input.cipher)
-  if (!previous) {
+  if (input.kind === 'baseline' && (existing.length || previous))
+    fail('У шифра уже есть сохранённый состав. Обновите предпросмотр.')
+  if (!previous && input.kind !== 'baseline') {
     previous = projectChangeSchema.parse({
       id: crypto.randomUUID(),
       project: input.project,
@@ -373,7 +375,7 @@ export function prepareProjectChange<T extends ProjectChangeWorkspace>(
   const change = projectChangeSchema.parse({
     id: crypto.randomUUID(),
     ...metadata,
-    previousId: previous.id,
+    previousId: previous?.id ?? null,
     items,
   })
   // Input-only properties are omitted from the persistent event.
@@ -395,7 +397,8 @@ export function prepareProjectChange<T extends ProjectChangeWorkspace>(
       })),
     ],
   }
-  next.materialRequests = reconcileProjectRequests(next, input.date)
+  if (input.kind !== 'baseline')
+    next.materialRequests = reconcileProjectRequests(next, input.date)
   validateProjectChanges(next, workspace)
   return next
 }
@@ -484,14 +487,17 @@ export function validateProjectChanges(
       if (numbers.has(numberKey)) fail('Номер ИЗМ уже существует в этом шифре.')
       numbers.add(numberKey)
     } else if (change.number) fail('Номер указывается только для ИЗМ.')
+    let initialImport = false
     if (change.kind === 'baseline' && !oldChanges.has(change.id) && previous) {
       const expected = previous.lines.filter(
         (row) => row.project === change.project && row.cipher === change.cipher,
       )
       const baselineIds = new Set(change.items.map((item) => item.after.id))
+      initialImport = expected.length === 0
       if (
-        expected.length !== change.items.length ||
-        expected.some((row) => !baselineIds.has(row.id!))
+        !initialImport &&
+        (expected.length !== change.items.length ||
+          expected.some((row) => !baselineIds.has(row.id!)))
       )
         fail('Исходный состав должен содержать все позиции шифра.')
     }
@@ -512,7 +518,16 @@ export function validateProjectChanges(
       )
         fail('Исходная позиция изменилась. Обновите предпросмотр.')
       if (!oldChanges.has(change.id) && previous) {
-        if (change.kind === 'baseline') {
+        if (change.kind === 'baseline' && (item.before || item.replacesLineId))
+          fail('Исходный состав не может заменять существующую позицию.')
+        if (
+          initialImport &&
+          (oldLines.has(after.id) || snapshots.has(after.id))
+        )
+          fail('Позиция исходного состава уже существует.')
+        if (initialImport && after.plannedQuantity <= 0)
+          fail('Укажите количество по шифру для новой позиции.')
+        if (change.kind === 'baseline' && !initialImport) {
           const old = oldLines.get(after.id)
           if (!old || !same(projectPosition(old), after))
             fail('Исходный состав не совпадает с сохранённой базой.')

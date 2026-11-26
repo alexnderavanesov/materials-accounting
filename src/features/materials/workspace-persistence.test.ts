@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWorkspaceStore } from './workspace-snapshot.server'
+import { importProjectDraft, prepareProjectDraft } from './project-edit-draft'
 import { createWorkspaceSaver } from './workspace-saver'
 import {
   readWorkspaceCache,
@@ -71,6 +72,53 @@ function memoryStorage(): Storage {
 }
 
 describe('workspace file safety', () => {
+  it('persists and reloads a 650-position initial import as one history entry on retry', async () => {
+    const { dir, store } = await setup()
+    const baseline = {
+      ...fixture(),
+      lines: [],
+      materialRequests: [],
+      materialReceipts: [],
+      materialIssues: [],
+      qualityWorkflow: undefined,
+    }
+    await store.save(baseline, null)
+    const before = await store.load()
+    const rows = Array.from({ length: 650 }, (_, i) => ({
+      cipher: 'ТЕСТ',
+      projectMaterialName: `Труба ${i + 1}`,
+      unit: 'м',
+      quantity: i + 1,
+    }))
+    const staged = importProjectDraft({ baseline, lines: [] }, rows, 'full')
+    const next = toWorkspaceSnapshot({
+      ...baseline,
+      ...prepareProjectDraft(staged, {
+        kind: 'baseline',
+        reason: '',
+        numbers: {},
+        replacements: {},
+        date: localToday(),
+        author: 'Тест',
+      }),
+    })
+    const result = await store.save(next, before.revision)
+    expect(result.status).toBe('saved')
+    expect(await store.save(next, before.revision)).toEqual(result)
+    const loaded = (await createWorkspaceStore(dir).load()).workspace!
+    expect(loaded.lines).toHaveLength(650)
+    expect(loaded.projectChanges).toHaveLength(1)
+    const initial = loaded.projectChanges![0]!
+    expect(initial).toMatchObject({
+      kind: 'baseline',
+      previousId: null,
+      number: '',
+    })
+    expect(initial.items.map((item) => item.after.plannedQuantity)).toEqual(
+      rows.map((row) => row.quantity),
+    )
+  })
+
   it('preserves the snapshot when a request quantity is invalid', async () => {
     const { store } = await setup()
     const initial = fixture()
