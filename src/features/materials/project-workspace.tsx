@@ -14171,17 +14171,9 @@ function SettingsPanel({
 
   return (
     <section className="mt-5" aria-label="Настройки приложения">
-      <div className="grid gap-5">
-        <div
-          className={`grid gap-4 ${activeTab === 'print' ? '' : 'md:grid-cols-[220px_minmax(0,1fr)]'}`}
-        >
-          <div
-            className={
-              activeTab === 'print'
-                ? 'flex flex-wrap gap-1 rounded-md border border-stone-200 bg-stone-50/70 p-2 [&>button]:mb-0 [&>button]:min-h-0 [&>button]:w-auto [&>button]:py-2'
-                : 'grid content-start gap-2 rounded-md border border-stone-200 bg-stone-50/70 p-2 md:block'
-            }
-          >
+      <div className="grid grid-cols-1 gap-5">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="grid content-start gap-2 self-start rounded-md border border-stone-200 bg-stone-50/70 p-2 md:block">
             <button
               type="button"
               className={`mb-2 w-full rounded-md px-3 py-3 text-left text-sm ${activeTab === 'numbering' ? 'bg-white font-medium shadow-sm' : 'text-stone-600 hover:bg-white'}`}
